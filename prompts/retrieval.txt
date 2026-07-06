@@ -1,0 +1,8 @@
+Use ONLY the following retrieved context to answer the user.
+
+Context:
+{context}
+
+Question:
+{question}
+
