@@ -66,17 +66,28 @@ Atlas decides.
 
 ### New Components
 
-Brain
+Brain âœ…
 
-Planner
+Planner âœ…
+
+Execution Context âœ…
+
+Executor âœ…
 
 Tool Manager
 
 Tool Registry
 
-Execution Context
-
 ### Capabilities
+
+Current V3.1 foundation:
+
+* Deterministic execution plans
+* Sequential plan execution
+* Shared execution context
+* Planner and executor module boundaries
+
+Future V3 capabilities:
 
 * Intent recognition
 * Tool selection

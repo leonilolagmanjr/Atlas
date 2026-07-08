@@ -22,6 +22,9 @@ Implemented foundation:
 - Central configuration
 - Central logging
 - Brain orchestration layer
+- Deterministic planner and execution plan
+- Sequential executor
+- Shared execution context models
 - Retrieval diagnostics
 - Hybrid retrieval with semantic, keyword, and metadata signals
 - Adaptive retrieval confidence policy
@@ -37,6 +40,9 @@ Current flow:
 ```text
 User question
 Brain
+Planner
+Execution plan
+Executor
 Intent-aware query expansion
 Semantic vector search
 Result evaluation
@@ -102,10 +108,13 @@ Atlas/
   chunker.py           Text chunking
   config.py            Central configuration
   document_loader.py   Document reading
+  executor.py          Sequential execution plan runner
   indexer.py           Incremental indexing
   knowledge_search.py  Retrieval strategy and confidence policy
   llm.py               Ollama communication
   logger.py            Logging setup
+  models.py            Shared execution dataclasses
+  planner.py           Deterministic plan creation
   vector_store.py      ChromaDB operations
   prompts/
     system.txt
@@ -121,9 +130,18 @@ Atlas/
 indexes the knowledge folder, creates the vector store and Brain, and runs the
 chat loop.
 
-`brain.py` coordinates request execution. It chooses the knowledge workflow,
-tracks retrieval diagnostics, and decides whether to call the LLM based on the
-retrieval result.
+`brain.py` creates the execution context, asks the planner for a plan, passes
+that plan to the executor, and returns the final response.
+
+`planner.py` creates a deterministic two-step plan for every request:
+retrieve knowledge, then generate a response.
+
+`executor.py` owns step-by-step execution. It updates the shared execution
+context, runs retrieval, decides whether there is enough evidence to call the
+LLM, and records step status and failures.
+
+`models.py` contains shared dataclasses for execution context, plans, steps,
+planner decisions, evidence, and retrieval results.
 
 `knowledge_search.py` owns retrieval. It expands queries, performs staged
 retrieval, merges hits, evaluates confidence, formats context, and logs
@@ -202,7 +220,7 @@ Useful local checks:
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
 .\.venv\Scripts\python.exe -c "import ast, pathlib; [ast.parse(p.read_text(encoding='utf-8'), filename=str(p)) for p in pathlib.Path('.').glob('*.py')]; print('syntax ok')"
-.\.venv\Scripts\python.exe -c "import atlas, brain, chunker, config, document_loader, indexer, knowledge_search, llm, logger, vector_store; print('imports ok')"
+.\.venv\Scripts\python.exe -c "import atlas, brain, chunker, config, document_loader, executor, indexer, knowledge_search, llm, logger, models, planner, vector_store; print('imports ok')"
 ```
 
 ## Roadmap

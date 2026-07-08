@@ -1,6 +1,6 @@
 # Atlas Architecture
 
-**Version:** 2.0 Foundation
+**Version:** 3.1 Planner Foundation
 
 ---
 
@@ -95,7 +95,7 @@ Only the required layers should execute for each request.
 
 ---
 
-# Current Version (V2)
+# Current Version (V3.1)
 
 Atlas currently contains:
 
@@ -106,6 +106,10 @@ Atlas currently contains:
 * Prompt management
 * Logging
 * Configuration management
+* Brain orchestration
+* Deterministic planning
+* Sequential plan execution
+* Shared execution context models
 
 Future versions will build upon this foundation.
 
@@ -291,6 +295,35 @@ No indexing.
 
 ---
 
+## models.py
+
+Contains shared dataclasses for execution plans, execution steps, planner
+decisions, evidence, retrieval results, and request execution context.
+
+Dataclasses should live here when multiple modules need the same model.
+
+---
+
+## planner.py
+
+Responsible only for creating an execution plan.
+
+The current planner is deterministic and does not call the LLM.
+
+---
+
+## executor.py
+
+Responsible for executing an `ExecutionPlan` step-by-step and updating the
+shared `ExecutionContext`.
+
+It owns retrieval and LLM execution for the current plan actions.
+
+Future executor versions may add retries, branching, parallelism, and
+conditional steps without moving those responsibilities back into Brain.
+
+---
+
 ## indexer.py
 
 Responsible for:
@@ -303,16 +336,22 @@ Should not answer user questions.
 
 ---
 
-# Brain (Future)
+# Brain
 
-The Brain becomes the central orchestrator.
+The Brain is the central orchestrator.
 
 Responsibilities:
 
+* receive user requests
+* create execution context
+* request an execution plan
+* pass the plan to the executor
+* return the final response
+
+Future responsibilities:
+
 * understand user intent
 * choose tools
-* retry failed retrieval
-* plan execution
 * coordinate memory
 * coordinate reasoning
 
