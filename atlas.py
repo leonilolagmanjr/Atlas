@@ -1,7 +1,6 @@
-"""Atlas V2 entry point.
+"""Atlas V3 entry point.
 
-Entry point ONLY: wiring between indexing, retrieval, and LLM.
-No business logic lives here beyond orchestration.
+Entry point only: startup, initialization, and chat loop.
 """
 
 from __future__ import annotations
@@ -9,10 +8,9 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from brain import Brain
 from config import KNOWLEDGE_FOLDER, LOG_FILE, LOG_LEVEL, LOG_TO_FILE
 from indexer import index_knowledge_base
-from knowledge_search import retrieve
-from llm import ask
 from logger import setup_logging
 from vector_store import VectorStore
 
@@ -40,6 +38,12 @@ def main() -> None:
     logger.info("Startup: indexing knowledge base")
     index_knowledge_base(vector_store=vector_store, knowledge_folder=KNOWLEDGE_FOLDER)
 
+    brain = Brain(
+        vector_store=vector_store,
+        system_prompt=system_prompt,
+        retrieval_template=retrieval_template,
+    )
+
     logger.info("Startup: entering chat loop")
 
     while True:
@@ -50,26 +54,8 @@ def main() -> None:
             print("Goodbye!")
             return
 
-        logger.info("Search query: %s", question)
-        retrieval_result = retrieve(question, vector_store=vector_store)
-
-        if not retrieval_result.context:
-            print("\nAtlas:")
-            print("I don't know based on my knowledge base.")
-            continue
-
-        user_prompt = retrieval_template.format(context=retrieval_result.context, question=question)
-        try:
-            answer = ask(system_prompt=system_prompt, user_prompt=user_prompt)
-        except Exception:
-            # Never crash Atlas.
-            logger.exception("LLM call failed")
-            print("\nAtlas:")
-            print("I don't know based on my knowledge base.")
-            continue
-
         print("\nAtlas:")
-        print(answer)
+        print(brain.process(question))
 
 
 if __name__ == "__main__":

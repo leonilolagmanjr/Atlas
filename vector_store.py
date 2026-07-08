@@ -7,6 +7,7 @@ This module does NOT read PDFs and does NOT perform indexing decisions.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from typing import Any, List, Optional, Sequence
 
@@ -129,6 +130,32 @@ class VectorStore:
                     text=doc_text,
                     source=str(meta.get("source", "")),
                     distance=float(dist),
+                )
+            )
+
+        return hits
+
+    def all_chunks(self) -> List[SearchHit]:
+        """Return all stored chunks for non-vector retrieval strategies."""
+
+        results = self._collection.get(include=["documents", "metadatas"])
+
+        hits: List[SearchHit] = []
+        ids = results.get("ids", [])
+        docs = results.get("documents", [])
+        metas = results.get("metadatas", [])
+
+        for chunk_id_value, doc_text, meta in zip(ids, docs, metas):
+            chunk_id = meta.get("chunk_id") or str(chunk_id_value)
+            hits.append(
+                SearchHit(
+                    chunk_id=chunk_id,
+                    doc_id=meta.get("doc_id", ""),
+                    chunk_index=int(meta.get("chunk_index", 0)),
+                    page_number=meta.get("page_number"),
+                    text=doc_text,
+                    source=str(meta.get("source", "")),
+                    distance=math.inf,
                 )
             )
 

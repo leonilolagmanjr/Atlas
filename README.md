@@ -1,377 +1,211 @@
-# Atlas v1
+# Atlas
 
-> A lightweight local AI assistant built on Qwen 2.5 that learns through Retrieval-Augmented Generation (RAG), user feedback, and long-term memory.
+Atlas is a modular, local-first AI operating system foundation.
 
----
+It is not designed as a monolithic chatbot. Atlas separates orchestration,
+retrieval, indexing, vector storage, prompting, logging, and LLM access so each
+part can evolve independently.
 
-# Overview
+## Current Version
 
-Atlas is a personal AI assistant designed to run completely on local hardware using Ollama. Instead of retraining a language model every time new information is learned, Atlas stores knowledge inside a vector database and retrieves relevant information during conversations.
+Atlas is currently moving through the V3 Brain milestone.
 
-The goal of Atlas is to become a continually improving AI assistant capable of remembering information, learning from documentation, and adapting based on rewards and penalties.
+Implemented foundation:
 
-Current Base Model:
-
-- Qwen2.5:7B
-- Ollama
-- Python
-
----
-
-# Features
-
-## Current Features
-
-- Local AI using Ollama
-- Qwen2.5 7B base model
-- Python backend
-- Interactive CLI chat
-- Retrieval-Augmented Generation (RAG)
+- Local CLI assistant
+- Ollama-backed LLM calls
 - PDF knowledge ingestion
-- Long-term memory
-- Conversation history
-- Learning from documentation
-- Reward/Penalty learning system
-- Semantic search
-- Embedding-based memory retrieval
+- Chunked document processing
+- ChromaDB vector storage
+- Incremental indexing with file hashing
+- Prompt templates
+- Central configuration
+- Central logging
+- Brain orchestration layer
+- Retrieval diagnostics
+- Hybrid retrieval with semantic, keyword, and metadata signals
+- Adaptive retrieval confidence policy
 
----
+## Retrieval Pipeline
 
-# Planned Features
+Atlas keeps hallucination protection by requiring retrieved knowledge before
+calling the LLM, but retrieval confidence is now evaluated after multiple
+search attempts instead of before them.
 
-- GUI desktop application
-- Voice input/output
-- Vision support
-- Autonomous agents
-- Tool calling
-- Internet search
-- Code execution
-- Plugin system
-- API server
-- Multi-user support
-- Self-improving memory organization
-- Automatic summarization
-- Personal assistant mode
+Current flow:
 
----
-
-# Project Structure
-
+```text
+User question
+Brain
+Intent-aware query expansion
+Semantic vector search
+Result evaluation
+Expanded-query retry when weak
+Keyword and metadata search when needed
+Merged ranked results
+Adaptive confidence decision
+LLM call only when retrieval is supported
 ```
+
+The retrieval layer considers:
+
+- Best semantic distance
+- Number of retrieved chunks
+- Keyword matches in chunk text
+- Filename and document metadata matches
+- Combined evidence across multiple queries
+
+If all retrieval attempts fail, Atlas returns:
+
+```text
+I don't know based on my knowledge base.
+```
+
+## Query Expansion
+
+The current query expansion is deterministic and modular. It can later be
+replaced with an LLM, planner, or agent-generated search strategy without
+changing the rest of the retrieval pipeline.
+
+Examples:
+
+- `What certifications do I have?`
+  - `certifications`
+  - `certificates`
+  - `credentials`
+  - `training`
+  - `licenses`
+  - `achievements`
+
+- `Tell me about my resume.`
+  - `resume`
+  - `experience`
+  - `education`
+  - `skills`
+  - `projects`
+  - `profile`
+
+- `Who is Leonilo?`
+  - `Leonilo`
+  - `Leonilo Lagman`
+  - `Lagman`
+  - `candidate`
+  - `profile`
+  - `personal information`
+
+## Project Structure
+
+```text
 Atlas/
-│
-├── data/
-│   ├── documents/
-│   ├── embeddings/
-│   └── memories/
-│
-├── models/
-│
-├── rag/
-│   ├── ingest.py
-│   ├── retrieve.py
-│   └── embeddings.py
-│
-├── learning/
-│   ├── rewards.py
-│   ├── penalties.py
-│   └── memory.py
-│
-├── prompts/
-│
-├── logs/
-│
-├── config.py
-├── main.py
-├── requirements.txt
-└── README.md
+  atlas.py             Entry point and chat loop
+  brain.py             Request orchestration
+  chunker.py           Text chunking
+  config.py            Central configuration
+  document_loader.py   Document reading
+  indexer.py           Incremental indexing
+  knowledge_search.py  Retrieval strategy and confidence policy
+  llm.py               Ollama communication
+  logger.py            Logging setup
+  vector_store.py      ChromaDB operations
+  prompts/
+    system.txt
+    retrieval.txt
+  knowledge/
+    *.pdf
+  database/            Local generated ChromaDB data, ignored by git
 ```
 
----
+## Responsibilities
 
-# Technology Stack
+`atlas.py` is only the entry point. It initializes logging, loads prompts,
+indexes the knowledge folder, creates the vector store and Brain, and runs the
+chat loop.
 
-| Component | Technology |
-|-----------|------------|
-| AI Model | Qwen2.5:7B |
-| Runtime | Ollama |
-| Language | Python 3.12+ |
-| Vector Database | ChromaDB |
-| Embeddings | nomic-embed-text |
-| PDF Parsing | PyMuPDF |
-| RAG | LangChain |
-| CLI | Rich |
-| Memory | ChromaDB |
+`brain.py` coordinates request execution. It chooses the knowledge workflow,
+tracks retrieval diagnostics, and decides whether to call the LLM based on the
+retrieval result.
 
----
+`knowledge_search.py` owns retrieval. It expands queries, performs staged
+retrieval, merges hits, evaluates confidence, formats context, and logs
+diagnostics.
 
-# Installation
+`vector_store.py` owns ChromaDB access. It adds chunks, queries embeddings, and
+exposes stored chunks for keyword and metadata retrieval.
 
-## Clone the repository
+`llm.py` only talks to Ollama.
 
-```bash
-git clone https://github.com/yourusername/Atlas.git
+## Setup
 
-cd Atlas
-```
-
----
-
-## Create a Virtual Environment
-
-Windows
+Create and activate a virtual environment:
 
 ```powershell
 python -m venv .venv
-
-.venv\Scripts\activate
+.\.venv\Scripts\activate
 ```
 
-Linux/macOS
+Install project dependencies used by the current codebase:
 
-```bash
-python3 -m venv .venv
-
-source .venv/bin/activate
+```powershell
+pip install chromadb sentence-transformers pymupdf requests
 ```
 
----
+Install Ollama and pull the configured model:
 
-## Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
----
-
-## Install Ollama
-
-Download:
-
-https://ollama.com
-
----
-
-## Pull the AI Model
-
-```bash
+```powershell
 ollama pull qwen2.5:7b
 ```
 
----
+## Running
 
-## Pull Embedding Model
+Place PDF knowledge files in `knowledge/`, then run:
 
-```bash
-ollama pull nomic-embed-text
+```powershell
+python atlas.py
 ```
 
----
+Atlas will index changed documents at startup and then enter the CLI chat loop.
 
-# Running Atlas
+## Configuration
 
-```bash
-python main.py
+Important settings live in `config.py`:
+
+- `OLLAMA_MODEL`
+- `KNOWLEDGE_FOLDER`
+- `DATABASE_FOLDER`
+- `COLLECTION_NAME`
+- `EMBEDDING_MODEL_NAME`
+- `CHUNK_SIZE`
+- `CHUNK_OVERLAP`
+- `TOP_K`
+- `MIN_SIMILARITY`
+- `LOG_RETRIEVAL`
+
+`MIN_SIMILARITY` is still used as one signal in the adaptive retrieval policy,
+not as a single hard gate before retries.
+
+## Generated Files
+
+The following are local runtime artifacts and should not be committed:
+
+- `__pycache__/`
+- `.venv/`
+- `database/`
+- `*.log`
+- `.env`
+
+The repository includes `.gitignore` entries for these paths.
+
+## Verification
+
+Useful local checks:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+.\.venv\Scripts\python.exe -c "import ast, pathlib; [ast.parse(p.read_text(encoding='utf-8'), filename=str(p)) for p in pathlib.Path('.').glob('*.py')]; print('syntax ok')"
+.\.venv\Scripts\python.exe -c "import atlas, brain, chunker, config, document_loader, indexer, knowledge_search, llm, logger, vector_store; print('imports ok')"
 ```
 
----
+## Roadmap
 
-# Learning Workflow
-
-```
-PDF
-
-↓
-
-Extract Text
-
-↓
-
-Split into Chunks
-
-↓
-
-Generate Embeddings
-
-↓
-
-Store in ChromaDB
-
-↓
-
-User asks question
-
-↓
-
-Atlas retrieves relevant chunks
-
-↓
-
-Qwen2.5 generates response
-
-↓
-
-User rewards or penalizes answer
-
-↓
-
-Memory updated
-```
-
----
-
-# Reward System
-
-Atlas can improve over time through feedback.
-
-Example:
-
-```
-/reward
-
-Great explanation.
-```
-
-Atlas increases confidence for that retrieval.
-
-Penalty:
-
-```
-/penalty
-
-Hallucinated information.
-```
-
-Atlas lowers confidence and records corrections.
-
----
-
-# RAG Pipeline
-
-```
-Documents
-
-↓
-
-Chunking
-
-↓
-
-Embeddings
-
-↓
-
-Vector Database
-
-↓
-
-Similarity Search
-
-↓
-
-Context
-
-↓
-
-Qwen2.5
-
-↓
-
-Answer
-```
-
----
-
-# Vision
-
-Atlas aims to become a completely local AI capable of:
-
-- Remembering previous conversations
-- Learning from books
-- Reading PDFs
-- Searching personal documents
-- Acting as a coding assistant
-- Becoming a personalized AI companion
-- Running entirely offline
-- Preserving user privacy
-
----
-
-# Roadmap
-
-## Version 1
-
-- [x] Local chat
-- [x] Ollama integration
-- [x] RAG
-- [x] PDF learning
-- [x] Memory
-- [x] Feedback system
-
----
-
-## Version 2
-
-- [ ] Desktop GUI
-- [ ] Better memory ranking
-- [ ] Automatic learning
-- [ ] Voice support
-- [ ] Better prompts
-
----
-
-## Version 3
-
-- [ ] Agent system
-- [ ] Web search
-- [ ] Code execution
-- [ ] Vision
-- [ ] Tool calling
-- [ ] Multi-agent collaboration
-
----
-
-# Philosophy
-
-Atlas is built on one core idea:
-
-> **Large Language Models should not memorize everything—they should know how to find the right information when needed.**
-
-By combining local language models with Retrieval-Augmented Generation (RAG), semantic memory, and user feedback, Atlas becomes increasingly useful without requiring expensive retraining.
-
----
-
-# License
-
-MIT License
-
----
-
-# Author
-
-**Leonilo P. Lagman Jr.**
-
-Computer Science Graduate
-
-Software Engineer
-
-Founder of Atlas AI
-
----
-
-# Acknowledgements
-
-Special thanks to the open-source community and the projects that make Atlas possible:
-
-- Ollama
-- Qwen
-- LangChain
-- ChromaDB
-- PyMuPDF
-- Rich
-- Python
-
----
-
-**Atlas v1** — *Learn locally. Remember forever. Protect your privacy.*
+See `ROADMAP.md` for the long-term Atlas plan and `ARCHITECTURE.md` for module
+boundaries and design principles.
