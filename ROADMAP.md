@@ -6,11 +6,12 @@
 
 # Mission
 
-Atlas is a modular, local-first AI operating system designed to become an intelligent assistant capable of reasoning, planning, learning, remembering, and using tools.
+Atlas is a modular, local-first AI operating system foundation.
 
 Atlas is not a chatbot.
 
-Atlas is an extensible AI platform.
+Atlas is designed to become an extensible AI platform capable of reasoning, planning, learning, remembering, and using tools.
+
 
 ---
 
@@ -66,17 +67,18 @@ Atlas decides.
 
 ### New Components
 
-Brain âœ…
+Brain
 
-Planner âœ…
+Planner
 
-Execution Context âœ…
+Execution Context
 
-Executor âœ…
+Executor
 
 Tool Manager
 
 Tool Registry
+
 
 ### Capabilities
 

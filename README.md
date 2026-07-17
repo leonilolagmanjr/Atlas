@@ -8,7 +8,7 @@ part can evolve independently.
 
 ## Current Version
 
-Atlas is currently moving through the V3 Brain milestone.
+Atlas is currently implemented as the V3.2 Brain foundation (intent-based deterministic planning + staged hybrid retrieval).
 
 Implemented foundation:
 
@@ -61,7 +61,7 @@ The retrieval layer considers:
 - Filename and document metadata matches
 - Combined evidence across multiple queries
 
-If all retrieval attempts fail, Atlas returns:
+If retrieval is rejected (no accepted evidence context), Atlas returns:
 
 ```text
 I don't know based on my knowledge base.
@@ -164,7 +164,7 @@ python -m venv .venv
 Install project dependencies used by the current codebase:
 
 ```powershell
-pip install chromadb sentence-transformers pymupdf requests
+pip install chromadb sentence-transformers pypdf ollama
 ```
 
 Install Ollama and pull the configured model:
@@ -198,8 +198,8 @@ Important settings live in `config.py`:
 - `MIN_SIMILARITY`
 - `LOG_RETRIEVAL`
 
-`MIN_SIMILARITY` is still used as one signal in the adaptive retrieval policy,
-not as a single hard gate before retries.
+`MIN_SIMILARITY` is used as part of the retrieval acceptance decision (`knowledge_search._decide()`),
+not as a single hard pre-check before all retries.
 
 ## Generated Files
 
@@ -209,7 +209,7 @@ The following are local runtime artifacts and should not be committed:
 - `.venv/`
 - `database/`
 - `*.log`
-- `.env`
+- `.env` (not used by this repository’s code; safe to ignore)
 
 The repository includes `.gitignore` entries for these paths.
 

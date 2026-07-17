@@ -1,6 +1,6 @@
 # Atlas Architecture
 
-**Version:** 3.1 Planner Foundation
+**Version:** V3.2 (Planner + Intent Classification + Staged Hybrid Retrieval)
 
 ---
 
