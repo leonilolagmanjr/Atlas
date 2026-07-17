@@ -52,8 +52,28 @@ MIN_SIMILARITY: float = 0.75
 LOG_RETRIEVAL: bool = True
 
 
+# ---- Memory (Conversation) ----
+MEMORY_FOLDER: Path = PROJECT_ROOT / "memory"
+
+# Short-term memory window controls
+MAX_RETAINED_MESSAGES: int = 10
+
+# Token budget is optional for now. If set, context builder may use a
+# lightweight estimate in the future.
+MAX_CONTEXT_TOKENS: int = 2048
+
+# Placeholder summarization threshold (conversation size)
+AUTO_SUMMARIZE_THRESHOLD: int = 80
+
+# Cap total number of sessions stored on disk (best-effort)
+MAX_SESSIONS: int = 50
+
+# Auto-save session/messaging changes to disk.
+AUTO_SAVE: bool = True
+
 # ---- Logging ----
 LOG_LEVEL: str = "INFO"
 LOG_TO_FILE: bool = False
 LOG_FILE: Path = PROJECT_ROOT / "database" / "atlas.log"
+
 

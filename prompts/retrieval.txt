@@ -1,8 +1,15 @@
 Use ONLY the following retrieved context to answer the user.
 
+Conversation history (may be empty):
+{conversation_history}
+
 Context:
 {context}
 
 Question:
 {question}
+
+
+
+
 

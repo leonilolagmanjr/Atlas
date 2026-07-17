@@ -181,9 +181,22 @@ Place PDF knowledge files in `knowledge/`, then run:
 python atlas.py
 ```
 
-Atlas will index changed documents at startup and then enter the CLI chat loop.
+Atlas indexes changed documents at startup and then enters a backend CLI loop.
+
+In addition to normal questions, Atlas supports conversation/session commands:
+- `/new [title]`
+- `/list`
+- `/open <session_id>`
+- `/delete <session_id>`
+- `/rename <session_id> <new_title>`
+- `/history`
+- `/export <session_id> [path]`
+- `/import <path>`
+- `/clear`
+- `/help`
 
 ## Configuration
+
 
 Important settings live in `config.py`:
 

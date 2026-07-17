@@ -19,6 +19,8 @@ from models import (
 )
 from vector_store import VectorStore
 
+from memory.memory_manager import MemoryManager
+
 logger = logging.getLogger(__name__)
 
 UNKNOWN_RESPONSE = "I don't know based on my knowledge base."
@@ -33,15 +35,18 @@ class Executor:
         vector_store: VectorStore,
         system_prompt: str,
         retrieval_template: str,
+        memory_manager: MemoryManager | None = None,
     ) -> None:
         self._vector_store = vector_store
         self._system_prompt = system_prompt
         self._retrieval_template = retrieval_template
+        self._memory_manager = memory_manager
         self._handlers: dict[str, Callable[[ExecutionContext, ExecutionStep], None]] = {
             "retrieve_knowledge": self._retrieve_knowledge,
             "generate_response": self._generate_response,
             "merge_evidence": self._merge_evidence,
         }
+
 
 
 
@@ -218,16 +223,32 @@ class Executor:
             logger.info("LLM skipped: no accepted retrieval context")
             return
 
+        conversation_history = ""
+        if self._memory_manager is not None:
+            # History builder is responsible for enforcing retention limits.
+            conversation_history = self._memory_manager.build_conversation_history_for_prompt()
+
         user_prompt = self._retrieval_template.format(
+            conversation_history=conversation_history,
             context=retrieval_result.context,
             question=context.user_input,
         )
+
+        # Persist user message before generation.
+        if self._memory_manager is not None:
+            self._memory_manager.append_message(role="user", content=context.user_input)
 
         logger.info("LLM called")
         context.llm_response = ask(system_prompt=self._system_prompt, user_prompt=user_prompt)
         context.final_response = context.llm_response
         step.result = context.final_response
         logger.info("LLM complete")
+
+        # Persist assistant message after successful generation.
+        if self._memory_manager is not None and context.final_response:
+            self._memory_manager.append_message(role="assistant", content=context.final_response)
+
+
 
     def _mark_failed(self, context: ExecutionContext) -> None:
         if context.execution_plan is not None:

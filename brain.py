@@ -12,6 +12,8 @@ from models import ExecutionContext
 from planner import Planner
 from vector_store import VectorStore
 
+from memory.memory_manager import MemoryManager
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,13 +28,16 @@ class Brain:
         retrieval_template: str,
         planner: Planner | None = None,
         executor: Executor | None = None,
+        memory_manager: MemoryManager | None = None,
     ) -> None:
         self._planner = planner or Planner()
         self._executor = executor or Executor(
             vector_store=vector_store,
             system_prompt=system_prompt,
             retrieval_template=retrieval_template,
+            memory_manager=memory_manager,
         )
+
 
     def process(self, user_input: str) -> str:
         """Process a user request through Planner and Executor."""

@@ -1,0 +1,18 @@
+[
+  {
+    "id": "753fa07b-4b8d-453e-8335-742e0fb5e393",
+    "role": "user",
+    "content": "Hello",
+    "timestamp": "2026-07-17T10:44:33.340075+00:00",
+    "turn_number": 1,
+    "metadata": {}
+  },
+  {
+    "id": "c6bead9c-9b13-4476-a9f6-ceed1a539394",
+    "role": "assistant",
+    "content": "Hi",
+    "timestamp": "2026-07-17T10:44:33.342238+00:00",
+    "turn_number": 2,
+    "metadata": {}
+  }
+]

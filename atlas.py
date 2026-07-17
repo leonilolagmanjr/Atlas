@@ -14,6 +14,9 @@ from indexer import index_knowledge_base
 from logger import setup_logging
 from vector_store import VectorStore
 
+from cli import CLI
+from memory.memory_manager import MemoryManager
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,7 +32,10 @@ def _load_prompts() -> tuple[str, str]:
 
 
 def main() -> None:
-    setup_logging(level=getattr(logging, LOG_LEVEL.upper(), logging.INFO), log_to_file=LOG_TO_FILE and str(LOG_FILE))
+    setup_logging(
+        level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
+        log_to_file=LOG_TO_FILE and str(LOG_FILE),
+    )
 
     system_prompt, retrieval_template = _load_prompts()
 
@@ -38,24 +44,33 @@ def main() -> None:
     logger.info("Startup: indexing knowledge base")
     index_knowledge_base(vector_store=vector_store, knowledge_folder=KNOWLEDGE_FOLDER)
 
+    memory_manager = MemoryManager()
+    cli = CLI(memory_manager=memory_manager)
+
     brain = Brain(
         vector_store=vector_store,
         system_prompt=system_prompt,
         retrieval_template=retrieval_template,
+        memory_manager=memory_manager,
     )
 
     logger.info("Startup: entering chat loop")
 
     while True:
-        question = input("Atlas > ").strip()
-        if not question:
+        raw = input("Atlas > ").strip()
+        if not raw:
             continue
-        if question.lower() in {"exit", "quit"}:
+        if raw.lower() in {"exit", "quit"}:
             print("Goodbye!")
             return
 
+        cmd_out = cli.handle_command(raw)
+        if cmd_out is not None:
+            print(cmd_out)
+            continue
+
         print("\nAtlas:")
-        print(brain.process(question))
+        print(brain.process(raw))
 
 
 if __name__ == "__main__":

@@ -68,7 +68,7 @@ Planner
 
 ↓
 
-Memory
+Memory (subsystem)
 
 ↓
 
@@ -90,6 +90,20 @@ LLM
 
 Response
 ```
+
+## Memory subsystem (implemented)
+
+Atlas now includes a first-class **Memory** subsystem as a dedicated package: `memory/`.
+
+Responsibilities:
+- Conversation Sessions (create/open/rename/list/delete/archive)
+- Short-term history window (configurable `MAX_RETAINED_MESSAGES`)
+- Persistence to disk under `memory/sessions/<session-id>/`
+- Context building for prompt construction via `{conversation_history}`
+
+The Brain/Executor never manipulate storage directly—Executor requests
+conversation history from `MemoryManager` and persists user/assistant turns.
+
 
 Only the required layers should execute for each request.
 
