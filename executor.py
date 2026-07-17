@@ -40,7 +40,10 @@ class Executor:
         self._handlers: dict[str, Callable[[ExecutionContext, ExecutionStep], None]] = {
             "retrieve_knowledge": self._retrieve_knowledge,
             "generate_response": self._generate_response,
+            "merge_evidence": self._merge_evidence,
         }
+
+
 
     def execute(self, plan: ExecutionPlan, context: ExecutionContext) -> ExecutionContext:
         """Execute a plan sequentially and update the shared context."""
@@ -121,9 +124,36 @@ class Executor:
             self._mark_failed(context)
             logger.exception("Executor failed step: plan_id=%s step_id=%s action=%s", plan_id, step.id, step.action)
 
+    def _merge_evidence(self, context: ExecutionContext, step: ExecutionStep) -> None:
+        """Merge accumulated evidence_context_parts and evidence_chunks.
+
+        For now, retrieval already accumulates evidence. This step simply
+        re-stitches the Evidence object to support future richer merge logic.
+        """
+
+        evidence_parts = context.metadata.get("evidence_context_parts") or []
+        evidence_chunks = context.metadata.get("evidence_chunks") or []
+
+        context.evidence = Evidence(
+            context="\n\n".join(evidence_parts),
+            chunks=list(evidence_chunks),
+            sources=_unique_sources(list(evidence_chunks)),
+            metadata={
+                "retrieval_metric": context.evidence.metadata.get("retrieval_metric") if context.evidence else None,
+                "retrieval_method": "evidence_accumulated_via_executor",
+            },
+        )
+
+        step.metadata["merged_chunks"] = len(evidence_chunks)
+        step.result = context.evidence
+        logger.info("Merged evidence: merged_chunks=%d", len(evidence_chunks))
+
     def _retrieve_knowledge(self, context: ExecutionContext, step: ExecutionStep) -> None:
+
         context.selected_tool = "knowledge"
+        context.metadata["retrieval_strategy"] = step.metadata.get("retrieval_strategy") or context.metadata.get("retrieval_strategy")
         retrieval = retrieve(context.user_input, vector_store=self._vector_store)
+
         retrieval_result = RetrievalResult(
             context=retrieval.context,
             best_distance=retrieval.best_distance,
@@ -134,13 +164,33 @@ class Executor:
 
         context.retrieval_result = retrieval_result
         context.confidence = retrieval_result.best_distance
+        # Support multi-step intents (e.g., compare) by accumulating evidence.
+        if context.metadata.get("evidence_chunks") is None:
+            context.metadata["evidence_chunks"] = []
+        if context.metadata.get("evidence_context_parts") is None:
+            context.metadata["evidence_context_parts"] = []
+
+        context.metadata["evidence_chunks"].extend(retrieval_result.retrieved_chunks)
+        if retrieval_result.context:
+            context.metadata["evidence_context_parts"].append(retrieval_result.context)
+
         context.evidence = Evidence(
-            context=retrieval_result.context,
-            chunks=retrieval_result.retrieved_chunks,
-            sources=_unique_sources(retrieval_result.retrieved_chunks),
-            metadata={"retrieval_metric": "chroma_distance_smaller_is_better"},
+            context="\n\n".join(context.metadata["evidence_context_parts"]),
+            chunks=list(context.metadata["evidence_chunks"]),
+            sources=_unique_sources(list(context.metadata["evidence_chunks"])),
+            metadata={
+                "retrieval_metric": "chroma_distance_smaller_is_better",
+                "retrieval_strategy": step.metadata.get("retrieval_strategy"),
+                "retrieval_method": "hybrid_staged_semantic_keyword_metadata",
+                "compare_side": step.metadata.get("compare_side"),
+            },
+            chunk_ids=[str(getattr(hit, "chunk_id", "")) for hit in context.metadata["evidence_chunks"]],
+            confidence=context.confidence,
+            retrieval_method="hybrid_staged_semantic_keyword_metadata",
         )
+
         context.metadata["retrieval_metric"] = "chroma_distance_smaller_is_better"
+
         context.metadata["retrieval_diagnostics"] = retrieval_result.diagnostics
         context.metadata["rewritten_queries"] = retrieval_result.expanded_queries
 

@@ -37,12 +37,26 @@ class PlanStatus(str, Enum):
 
 @dataclass
 class Evidence:
-    """Evidence gathered for answering a request."""
+    """Evidence gathered for answering a request.
 
+    This is intentionally richer for V3.2, but remains backward compatible
+    with the existing pipeline (context/chunks/sources/metadata).
+    """
+
+    # Backward-compatible fields used by current code
     context: str = ""
     chunks: list[SearchHit] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    # First-class placeholders for future citation/evidence engine upgrades
+    document: Optional[str] = None
+    page: Optional[int] = None
+    section: Optional[str] = None
+    chunk_ids: list[str] = field(default_factory=list)
+    confidence: Optional[float] = None
+    retrieval_method: Optional[str] = None
+
 
 
 @dataclass
