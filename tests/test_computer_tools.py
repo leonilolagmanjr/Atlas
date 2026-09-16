@@ -81,7 +81,11 @@ class ComputerToolTests(unittest.TestCase):
                 "applications.search_installed",
                 "applications.launch",
                 "applications.launch_named",
+                "applications.write_text",
+                "content.generate",
                 "powershell.execute",
+                "web.search",
+                "web.fetch",
             ),
         )
 

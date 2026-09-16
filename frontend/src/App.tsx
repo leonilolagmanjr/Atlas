@@ -17,7 +17,10 @@ import {
   FolderOpen,
   HardDrive,
   History,
+  Hourglass,
   Layers3,
+  ListOrdered,
+  Loader2,
   LockKeyhole,
   MemoryStick,
   Menu,
@@ -38,11 +41,13 @@ import { api } from "./services/api";
 import type {
   ApplicationInfo,
   Health,
+  QueueSnapshot,
   SystemInfo,
   TaskRecord,
   TaskStatus,
   ToolInfo,
   ToolKnowledge,
+  WebSearchResult,
 } from "./types";
 import "./styles.css";
 
@@ -85,8 +90,12 @@ function App() {
   const [applications, setApplications] = useState<ApplicationInfo[]>([]);
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [activeTask, setActiveTask] = useState<TaskRecord | null>(null);
+  const [queue, setQueue] = useState<QueueSnapshot>({ running: null, pending: [] });
   const [request, setRequest] = useState("");
   const [loading, setLoading] = useState(false);
+  // Which task is currently being approved/denied, to block duplicate clicks.
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
+  const [phase, setPhase] = useState<string | null>(null);
   const [appsLoading, setAppsLoading] = useState(false);
   const [toolsLoading, setToolsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -123,16 +132,21 @@ function App() {
       .finally(() => setToolsLoading(false));
   }, [section, toolKnowledge.length, toolsLoading]);
 
+  // Poll the active task and the queue while anything is in flight, so the UI
+  // reflects real step-by-step progress and shows what is still waiting.
   useEffect(() => {
-    if (!activeTask || !["PENDING", "RUNNING"].includes(activeTask.status)) return;
+    const inFlight = activeTask && ["PENDING", "RUNNING"].includes(activeTask.status);
+    if (!inFlight) return;
     const timer = window.setInterval(() => {
       api.task(activeTask.id)
         .then((nextTask) => {
           setActiveTask(nextTask);
           setTasks((current) => [nextTask, ...current.filter((task) => task.id !== nextTask.id)]);
+          setPhase(describePhase(nextTask));
         })
         .catch((reason: Error) => setError(reason.message));
-    }, 1000);
+      api.queue().then(setQueue).catch(() => undefined);
+    }, 900);
     return () => window.clearInterval(timer);
   }, [activeTask]);
 
@@ -141,45 +155,59 @@ function App() {
     [tasks],
   );
 
+  // Derive a human-readable phase from the active task whenever it changes.
+  useEffect(() => {
+    setPhase(activeTask ? describePhase(activeTask) : null);
+  }, [activeTask]);
+
   async function submitTask(event: React.FormEvent) {
     event.preventDefault();
     const cleanRequest = request.trim();
     if (!cleanRequest || loading) return;
     setLoading(true);
+    setPhase("Submitting to the local runtime...");
     setError(null);
     try {
       const task = await api.createTask(cleanRequest);
       setActiveTask(task);
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
       setRequest("");
+      // Refresh the queue immediately so a second submission appears as queued.
+      api.queue().then(setQueue).catch(() => undefined);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not submit task");
     } finally {
       setLoading(false);
+      setPhase(null);
     }
   }
 
-  async function approveTask() {
+  async function resolveTask(decision: "approve" | "deny") {
     if (!activeTask) return;
+    // Guard against duplicate authorization: ignore clicks while one is in
+    // flight, and never a second request for the same task.
+    if (resolvingId === activeTask.id) return;
+    setResolvingId(activeTask.id);
+    setPhase(decision === "approve" ? "Applying your approval..." : "Cancelling the action...");
+    setError(null);
     try {
-      const task = await api.approveTask(activeTask.id);
+      const task = decision === "approve"
+        ? await api.approveTask(activeTask.id)
+        : await api.denyTask(activeTask.id);
       setActiveTask(task);
-      refreshTasks();
+      setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
+      api.queue().then(setQueue).catch(() => undefined);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Approval failed");
+      setError(reason instanceof Error ? reason.message : "Authorization failed");
+    } finally {
+      setResolvingId(null);
+      setPhase(null);
+      refreshTasks();
     }
   }
 
-  async function denyTask() {
-    if (!activeTask) return;
-    try {
-      const task = await api.denyTask(activeTask.id);
-      setActiveTask(task);
-      refreshTasks();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Cancellation failed");
-    }
-  }
+  const approveTask = () => resolveTask("approve");
+  const denyTask = () => resolveTask("deny");
 
   const changeSection = (nextSection: Section) => {
     setSection(nextSection);
@@ -224,7 +252,7 @@ function App() {
         {error ? <div className="error-strip"><CircleAlert size={15} /> {error}<button onClick={() => setError(null)}><X size={14} /></button></div> : null}
 
         <div className="content-wrap">
-          {section === "command" ? <CommandWorkspace activeTask={activeTask} request={request} setRequest={setRequest} loading={loading} onSubmit={submitTask} onApprove={approveTask} onDeny={denyTask} completedCount={completedCount} /> : null}
+          {section === "command" ? <CommandWorkspace activeTask={activeTask} queue={queue} tasks={tasks} request={request} setRequest={setRequest} loading={loading} phase={phase} resolvingId={resolvingId} onSubmit={submitTask} onApprove={approveTask} onDeny={denyTask} onSelect={setActiveTask} completedCount={completedCount} /> : null}
           {section === "tasks" ? <TasksView tasks={tasks} activeTask={activeTask} onSelect={setActiveTask} /> : null}
           {section === "applications" ? <ApplicationsView applications={applications} loading={appsLoading} /> : null}
           {section === "tools" ? <ToolsView tools={tools} knowledge={toolKnowledge} loading={toolsLoading} /> : null}
@@ -238,39 +266,55 @@ function App() {
 
 function CommandWorkspace({
   activeTask,
+  queue,
+  tasks,
   request,
   setRequest,
   loading,
+  phase,
+  resolvingId,
   onSubmit,
   onApprove,
   onDeny,
+  onSelect,
   completedCount,
 }: {
   activeTask: TaskRecord | null;
+  queue: QueueSnapshot;
+  tasks: TaskRecord[];
   request: string;
   setRequest: (value: string) => void;
   loading: boolean;
+  phase: string | null;
+  resolvingId: string | null;
   onSubmit: (event: FormEvent) => void;
   onApprove: () => void;
   onDeny: () => void;
+  onSelect: (task: TaskRecord) => void;
   completedCount: number;
 }) {
+  const queuedTasks = queue.pending
+    .map((id) => tasks.find((task) => task.id === id))
+    .filter((task): task is TaskRecord => Boolean(task));
+  const busy = loading || resolvingId !== null;
   return (
     <div className="workspace-grid">
       <section className="command-column">
         <div className="eyebrow"><span className="eyebrow-line" /> Command interface</div>
         <h1>What should Atlas<br /><span>take care of?</span></h1>
         <p className="lead">Describe a task in plain language. Atlas will plan it, request approval when needed, and report only verified execution state.</p>
-        <form className="command-box" onSubmit={onSubmit}>
-          <div className="command-box-top"><span className="input-prompt">›</span><textarea value={request} onChange={(event) => setRequest(event.target.value)} placeholder="Ask Atlas to inspect, search, or act..." rows={3} /></div>
-          <div className="command-box-bottom"><span className="hint"><kbd>Enter</kbd> submit · <kbd>Shift Enter</kbd> new line</span><button className="send-button" disabled={loading || !request.trim()} title="Submit task">{loading ? <RotateCw size={17} className="spin" /> : <Send size={17} />}</button></div>
+        <form className={`command-box ${busy ? "command-box-busy" : ""}`} onSubmit={onSubmit} aria-busy={busy}>
+          <div className="command-box-top"><span className="input-prompt">›</span><textarea value={request} onChange={(event) => setRequest(event.target.value)} placeholder="Ask Atlas to inspect, search, or act..." rows={3} disabled={busy} /></div>
+          <div className="command-box-bottom"><span className="hint"><kbd>Enter</kbd> submit · <kbd>Shift Enter</kbd> new line</span><button className="send-button" disabled={busy || !request.trim()} title="Submit task">{loading ? <RotateCw size={17} className="spin" /> : <Send size={17} />}</button></div>
+          {loading ? <div className="command-progress"><Loader2 size={15} className="spin" /> {phase ?? "Sending your request..."}</div> : null}
         </form>
+        <QueuePanel queue={queue} tasks={queuedTasks} activeTaskId={activeTask?.id ?? null} onSelect={onSelect} />
         <div className="suggestion-row">
           <button onClick={() => setRequest("Inspect my system and report the current disk space")}>Inspect system <ArrowUpRight size={13} /></button>
           <button onClick={() => setRequest("Find all PDF files in the project")}>Find project PDFs <ArrowUpRight size={13} /></button>
           <button onClick={() => setRequest("Search my knowledge base for the latest project status")}>Search knowledge <ArrowUpRight size={13} /></button>
         </div>
-        {activeTask ? <TaskPanel task={activeTask} onApprove={onApprove} onDeny={onDeny} /> : <EmptyTaskState completedCount={completedCount} />}
+        {activeTask ? <TaskPanel task={activeTask} phase={phase} resolving={resolvingId === activeTask.id} onApprove={onApprove} onDeny={onDeny} /> : <EmptyTaskState completedCount={completedCount} />}
       </section>
       <aside className="right-rail">
         <div className="rail-header"><span>Runtime telemetry</span><Activity size={15} /></div>
@@ -293,24 +337,83 @@ function EmptyTaskState({ completedCount }: { completedCount: number }) {
   return <div className="empty-task"><Clock3 size={17} /><span>{completedCount ? `${completedCount} task${completedCount === 1 ? "" : "s"} completed this session.` : "No active task. Atlas is ready."}</span></div>;
 }
 
-function TaskPanel({ task, onApprove, onDeny }: { task: TaskRecord; onApprove: () => void; onDeny: () => void }) {
-  const waiting = task.status === "WAITING_FOR_CONFIRMATION";
+function describePhase(task: TaskRecord): string {
+  if (task.status === "WAITING_FOR_CONFIRMATION") return "Waiting for your approval.";
+  if (task.status === "PENDING") return "Queued — waiting for the current task to finish.";
+  const steps = task.plan?.steps ?? [];
+  const current = steps.find((step) => step.status === "RUNNING");
+  if (current) return `Running: ${current.name}`;
+  const done = steps.filter((step) => step.status === "COMPLETED").length;
+  if (steps.length) return `Step ${Math.min(done + 1, steps.length)} of ${steps.length}...`;
+  return "Atlas is working through the plan step by step...";
+}
+
+function QueuePanel({
+  queue,
+  tasks,
+  activeTaskId,
+  onSelect,
+}: {
+  queue: QueueSnapshot;
+  tasks: TaskRecord[];
+  activeTaskId: string | null;
+  onSelect: (task: TaskRecord) => void;
+}) {
+  // The queue is only meaningful when something is running or waiting.
+  if (!queue.running && queue.pending.length === 0) return null;
   return (
-    <section className="task-panel">
+    <section className="queue-panel">
+      <div className="queue-header"><ListOrdered size={15} /><span>Task queue</span><em>{queue.running ? 1 + queue.pending.length : queue.pending.length} in flight</em></div>
+      <p className="queue-note">Atlas runs one task at a time so actions never overlap.</p>
+      {tasks.map((task, index) => (
+        <button key={task.id} className={`queue-item ${task.id === activeTaskId ? "queue-item-active" : ""}`} onClick={() => onSelect(task)}>
+          <span className="queue-position">{task.id === queue.running ? <Zap size={13} /> : index + 1}</span>
+          <span className="queue-request">{task.request}</span>
+          <small>{task.id === queue.running ? "Running" : "Queued"}</small>
+        </button>
+      ))}
+      {queue.pending.length > 0 ? <div className="queue-waiting"><Hourglass size={13} /> {queue.pending.length} waiting</div> : null}
+    </section>
+  );
+}
+
+function TaskPanel({ task, phase, resolving, onApprove, onDeny }: { task: TaskRecord; phase: string | null; resolving: boolean; onApprove: () => void; onDeny: () => void }) {
+  const waiting = task.status === "WAITING_FOR_CONFIRMATION";
+  const running = task.status === "RUNNING" || task.status === "PENDING";
+  return (
+    <section className={`task-panel ${running ? "task-panel-live" : ""}`}>
       <div className="section-heading"><div><span className="eyebrow">Current task</span><h2>{statusLabels[task.status]}</h2></div><StatusPill status={task.status} /></div>
       <p className="task-request">{task.request}</p>
-      {waiting ? <div className="approval-box"><div><LockKeyhole size={18} /><div><strong>Atlas is ready to act</strong><span>This action changes your computer. Review the plan and approve it to continue.</span></div></div><div className="approval-actions"><button className="button-muted" onClick={onDeny}><X size={15} /> Deny</button><button className="button-primary" onClick={onApprove}><Check size={15} /> Approve action</button></div></div> : null}
+      {running ? <div className="task-progress"><Loader2 size={15} className="spin" /> <span>{phase ?? "Atlas is working through the plan step by step..."}</span></div> : null}
+      {waiting ? <div className="approval-box"><div><LockKeyhole size={18} /><div><strong>Atlas is ready to act</strong><span>This action changes your computer. Review the plan and approve it to continue.</span></div></div><div className="approval-actions"><button className="button-muted" onClick={onDeny} disabled={resolving}><X size={15} /> Deny</button><button className="button-primary" onClick={onApprove} disabled={resolving}>{resolving ? <><Loader2 size={15} className="spin" /> Working...</> : <><Check size={15} /> Approve action</>}</button></div></div> : null}
       {task.plan ? <div className="plan-list"><div className="plan-label">Execution plan</div>{task.plan.steps.map((step) => <div className="plan-step-group" key={step.id}><div className="plan-step"><span className={`step-icon ${step.status.toLowerCase()}`}><StepIcon status={step.status} /></span><span>{step.name}</span><small>{step.status.replaceAll("_", " ").toLowerCase()}</small></div>{typeof step.metadata.capability === "string" ? <div className="plan-detail"><strong>{step.metadata.capability}</strong>{Array.isArray(step.metadata.candidates) ? <span> Candidates: {step.metadata.candidates.join(", ")}</span> : null}{typeof step.metadata.command === "string" ? <code>{step.metadata.command}</code> : null}</div> : null}</div>)}</div> : null}
       {task.response ? <div className="result-box"><span>Atlas result</span><p>{task.response}</p></div> : null}
-      {task.tool_calls.length ? <div className="tool-results"><div className="plan-label">Tool output</div>{task.tool_calls.map((call, index) => <details key={`${call.tool ?? "tool"}-${index}`}><summary>{call.tool ?? "Tool"} <span>{call.status ?? "unknown"}</span></summary><pre>{formatToolOutput(call.output)}</pre></details>)}</div> : null}
+      {task.tool_calls.length ? <div className="tool-results"><div className="plan-label">Tool output</div>{task.tool_calls.map((call, index) => <details key={`${call.tool ?? "tool"}-${index}`}><summary>{call.tool ?? "Tool"} <span>{call.status ?? "unknown"}</span></summary><pre>{formatToolOutput(call.output, call.status)}</pre></details>)}</div> : null}
+      <WebResults calls={task.tool_calls} />
+      {task.web_sources.length ? <div className="source-list"><div className="plan-label">Sources</div>{task.web_sources.map((source) => <a key={source} href={source} target="_blank" rel="noreferrer">{source}</a>)}</div> : null}
       {task.errors.length ? <div className="failure-box"><CircleAlert size={15} /> {task.errors.join(" ")}</div> : null}
     </section>
   );
 }
 
-function formatToolOutput(output: unknown) {
+function WebResults({ calls }: { calls: Array<{ tool?: string; output?: unknown }> }) {
+  const results = calls
+    .filter((call) => call.tool === "web.search")
+    .flatMap((call) => {
+      const output = call.output as { results?: WebSearchResult[] } | undefined;
+      return Array.isArray(output?.results) ? output.results : [];
+    });
+  if (!results.length) return null;
+  return <div className="web-results"><div className="plan-label">Web results</div><div className="web-result-grid">{results.map((result) => <a className="web-result-card" href={result.url} target="_blank" rel="noreferrer" key={result.url}><div className="web-thumb">{result.thumbnail_url ? <img src={result.thumbnail_url} alt="" loading="lazy" onError={(event) => { event.currentTarget.style.display = "none"; }} /> : <span>{result.source.slice(0, 1)}</span>}<span className="web-source">{result.source}</span></div><div className="web-result-copy"><strong>{result.title}</strong><p>{result.snippet || "Open source"}</p><small>{result.url}</small></div></a>)}</div></div>;
+}
+
+function formatToolOutput(output: unknown, status?: string) {
   if (typeof output === "string") return output;
-  if (output === undefined || output === null) return "No structured output.";
+  if (output === undefined || output === null) {
+    if (status === "confirmation_required") return "Waiting for your approval.";
+    if (status === "PENDING") return "Pending.";
+    return "No output returned.";
+  }
   return JSON.stringify(output, null, 2);
 }
 

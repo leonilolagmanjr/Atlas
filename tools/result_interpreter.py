@@ -18,6 +18,35 @@ def interpret_tool_result(tool_name: str, result: ToolResult) -> str:
                 return _summarize_structured(structured)
             return stdout
         return "PowerShell completed successfully with no output."
+    if tool_name == "applications.write_text" and isinstance(result.output, dict):
+        application = result.output.get("application", "the application")
+        characters = result.output.get("characters")
+        if characters is not None:
+            return f"Wrote {characters} characters into {application}."
+        return f"Wrote the requested text into {application}."
+    if tool_name == "content.generate" and isinstance(result.output, dict):
+        return str(result.output.get("text") or "Content generated.")
+    if tool_name == "applications.launch_named" and isinstance(result.output, dict):
+        return f"Opened {result.output.get('application', 'the application')}."
+    if tool_name == "applications.launch" and isinstance(result.output, dict):
+        return f"Launched {result.output.get('executable', 'the application')}."
+    if tool_name == "web.search" and isinstance(result.output, dict):
+        results = result.output.get("results") or []
+        query = result.output.get("query", "the request")
+        if not results:
+            site = result.metadata.get("source") if isinstance(result.metadata, dict) else None
+            if site == "YouTube":
+                return f"I searched YouTube but couldn't find videos for: {query}"
+            return (
+                f"I couldn't find public web results for: {query}. "
+                "The search backends may be rate-limiting this machine."
+            )
+        lines = [f"Found {len(results)} public web results:"]
+        for index, item in enumerate(results[:8], start=1):
+            if not isinstance(item, dict):
+                continue
+            lines.append(f"{index}. {item.get('title', 'Untitled')}\n   {item.get('url', '')}\n   {item.get('snippet', '')}")
+        return "\n".join(lines)
     return f"Completed tool action: {tool_name}."
 
 

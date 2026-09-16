@@ -12,6 +12,7 @@ from brain import Brain
 from computer.runtime import register_read_only_tools
 from config import COMPUTER_ROOT, EXECUTION_MODE, KNOWLEDGE_FOLDER, LOG_FILE, LOG_LEVEL, LOG_TO_FILE
 from indexer import index_knowledge_base
+from llm import ask
 from logger import setup_logging
 from vector_store import VectorStore
 
@@ -48,7 +49,7 @@ def main() -> None:
 
     memory_manager = MemoryManager()
     tool_registry = ToolRegistry()
-    register_read_only_tools(tool_registry, root=COMPUTER_ROOT)
+    register_read_only_tools(tool_registry, root=COMPUTER_ROOT, ask=ask)
     tool_router = ToolRouter(
         registry=tool_registry,
         permission_engine=PermissionEngine(mode=ExecutionMode(EXECUTION_MODE.lower())),

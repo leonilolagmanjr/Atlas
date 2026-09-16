@@ -5,24 +5,31 @@
 
 ## Current architecture
 
-The implemented runtime is a local retrieval assistant with deterministic orchestration:
+The implemented runtime is a local-first assistant with deterministic orchestration:
 
 ```text
-CLI -> Brain -> IntentClassifier -> Planner -> Executor
-                                      |
-                                      +-> Knowledge retrieval -> ChromaDB
-                                      +-> Evidence-gated Ollama response
-                                      +-> Conversation Memory
+CLI / React control room -> Brain -> IntentClassifier -> Planner -> Executor
+                                            |                 |
+                                            |                 +-> ToolRouter -> PermissionEngine
+                                            |                                      |
+                                            |                                      +-> Computer / PowerShell / Web tools
+                                            +-> Knowledge retrieval -> ChromaDB
+                                            +-> Evidence-gated Ollama response
+                                            +-> Conversation Memory
 ```
 
 - `atlas.py` initializes logging, indexing, vector storage, memory, Brain, and the CLI loop.
 - `brain.py` creates one `ExecutionContext`, classifies intent, creates a plan, and delegates execution.
-- `planner.py` creates deterministic retrieval and response plans. It does not select general tools.
-- `executor.py` runs a fixed handler map for retrieval, evidence merging, and LLM generation.
+- `planner.py` creates deterministic retrieval, computer, application, text-entry, and web-search plans.
+- `executor.py` runs retrieval, LLM, and routed tool steps and preserves bounded structured results.
 - `knowledge_search.py` owns staged semantic, keyword, and metadata retrieval with diagnostics.
 - `indexer.py`, `document_loader.py`, `chunker.py`, and `vector_store.py` form the local document pipeline.
 - `memory/` provides persisted conversational sessions and prompt history.
 - `providers/` provides an Ollama provider interface, but provider selection is still hard-coded by `llm.py`.
+- `tools/knowledge.py`, `tools/discovery.py`, and `tools/powershell_commands.json` provide data-driven tool knowledge and discovery.
+- `web.py` provides read-only public search, direct YouTube search, bounded page retrieval, provenance, and SSRF checks.
+- `computer/launch.py` resolves arbitrary installed application names; `computer/text_entry.py` supports confirmation-gated Windows text entry.
+- `launch_atlas.bat` and `launch_atlas.ps1` start the API, frontend, and browser together.
 
 ## What works
 
@@ -34,22 +41,24 @@ CLI -> Brain -> IntentClassifier -> Planner -> Executor
 - Deterministic intent classification and plan execution.
 - Persisted conversation memory with session management.
 - Centralized configuration and logging.
+- Read-only PowerShell inspection with command validation and structured results.
+- Generic named application resolution and confirmation-gated text entry.
+- Public web search with YouTube video links, thumbnails, source attribution, and frontend result cards.
 
 ## Partial or incomplete
 
-- `ExecutionContext` now tracks task lifecycle, tool calls, permissions, observations, verification placeholders, and JSON-safe snapshots. Observer/verifier behavior itself is still not implemented. API task snapshots now persist durably, while live execution contexts remain process-local.
+- `ExecutionContext` now tracks task lifecycle, tool calls, permissions, observations, web sources, verification placeholders, and JSON-safe snapshots. Observer/verifier behavior itself is still not implemented. API task snapshots now persist durably, while live execution contexts remain process-local.
 - The plan/step model supports existing retrieval actions and explicit `invoke_tool` steps routed through `ToolRouter`.
 - The provider abstraction exists, while the public LLM facade still constructs `OllamaProvider` directly.
 - Memory is conversation/session memory; long-term memory, provenance, confidence, and retrieval are not implemented.
 - Error handling records failed plan steps but has no recovery policy or user cancellation state. Restart recovery explicitly marks pending, running, and approval-paused API tasks as interrupted failures.
-- Filesystem, process, system, and installed-application inspection tools now exist behind the tool contracts. Executable launch is available only through the permission-aware router and executor, with explicit-path planner intent and CLI/API approval UX.
-- Automated contract tests now cover the initial runtime and computer-tool slice.
+- Filesystem, process, system, installed-application inspection, PowerShell, generic named launch, and text-entry tools exist behind the tool contracts. Consequential actions use the permission-aware router and executor.
+- Automated contract tests cover the runtime, computer tools, PowerShell, web search, YouTube parsing, application resolution, text entry, APIs, and frontend build.
 
 ## Planned or missing
 
-- Controlled PowerShell and other terminal execution.
 - Observer and verifier as first-class components.
-- Internet runtime with search, webpage retrieval, downloads, provenance, and source trust.
+- Web downloads, browser interaction, richer page extraction, and full source trust scoring.
 - Approval-aware multi-tool planning and failure recovery.
 - GUI, voice, and vision interfaces.
 
@@ -64,11 +73,11 @@ The existing Brain/Planner/Executor boundary, shared dataclasses, evidence model
 | Structured execution context | Task lifecycle, JSON-safe snapshots, durable API task history implemented | Add durable execution checkpoints and richer verification evidence |
 | Standardized tools | Tool contract, result model, registry, router, and executor integration implemented | Add more runtimes and schema-level validation |
 | Permissions | SAFE, CONFIRM, AUTONOMOUS modes and task-bound confirmation pause implemented | Persist per-task approvals and add richer policy configuration |
-| Computer control | Inspection plus permission-gated executable launch routed through Executor, with explicit-path planning and CLI approval | Resolve application names to trusted executable paths, then add controlled writes |
-| Terminal safety | Not present | Add validated PowerShell tool with structured results |
+| Computer control | Inspection, generic named launch, and confirmation-gated text entry routed through Executor | Add richer window targeting and controlled document/file writes |
+| Terminal safety | Read-only validated PowerShell with trusted command knowledge and structured results | Add AST-aware validation only if mutation is enabled later |
 | Observation and verification | Not present | Add post-action observation and evidence-based verification |
-| Internet access | Not present | Add source-aware search, retrieval, and download tools |
-| Testing | 44 Python tests plus frontend build and live smoke checks | Add browser automation and broader retrieval/LLM integration tests |
+| Internet access | Read-only web search/page retrieval with direct YouTube results, thumbnails, provenance, and SSRF checks | Add browser automation, downloads with approval, and source trust scoring |
+| Testing | 55 Python tests plus frontend build and live smoke checks | Add browser automation and broader retrieval/LLM integration tests |
 
 ## Proposed target architecture
 
@@ -91,7 +100,7 @@ User -> Brain -> Planner -> Tool Router -> Permission Engine
 6. Add internet tools with source provenance and download approval before package installation.
 7. Keep GUI, voice, and vision as adapters over the same planning and tool contracts.
 
-## Phase 1 implementation plan
+## Historical Phase 1 implementation plan
 
 The audit and initial contract-hardening phase delivered:
 
@@ -101,4 +110,40 @@ The audit and initial contract-hardening phase delivered:
 - A permission vocabulary and policy decision model, defaulting to deny when no policy is supplied.
 - A small test suite covering context serialization, tool validation, and permission decisions.
 
-The next implementation phase can then add safe, read-only filesystem and system inspection tools without changing Brain's public entry point.
+This phase is complete and has been superseded by the current runtime described above.
+
+## Current handoff for the next agent
+
+### Verified entry points
+
+- One-click local runtime: double-click `launch_atlas.bat`.
+- API: `\.venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000`.
+- Frontend: `Set-Location frontend; npm run dev`.
+- Full tests: `\.venv\Scripts\python.exe -m unittest discover -s tests -v`.
+- Frontend build: `Set-Location frontend; npm run build`.
+
+### Current request paths
+
+- Knowledge questions: retrieval through ChromaDB, then evidence-gated Ollama response.
+- Computer inspection: deterministic `COMPUTER` intent to validated PowerShell or existing computer tools.
+- Named applications: generic resolver through PATH, install folders, and Windows uninstall registry metadata.
+- Text entry: `WRITE_APPLICATION` intent to `applications.write_text`; medium-risk approval is required before Win32 focus and clipboard paste.
+- Web research: `WEB_SEARCH` intent to `web.search`; explicit YouTube searches use direct `ytInitialData` parsing and return only video watch URLs with thumbnails.
+- API task state: persisted snapshots in `database/tasks.json`; live execution contexts remain process-local.
+
+### Next recommended work
+
+1. Add browser/API integration tests for web thumbnail cards and approval flows.
+2. Add a source-aware page summarization step using `web.fetch`, keeping page text untrusted.
+3. Add durable execution checkpoints and cancellation before multi-step autonomy.
+4. Add observation/verifier components for application launch and text entry.
+5. Add YouTube channel resolution and pagination for reliable “latest videos” lists.
+6. Add downloads only with explicit approval, file-type/size limits, and provenance.
+7. Avoid enabling mutating PowerShell or unrestricted GUI automation until AST/policy and verification boundaries exist.
+
+### Known operational constraints
+
+- Public search providers can return bot challenges, location-specific results, or no results. The runtime falls back and filters rather than treating unrelated pages as YouTube videos.
+- Modern packaged Windows applications may use a launcher PID different from the visible window; text entry includes executable-name window fallback.
+- The frontend is still polling task state; SSE/WebSocket events are not implemented.
+- The LLM provider facade is still Ollama-specific and provider selection is not fully configurable.

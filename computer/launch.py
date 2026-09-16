@@ -9,9 +9,77 @@ import sys
 import re
 from pathlib import Path
 from typing import Any
-
 from tools.base import PermissionLevel, RiskLevel, Tool, ToolMetadata, ToolResult
+# Curated aliases mapping friendly names to real executables. This is a small
+# interoperability table (not command recognition): users say "calculator" but
+# the binary is `calc.exe`, "vscode" but the binary is `Code.exe`, and so on.
+_APPLICATION_ALIASES: dict[str, tuple[str, ...]] = {
+    "notepad": ("notepad.exe",),
+    "calculator": ("calc.exe",),
+    "calc": ("calc.exe",),
+    "paint": ("mspaint.exe",),
+    "explorer": ("explorer.exe",),
+    "file explorer": ("explorer.exe",),
+    "task manager": ("Taskmgr.exe",),
+    "command prompt": ("cmd.exe",),
+    "cmd": ("cmd.exe",),
+    "terminal": ("wt.exe", "powershell.exe"),
+    "powershell": ("powershell.exe",),
+    "windows terminal": ("wt.exe",),
+    "vscode": ("Code.exe",),
+    "vs code": ("Code.exe",),
+    "visual studio code": ("Code.exe",),
+    "chrome": ("chrome.exe",),
+    "google chrome": ("chrome.exe",),
+    "edge": ("msedge.exe",),
+    "microsoft edge": ("msedge.exe",),
+    "firefox": ("firefox.exe",),
+    "word": ("WINWORD.EXE",),
+    "excel": ("EXCEL.EXE",),
+    "powerpoint": ("POWERPNT.EXE",),
+    "outlook": ("OUTLOOK.EXE",),
+    "spotify": ("Spotify.exe",),
+    "discord": ("Discord.exe",),
+    "steam": ("steam.exe",),
+    "vlc": ("vlc.exe",),
+    "settings": ("SystemSettings.exe",),
+}
 
+def _windows_search_dirs() -> list[Path]:
+    system_root = Path(os.environ.get("SystemRoot", "C:\\Windows"))
+    return [system_root / "System32", system_root]
+
+def _find_executable_below(root: Path, executable_name: str, *, max_depth: int = 3) -> list[Path]:
+    # Shallow, case-insensitive search for an executable under a root.
+    if not root.is_dir():
+        return []
+    matches: list[Path] = []
+    target = executable_name.casefold()
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    while stack:
+        directory, depth = stack.pop()
+        try:
+            entries = list(directory.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_file() and entry.name.casefold() == target:
+                    matches.append(entry)
+                elif entry.is_dir() and depth < max_depth:
+                    stack.append((entry, depth + 1))
+            except OSError:
+                continue
+    return matches
+
+def _alias_executables(normalized: str) -> list[str]:
+    # Return executable names for a friendly application name.
+    aliases = list(_APPLICATION_ALIASES.get(normalized, ()))
+    # Also match "notepad app", "the calculator", etc.
+    for key, names in _APPLICATION_ALIASES.items():
+        if key and key in normalized:
+            aliases.extend(names)
+    return aliases
 
 def resolve_application_name(name: str) -> Path | None:
     """Resolve an installed application name to a concrete executable."""
@@ -21,9 +89,27 @@ def resolve_application_name(name: str) -> Path | None:
     local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     program_files = Path(os.environ.get("ProgramFiles", "C:\\Program Files"))
     executable_name = normalized if normalized.endswith(".exe") else f"{normalized}.exe"
+
+    # 1. Resolve through the alias table (friendly name -> real binary).
+    for alias in _alias_executables(normalized):
+        for directory in _windows_search_dirs():
+            alias_candidate = directory / alias
+            if alias_candidate.is_file():
+                candidates.append(alias_candidate)
+        located = shutil.which(alias)
+        if located:
+            candidates.append(Path(located))
+        # Per-user installs (VS Code, etc.) live under %LOCALAPPDATA%\Programs.
+        candidates.extend(_find_executable_below(local_app_data / "Programs", alias))
+
+    # 2. Resolve directly by name via PATH and Windows system directories.
     executable = shutil.which(executable_name) or shutil.which(name)
     if executable:
         candidates.append(Path(executable))
+    for directory in _windows_search_dirs():
+        direct_candidate = directory / executable_name
+        if direct_candidate.is_file():
+            candidates.append(direct_candidate)
 
     candidates.extend([
         local_app_data / normalized / executable_name,

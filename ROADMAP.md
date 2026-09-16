@@ -12,9 +12,15 @@ Atlas is not a chatbot.
 
 Atlas is designed to become an extensible AI platform capable of reasoning, planning, learning, remembering, and using tools.
 
-## Current status (2026-09-16)
-
-Atlas is currently at V3.2: a local retrieval runtime with deterministic planning, persistent conversation memory, permission-aware tool routing, and a FastAPI + React control room. The codebase is not yet a fully autonomous computer agent, but the foundation is implemented and documented.
+## Current status (V3.3)
+Atlas is currently at V3.3: a local retrieval runtime with **natural-language
+command intelligence**, persistent conversation memory, permission-aware tool
+routing, a permissioned Windows computer runtime, read-only web research, and a
+FastAPI + React control room. Requests are interpreted into a structured intent
+by local Qwen (with a deterministic fast path), planned against a machine-
+readable capability catalog, validated, and executed deterministically, with
+bounded recovery on recoverable failures. The codebase is not yet a fully
+autonomous computer agent, but the foundation is implemented and documented.
 
 The currently verified runtime includes:
 
@@ -22,25 +28,31 @@ The currently verified runtime includes:
 - hybrid retrieval with semantic, keyword, and metadata evidence
 - permission-aware tool registry and explicit executable launch gating
 - read-only Windows system, filesystem, process, and application inspection
+- generic named-application resolution and confirmation-gated application text entry
 - session memory persistence and CLI commands for conversation lifecycle
 - FastAPI adapter and browser-based control-room UI
 - durable API task history with explicit interruption handling on restart
 - task-ID-bound approval and denial for API actions
 - data-driven tool knowledge, capability discovery, and read-only PowerShell execution
+- read-only public web search and bounded page retrieval with provenance and YouTube thumbnails
+- natural-language semantic interpretation, compositional structured intents, and capability-catalog-constrained planning
+- dynamic multi-step content tasks and bounded, catalog-constrained failure recovery
+- 99 passing Python tests plus a green Vite/TypeScript production build
 
 ## Local-first computer-agent migration
 
-The repository audit is complete. The current implementation is a local RAG
-runtime, not yet a computer-control agent. The incremental migration is:
+The repository audit is complete. The runtime is a local-first assistant with
+permissioned computer tools, not yet a fully autonomous computer-control agent.
+The incremental migration is:
 
-1. Execution context: task lifecycle, tool calls, permissions, observations, and verification state.
-2. Tool contract: metadata, schemas, validation, structured results, registry, and routing.
-3. Permission engine: risk levels and SAFE, CONFIRM, and AUTONOMOUS modes.
-4. Safe computer tools: read-only filesystem, process, application, and system inspection.
-5. Controlled PowerShell execution with command validation and structured output.
-6. Observer and verifier with evidence-based success reporting.
-7. Internet search, webpage retrieval, provenance, controlled downloads, and package management.
-8. Multi-tool planning and recovery, followed later by GUI, voice, and vision adapters.
+1. Execution context: task lifecycle, tool calls, permissions, observations, and verification state. (done)
+2. Tool contract: metadata, schemas, validation, structured results, registry, and routing. (done)
+3. Permission engine: risk levels and SAFE, CONFIRM, and AUTONOMOUS modes. (done)
+4. Safe computer tools: read-only filesystem, process, application, and system inspection, generic named-application launch, and confirmation-gated text entry. (done)
+5. Controlled PowerShell execution with command validation and structured output. (done, read-only)
+6. Observer and verifier with evidence-based success reporting. (planned)
+7. Internet search, webpage retrieval, provenance, controlled downloads, and package management. (search/retrieval done; downloads and package management planned)
+8. Multi-tool planning and recovery, followed later by GUI, voice, and vision adapters. (multi-step planning and bounded recovery done; GUI/voice/vision planned)
 
 The first execution-runtime hardening slice is now implemented: API task
 snapshots persist under `database/tasks.json`, and approval actions are bound
@@ -120,25 +132,27 @@ Tool Registry
 
 
 ### Capabilities
+Current V3.3 foundation:
 
-Current V3.2 foundation:
-
-* Deterministic execution plans
+* Natural-language semantic interpretation (Qwen) with a deterministic fast path
+* Compositional structured intents with preserved parameters
+* Capability-catalog-constrained planning (the LLM selects only real tools)
+* Deterministic execution plans, multi-step composition, and bounded recovery
 * Sequential plan execution
 * Shared execution context
 * Planner and executor module boundaries
 * Conversation memory and session persistence
 * Tool registry and permission-aware routing
+* Query expansion, staged multi-search retrieval, and confidence analysis with expanded-query retry
+* Data-driven tool knowledge and capability discovery
+* Validated read-only PowerShell, generic named-application launch, and confirmation-gated text entry
+* Read-only web search and bounded page retrieval with provenance
 * Local FastAPI adapter and control-room frontend
-
 Future V3 capabilities:
 
-* Intent recognition
-* Tool selection
-* Query rewriting
-* Multi-search retrieval
-* Confidence analysis
-* Retry strategy
+* LLM- or agent-generated query rewriting and search strategy
+* Execution graphs with dependencies
+* Observer and verifier components
 
 ### Success Criteria
 

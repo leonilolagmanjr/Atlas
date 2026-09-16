@@ -50,6 +50,14 @@ export interface ToolCandidate {
   score: number;
 }
 
+export interface WebSearchResult {
+  title: string;
+  url: string;
+  snippet: string;
+  source: string;
+  thumbnail_url?: string | null;
+}
+
 export interface SystemInfo {
   system: {
     os: string;
@@ -94,6 +102,11 @@ export interface ToolCall {
   error?: string | null;
 }
 
+export interface QueueSnapshot {
+  running: string | null;
+  pending: string[];
+}
+
 export interface TaskRecord {
   id: string;
   request: string;
@@ -106,4 +119,5 @@ export interface TaskRecord {
   tool_calls: ToolCall[];
   errors: string[];
   warnings: string[];
+  web_sources: string[];
 }

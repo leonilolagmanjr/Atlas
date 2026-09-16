@@ -19,14 +19,15 @@ from models import (
     TaskStatus,
 )
 from vector_store import VectorStore
-
 from memory.memory_manager import MemoryManager
 from tools.router import ToolRouter
 from tools.result_interpreter import interpret_tool_result
-
 logger = logging.getLogger(__name__)
 
 UNKNOWN_RESPONSE = "I don't know based on my knowledge base."
+#: Sentinel prefix marking a plan argument that references an earlier
+#: step's produced output instead of a literal value.
+GENERATED_TEXT_REF = "$generated_text"
 
 
 class Executor:
@@ -40,17 +41,20 @@ class Executor:
         retrieval_template: str,
         memory_manager: MemoryManager | None = None,
         tool_router: ToolRouter | None = None,
+        recovery: object | None = None,
     ) -> None:
         self._vector_store = vector_store
         self._system_prompt = system_prompt
         self._retrieval_template = retrieval_template
         self._memory_manager = memory_manager
         self._tool_router = tool_router
+        self._recovery = recovery
         self._handlers: dict[str, Callable[[ExecutionContext, ExecutionStep], None]] = {
             "retrieve_knowledge": self._retrieve_knowledge,
             "generate_response": self._generate_response,
             "merge_evidence": self._merge_evidence,
             "invoke_tool": self._invoke_tool,
+            "finalize_content": self._finalize_content,
         }
 
 
@@ -66,7 +70,16 @@ class Executor:
 
         logger.info("Executor started plan: plan_id=%s steps=%d", plan.plan_id, len(plan.steps))
 
+        # Re-execution after an approval pause must resume, not restart. Steps
+        # that already completed (e.g. content generation) are not run again.
         for step in plan.steps:
+            if step.status == StepStatus.COMPLETED:
+                logger.info(
+                    "Executor skipping completed step: plan_id=%s step_id=%s",
+                    plan.plan_id,
+                    step.id,
+                )
+                continue
             if plan.status in {PlanStatus.FAILED, PlanStatus.WAITING_FOR_CONFIRMATION}:
                 step.status = StepStatus.SKIPPED
                 logger.info(
@@ -76,8 +89,12 @@ class Executor:
                     step.action,
                 )
                 continue
-
             self._execute_step(context, step)
+            if step.status == StepStatus.FAILED and self._recovery is not None:
+                # One bounded, observable recovery attempt per failed step.
+                # Recovery may only rewrite arguments for the same capability.
+                if self._recovery.attempt_recovery(context, step):
+                    self._execute_step(context, step)
 
         if plan.status not in {PlanStatus.FAILED, PlanStatus.WAITING_FOR_CONFIRMATION}:
             plan.status = PlanStatus.COMPLETED
@@ -156,11 +173,16 @@ class Executor:
         if not isinstance(parameters, dict):
             raise TypeError("Tool invocation parameters must be a dictionary")
 
+        parameters = self._resolve_arguments(parameters, context)
         context.selected_tool = tool_name
+        # Approval is not consumed on read: multiple steps in the same plan may
+        # require it, and a resumed plan must still be considered approved. Do
+        # not use pop() here or the first tool call would discard the approval.
+        approved_tools = context.metadata.get("approved_tools") or set()
         result = self._tool_router.execute(
             tool_name,
             parameters,
-            approved=tool_name in context.metadata.pop("approved_tools", set()),
+            approved=tool_name in approved_tools,
         )
         context.tool_calls.append(
             {
@@ -180,14 +202,42 @@ class Executor:
             context.warnings.append(result.error or "Tool confirmation required")
             context.execution_plan.status = PlanStatus.WAITING_FOR_CONFIRMATION
             context.status = TaskStatus.WAITING_FOR_CONFIRMATION
-            context.final_response = "This action requires your confirmation before Atlas can continue."
+            pending = context.metadata.get("produced", {}).get("generated_text")
+            if pending and tool_name == "applications.write_text":
+                application = parameters.get("application", "the application")
+                context.final_response = (
+                    f"I generated the content and am ready to write it into {application}. "
+                    "Approve to continue."
+                )
+            else:
+                context.final_response = "This action requires your confirmation before Atlas can continue."
             return
         if not result.success:
             context.errors.append(result.error or f"Tool failed: {tool_name}")
             raise RuntimeError(result.error or f"Tool failed: {tool_name}")
 
         context.metadata.setdefault("tool_results", []).append(result.output)
-        context.final_response = interpret_tool_result(tool_name, result)
+        self._capture_produced_output(step, result.output, context)
+        if tool_name == "web.search" and isinstance(result.output, dict):
+            context.web_sources.extend(
+                str(item.get("url"))
+                for item in result.output.get("results", [])
+                if isinstance(item, dict) and item.get("url")
+            )
+        elif tool_name == "web.fetch" and isinstance(result.output, dict) and result.output.get("url"):
+            context.web_sources.append(str(result.output["url"]))
+
+        # Only the final tool step of a plan owns the user-facing response, so an
+        # intermediate step (e.g. content generation) is not reported as the
+        # answer to a multi-step task.
+        if self._is_final_step(context, step) or context.final_response is None:
+            context.final_response = interpret_tool_result(tool_name, result)
+
+    def _is_final_step(self, context: ExecutionContext, step: ExecutionStep) -> bool:
+        plan = context.execution_plan
+        if plan is None or not plan.steps:
+            return True
+        return plan.steps[-1].id == step.id
 
     def _merge_evidence(self, context: ExecutionContext, step: ExecutionStep) -> None:
         """Merge accumulated evidence_context_parts and evidence_chunks.
@@ -310,14 +360,92 @@ class Executor:
 
 
 
+    def _resolve_arguments(self, parameters: object, context: ExecutionContext) -> dict:
+        # Replace plan references with values produced by earlier steps.
+        # A step may declare a generated-text reference; the executor resolves
+        # that reference from the output of a prior step. This keeps generated
+        # content from being passed through the model a second time.
+        if not isinstance(parameters, dict):
+            return {}
+        produced = context.metadata.get("produced", {})
+        resolved: dict = {}
+        for key, value in parameters.items():
+            resolved[key] = _resolve_value(value, produced)
+        return resolved
+    def _capture_produced_output(self, step: ExecutionStep, output: object, context: ExecutionContext) -> None:
+        # Expose a named output for later steps to reference.
+        produced = context.metadata.setdefault("produced", {})
+        name = step.metadata.get("produces")
+        if name:
+            produced[str(name)] = output
+        # content.generate always publishes generated_text as a convenience.
+        if step.metadata.get("tool") == "content.generate" and isinstance(output, dict):
+            text = output.get("text")
+            if isinstance(text, str):
+                produced[GENERATED_TEXT_REF] = text
+                produced.setdefault("generated_text", text)
+
+    def _finalize_content(self, context: ExecutionContext, step: ExecutionStep) -> None:
+        # Publish generated content as the final response for content-only tasks.
+        produced = context.metadata.get("produced", {})
+        text = produced.get(GENERATED_TEXT_REF) or produced.get("generated_text")
+        if not text:
+            raise RuntimeError("No generated content was available to return")
+        context.final_response = str(text)
+        step.result = context.final_response
+        if self._memory_manager is not None:
+            self._memory_manager.append_message(role="user", content=context.user_input)
+            self._memory_manager.append_message(role="assistant", content=context.final_response)
+
     def _mark_failed(self, context: ExecutionContext) -> None:
         if context.execution_plan is not None:
             context.execution_plan.status = PlanStatus.FAILED
         context.status = TaskStatus.FAILED
+        classification = classify_failure(context)
+        context.metadata["failure_classification"] = classification
         if context.errors:
             context.final_response = f"Atlas could not complete this task: {context.errors[-1]}"
         else:
             context.final_response = UNKNOWN_RESPONSE
+
+
+def _resolve_value(value: object, produced: dict) -> object:
+    if isinstance(value, str):
+        if value in produced:
+            return produced[value]
+        if value == GENERATED_TEXT_REF and "generated_text" in produced:
+            return produced["generated_text"]
+        return value
+    if isinstance(value, dict):
+        return {str(key): _resolve_value(item, produced) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_resolve_value(item, produced) for item in value]
+    return value
+
+def classify_failure(context: ExecutionContext) -> dict[str, object]:
+    # Classify why a plan failed so recovery can decide what is recoverable.
+    # Categories are coarse and stable so retry policy never depends on parsing
+    # arbitrary error prose.
+    message = (context.errors[-1] if context.errors else "").casefold()
+    if not message:
+        category = "unknown"
+    elif "unknown tool" in message:
+        category = "unknown_capability"
+    elif "confirmation" in message or "denied" in message:
+        category = "permission"
+    elif "could not be focused" in message or "could not be found" in message and "window" in message:
+        # A GUI focus failure cannot be fixed by changing tool arguments.
+        category = "gui_unavailable"
+    elif "not found" in message or "could not resolve" in message:
+        category = "missing_target"
+    elif "parameter" in message or "missing" in message or "must be" in message:
+        category = "invalid_arguments"
+    elif "timeout" in message or "timed out" in message:
+        category = "timeout"
+    else:
+        category = "execution_error"
+    recoverable = category in {"invalid_arguments", "execution_error", "timeout"}
+    return {"category": category, "recoverable": recoverable, "message": message}
 
 
 def _unique_sources(chunks: list[object]) -> list[str]:

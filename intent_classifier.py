@@ -28,7 +28,9 @@ INTENT_LABELS = {
     "LOCATION",
     "PROCEDURE",
     "APPLICATION",
+    "WRITE_APPLICATION",
     "COMPUTER",
+    "WEB_SEARCH",
     "UNKNOWN",
 }
 
@@ -63,6 +65,24 @@ class IntentClassifier:
                 intent="APPLICATION",
                 confidence=0.92,
                 rationale="detected an executable application launch request",
+                signals=signals,
+            )
+
+        if _looks_like_application_write_request(normalized):
+            signals["pattern"] = "application-text-entry"
+            return IntentClassification(
+                intent="WRITE_APPLICATION",
+                confidence=0.88,
+                rationale="detected a request to write text into an application",
+                signals=signals,
+            )
+
+        if _looks_like_web_request(normalized):
+            signals["pattern"] = "web-search"
+            return IntentClassification(
+                intent="WEB_SEARCH",
+                confidence=0.86,
+                rationale="detected a request for current public web information",
                 signals=signals,
             )
 
@@ -294,4 +314,26 @@ def _looks_like_named_application_request(text: str) -> bool:
     target = match.group(1).strip()
     excluded = {"a file", "the file", "a folder", "the folder", "a directory", "the directory", "a website", "the website"}
     return bool(target) and target not in excluded and not target.startswith(("http://", "https://"))
+
+
+def _looks_like_application_write_request(text: str) -> bool:
+    has_write = _matches_any(text, [r"\bwrite\b", r"\btype\b", r"\benter\b", r"\bcreate\b", r"\bcompose\b"])
+    has_target = _matches_any(text, [r"\bin notepad\b", r"\bin \w+\b", r"\binto \w+\b"])
+    return has_write and has_target
+
+
+def _looks_like_web_request(text: str) -> bool:
+    return _matches_any(text, [
+        r"\bsearch the web\b",
+        r"\bgoogle\b",
+        r"\blatest\b",
+        r"\brecent\b",
+        r"\bnews\b",
+        r"\bonline\b",
+        r"\bwebsite\b",
+        r"\bweb\b",
+        r"\byoutube\b",
+        r"\bcurrent\b",
+        r"\btoday\b",
+    ])
 

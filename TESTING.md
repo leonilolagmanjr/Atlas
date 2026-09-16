@@ -28,6 +28,9 @@ The Python suite uses the standard library `unittest` runner and covers:
 - Real Windows PowerShell smoke execution through `PowerShellTool` with JSON result interpretation.
 - Frontend API contracts for tool knowledge and non-executing tool discovery.
 - Natural-language arbitrary named application resolution and confirmation-gated launch planning.
+- Controlled application text-entry planning and mocked clipboard-paste execution.
+- Web search intent, Bing fallback parsing, public URL validation, source attribution, and untrusted-page handling.
+- Direct YouTube renderer parsing, MrBeast video relevance filtering, watch-link generation, and thumbnail metadata.
 
 ## Manual runtime checks completed
 
@@ -46,8 +49,11 @@ On 2026-09-16:
 
 - A successful Ollama generation through `Brain`, because it depends on the running Ollama service and a retrieval context accepted by the local Chroma index.
 - Retrieval quality against a representative PDF corpus.
-- Internet search, URL retrieval, downloads, or webpage prompt-injection handling: no internet runtime exists in the current source.
+- Controlled web search and public page retrieval are implemented; downloads, webpage prompt-injection automation, and browser interaction remain pending.
 - Broad live PowerShell coverage: one safe process pipeline was verified; the unit suite continues to mock subprocesses for deterministic failure and timeout cases.
+- Notepad text entry is covered through planning and mocked execution; no unsolicited live window is opened by the test suite.
+- A real Notepad text-entry smoke test successfully wrote a harmless test sentence through the Win32-focus and clipboard-paste path.
+- A real MrBeast YouTube search returned a video watch URL and `i.ytimg.com` thumbnail.
 - Resuming a live execution context after an API restart: task snapshots are
 	durable, but execution checkpoints are not implemented yet.
 - Browser automated regression coverage: the live browser smoke check was manual through the VS Code browser tool.
@@ -61,5 +67,9 @@ The implemented computer boundary was checked for:
 - Unapproved application launch: router returns `confirmation_required` and Executor pauses the plan.
 - Critical permission defaults: denied.
 
-Internet, download, webpage-instruction, secret-handling, and terminal-command security checks remain pending because those capabilities are not implemented.
+- Read-only web search/fetch: HTTP(S)-only URLs, rejection of loopback/private/link-local targets (SSRF), response-size and timeout limits, and untrusted labeling of page content.
+
+Web downloads, webpage-instruction automation, browser automation, and secret-handling security checks remain pending because those capabilities are not implemented.
 PowerShell mutation, AST-aware validation, and live command cancellation remain pending.
+
+> Note: the frontend production build is verified with `Set-Location frontend; npm run build`. It was not re-run during the documentation alignment pass because `npm` was not available on the PATH in that environment.

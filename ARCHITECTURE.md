@@ -1,10 +1,11 @@
 # Atlas Architecture
-
-**Version:** V3.2 (Planner + Intent Classification + Staged Hybrid Retrieval)
+**Version:** V3.2 (Brain + Intent Classification + Deterministic Planning + Staged Hybrid Retrieval + Permissioned Computer Tool Runtime)
 
 The verified implementation status and migration plan are maintained in
 [ARCHITECTURE_ASSESSMENT.md](ARCHITECTURE_ASSESSMENT.md). This document defines
-target boundaries; future computer-agent features are not implied to exist.
+target boundaries as well as the current implemented runtime. Observer/verifier,
+downloads, browser automation, durable live checkpoints, and GUI/voice/vision
+capabilities are not implied to exist.
 
 ---
 
@@ -67,6 +68,42 @@ User -> Brain -> Planner -> Tool Router -> Permission Engine
 					Computer / Internet / Knowledge runtimes
 ```
 
+## Command intelligence pipeline (implemented)
+
+Natural-language requests flow through an explicit LLM-reasoning /
+deterministic-execution separation:
+
+```text
+USER REQUEST
+     |
+QWEN SEMANTIC INTERPRETER (deterministic fast path when confident)
+     |
+STRUCTURED INTENT (intent, action, target, topic, tone, style, length, sort, destination, confidence)
+     |
+TASK PLANNER (deterministic; catalog-constrained LLM fallback)
+     |
+CAPABILITY CATALOG (registered tool names + parameter schemas)
+     |
+PLAN VALIDATION
+     |
+DETERMINISTIC EXECUTOR
+     |
+STRUCTURED RESULT
+     |
+QWEN RECOVERY (bounded replanning on recoverable failure)  ->  USER RESPONSE
+```
+
+Invariant: **the LLM never executes anything.** It determines *what* should
+happen; the deterministic layer determines *how* it is safely executed. The LLM
+receives a capability catalog and may only select from registered capabilities.
+Plans referencing unknown capabilities, missing tools, or malformed parameter
+blocks are rejected before execution.
+
+Execution categories are coarse and extensible: `CONVERSATION`,
+`KNOWLEDGE_QUERY`, `CREATIVE_GENERATION`, `APPLICATION_CONTROL`,
+`FILE_OPERATION`, `WEB_SEARCH`, `WEB_NAVIGATION`, `SYSTEM_OPERATION`,
+`MULTI_STEP_TASK`.
+
 For the current PowerShell slice, the planning path is:
 
 ```text
@@ -109,73 +146,60 @@ Atlas currently contains:
 * Logging
 * Configuration management
 * Brain orchestration
+* Rule-based intent classification (no LLM)
 * Deterministic planning
 * Sequential plan execution
 * Shared execution context models
 * Conversation memory and persisted session lifecycle
 * Tool registry, permission engine, and permission-aware router
+* Data-driven tool knowledge and capability discovery
 * Read-only Windows filesystem, process, system, and application inspection
-* Explicit executable launch with confirmation pause/resume
+* Explicit executable launch and generic named-application resolution with confirmation pause/resume
+* Confirmation-gated application text entry
+* Validated, read-only PowerShell execution with structured result interpretation
+* Read-only public web search and page retrieval with provenance and SSRF checks
+* Durable API task snapshots with task-bound approval and interruption handling
 * FastAPI adapter and React/Vite control room
-
 This is the verified current implementation baseline. Future versions will build upon this foundation, but the runtime is already a working local-first AI assistant with explicit tool boundaries and approval gating.
 
 ---
 
-# Future Versions
+# Implemented Slices and Future Versions
+## Version 3 — Brain (implemented)
 
-## Version 3
-
-Brain
-
-Planner
-
-Tool Manager
+Brain, Planner, Tool Manager, Tool Registry, Tool Router, Permission Engine.
 
 ---
 
-## Version 4
+## Version 4 — Memory (conversation/session memory implemented)
 
-Conversation Memory
-
-Long-Term Memory
-
-Reflection
+Conversation Memory and persisted session lifecycle are implemented.
+Long-Term Memory and Reflection remain planned.
 
 ---
 
-## Version 5
+## Version 5 — Tools (partially implemented)
 
-Filesystem Tool
-
-Python Tool
-
-Web Search
-
-Calculator
+Implemented: Knowledge retrieval, Filesystem inspection, Web Search and page
+retrieval, Windows process/system/application inspection, generic named
+application launch, application text entry, and read-only PowerShell.
+Planned: Python Tool, Calculator, and mutating tools.
 
 ---
 
-## Version 6
+## Version 6 — Planning (deterministic planning implemented)
 
-Planning
-
-Multi-step execution
-
-Task decomposition
+Deterministic plans and sequential multi-step execution are implemented.
+Task decomposition, execution graphs, dependencies, and recovery remain planned.
 
 ---
 
-## Version 7
+## Version 7 — Interfaces (planned)
 
 Vision
-
 Voice
-
 GUI automation
-
 Multi-agent collaboration
-
 ---
 
 # Project Structure
@@ -192,7 +216,8 @@ models.py              Shared execution context, task, and plan models
 config.py              Centralized runtime configuration
 logger.py              Central logging configuration
 llm.py                 LLM provider wrapper and Ollama call boundary
-intent_classifier.py   Rule-based request classification for plan selection
+intent_classifier.py   Rule-based coarse classification for knowledge plan selection
+reasoning/             LLM reasoning layer (semantic interpreter, prompts, recovery, diagnostics)
 
 knowledge/             User knowledge base (PDFs)
 memory/                Conversation sessions, models, storage, and context builder
@@ -320,11 +345,29 @@ Dataclasses should live here when multiple modules need the same model.
 
 ---
 
-## planner.py
+## reasoning/
 
+Owns the LLM-facing reasoning stages. It contains:
+
+* `interpreter.py` — turns free text into a compositional `StructuredIntent`
+  (deterministic fast path + Qwen fallback), with clarification policy and
+  conversational context merging.
+* `prompts.py` — small, single-purpose prompts for interpreter, planner,
+  recovery, and content generation.
+* `json_llm.py` — strict structured-output helper with JSON extraction and repair.
+* `recovery.py` — bounded, catalog-constrained recovery for failed steps.
+* `diagnostics.py` — structured per-request trace with redaction.
+
+This package never imports a concrete provider and never executes commands.
+
+---
+
+## planner.py
 Responsible only for creating an execution plan.
 
-The current planner is deterministic and does not call the LLM.
+The planner is deterministic by default: it maps a `StructuredIntent` onto the
+smallest valid plan. It consults the LLM only for compositional requests the
+rule table cannot express, and then only to select from the capability catalog.
 
 ---
 
@@ -420,13 +463,16 @@ Each layer has different responsibilities.
 ## Web API and frontend
 
 `api.py` is a thin local FastAPI adapter over the existing Brain, tools, and
-computer runtime. It exposes health, system, tool, application, and in-memory
-task endpoints. `frontend/` is a React/Vite control room that polls task state,
-renders approval boundaries, and displays only data returned by the API. It
-does not implement planning or tool execution.
+computer runtime. It exposes health, system, tool, tool-knowledge,
+tool-discovery, application, and durable task endpoints. `frontend/` is a
+React/Vite control room that polls task state, renders approval boundaries, and
+displays only data returned by the API. It does not implement planning or tool
+execution.
 
-Internet search, webpage retrieval, downloads, PowerShell execution, and GUI
-automation are not implemented in the current source.
+Read-only web search, bounded public page retrieval, and validated read-only
+PowerShell execution are implemented. Web downloads, browser automation,
+durable live execution checkpoints, and GUI/voice/vision automation are not
+implemented in the current source.
 
 ---
 

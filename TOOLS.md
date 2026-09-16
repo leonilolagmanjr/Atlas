@@ -72,3 +72,30 @@ trusted executable locations using PATH, common install folders, and Windows
 uninstall metadata. It uses the same non-shell process boundary and low-risk
 confirmation requirement as explicit executable launch. If resolution fails,
 Atlas reports the failure without launching anything.
+
+## Application text entry
+
+`applications.write_text` opens a resolved application, discovers its window,
+focuses it through Win32, and pastes supplied text using the Windows clipboard.
+This is a medium-risk operation and always requires user confirmation. The
+tool limits text size, uses `shell=False` for the application process, and
+does not accept arbitrary keyboard or mouse scripts.
+
+For example, `Create a short poem in Notepad` produces a plan containing the
+Notepad target and poem text. Quoted text is entered verbatim; short-poem
+requests use a deterministic starter poem until a dedicated content-generation
+step is added.
+
+## Web research
+
+`web.search` performs read-only public search. Explicit YouTube/video requests
+use YouTube's structured search data directly and return actual watch URLs and
+native thumbnails; other searches use DuckDuckGo with a Bing RSS fallback.
+Results include attributed titles, URLs, snippets, thumbnails, and provider
+names.
+`web.fetch` retrieves bounded public HTML or plain text from a validated public
+HTTP(S) URL. Private hosts, loopback addresses, local names, unsupported content
+types, and oversized responses are rejected.
+
+Web results are untrusted evidence. Page text is never treated as an Atlas
+instruction and cannot directly create a computer-control command.

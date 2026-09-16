@@ -15,11 +15,19 @@ from computer.launch import ApplicationLaunchTool, NamedApplicationLaunchTool
 from computer.powershell import PowerShellTool
 from computer.processes import ProcessInspectTool, ProcessListTool
 from computer.system import SystemInfoTool
+from computer.text_entry import ApplicationTextEntryTool
+from tools.content import ContentGenerationTool
 from tools.knowledge import ToolKnowledgeStore, load_json
 from tools.registry import ToolRegistry
+from web import WebFetchTool, WebSearchTool
 
 
-def register_read_only_tools(registry: ToolRegistry, *, root: Path | None = None) -> None:
+def register_read_only_tools(
+    registry: ToolRegistry,
+    *,
+    root: Path | None = None,
+    ask: object | None = None,
+) -> None:
     """Register the initial read-only computer tools into an existing registry."""
 
     filesystem_tools = [
@@ -38,6 +46,10 @@ def register_read_only_tools(registry: ToolRegistry, *, root: Path | None = None
         InstalledApplicationSearchTool(),
         ApplicationLaunchTool(),
         NamedApplicationLaunchTool(),
+        ApplicationTextEntryTool(),
+        ContentGenerationTool(ask=ask),
         PowerShellTool(knowledge=knowledge),
+        WebSearchTool(),
+        WebFetchTool(),
     ]:
         registry.register(tool)

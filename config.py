@@ -71,6 +71,25 @@ MAX_SESSIONS: int = 50
 # Auto-save session/messaging changes to disk.
 AUTO_SAVE: bool = True
 
+# ---- Natural-language reasoning pipeline ----
+# Master switch: when False, Atlas uses the deterministic fast path only and
+# never spends local inference on interpretation/recovery.
+ENABLE_LLM_INTERPRETATION: bool = True
+# Requests above this deterministic confidence skip the LLM interpreter.
+# Requests below it are routed through Qwen for semantic interpretation.
+INTERPRETER_CONFIDENCE_THRESHOLD: float = 0.75
+# Below this confidence Atlas asks the user a clarifying question instead of
+# guessing at an ambiguous target.
+CLARIFICATION_CONFIDENCE_THRESHOLD: float = 0.45
+# Bounded recovery: maximum LLM-assisted replan attempts per request.
+MAX_RECOVERY_ATTEMPTS: int = 2
+# Per-call timeout (seconds) for local Qwen reasoning stages.
+REASONING_TIMEOUT_SECONDS: float = 60.0
+# Emit a structured per-stage diagnostic trace for every request.
+DEBUG_PIPELINE: bool = False
+# Keys redacted from diagnostic traces before they are logged.
+REDACT_KEYS: tuple[str, ...] = ("password", "token", "api_key", "secret")
+
 # ---- Computer tools ----
 EXECUTION_MODE: str = "confirm"
 COMPUTER_ROOT: Path = PROJECT_ROOT

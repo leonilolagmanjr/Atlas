@@ -24,6 +24,7 @@ from computer.runtime import register_read_only_tools
 from computer.system import SystemInfoTool
 from config import COMPUTER_ROOT, EXECUTION_MODE, OLLAMA_MODEL, TASK_STORE_FILE
 from indexer import index_knowledge_base
+from llm import ask
 from memory.memory_manager import MemoryManager
 from models import TaskStatus
 from task_store import TaskStore
@@ -51,16 +52,27 @@ class TaskRecord(BaseModel):
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    web_sources: list[str] = Field(default_factory=list)
 
 
 @dataclass
 class AtlasService:
+    # Serialize every task through a single FIFO worker.
+    # A single worker guarantees that Atlas never runs two tasks (or two plan
+    # steps) at the same time, so computer-control actions cannot overlap.
+    # Tasks submitted while another is running wait in an explicit queue.
+
     brain: Brain | None = None
     registry: ToolRegistry | None = None
     _tasks: dict[str, TaskRecord] = field(default_factory=dict)
     _task_store: TaskStore = field(default_factory=lambda: TaskStore(path=TASK_STORE_FILE))
     _executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=1))
     _lock: threading.RLock = field(default_factory=threading.RLock)
+    # FIFO of record ids waiting to run, plus the id currently running.
+    _queue: list[str] = field(default_factory=list)
+    _running_id: str | None = None
+    # Records currently being approved/denied, to reject double submissions.
+    _resolving: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         persisted = self._task_store.load()
@@ -92,7 +104,7 @@ class AtlasService:
             index_knowledge_base(vector_store=vector_store)
             memory_manager = MemoryManager()
             registry = ToolRegistry()
-            register_read_only_tools(registry, root=COMPUTER_ROOT)
+            register_read_only_tools(registry, root=COMPUTER_ROOT, ask=ask)
             router = ToolRouter(
                 registry=registry,
                 permission_engine=PermissionEngine(mode=ExecutionMode(EXECUTION_MODE.lower())),
@@ -104,6 +116,7 @@ class AtlasService:
                 retrieval_template=_read_prompt("retrieval.txt"),
                 memory_manager=memory_manager,
                 tool_router=router,
+                llm_ask=ask,
             )
 
     def submit(self, request: str) -> TaskRecord:
@@ -118,13 +131,30 @@ class AtlasService:
         )
         with self._lock:
             self._tasks[record.id] = record
+            self._queue.append(record.id)
             self._persist()
-        self._executor.submit(self._run, record.id)
+        # Hand off to the single worker; it drains the FIFO one task at a time.
+        self._executor.submit(self._drain_queue)
         return record
-
+    def _drain_queue(self) -> None:
+        # Run queued tasks one at a time, in submission order.
+        while True:
+            with self._lock:
+                # Only one drain loop may hold the running slot.
+                if self._running_id is not None or not self._queue:
+                    return
+                record_id = self._queue.pop(0)
+                self._running_id = record_id
+            try:
+                self._run(record_id)
+            finally:
+                with self._lock:
+                    self._running_id = None
     def _run(self, record_id: str) -> None:
         with self._lock:
-            record = self._tasks[record_id]
+            record = self._tasks.get(record_id)
+            if record is None:
+                return
             record.status = TaskStatus.RUNNING.value
             record.updated_at = time.time()
             self._persist()
@@ -140,6 +170,7 @@ class AtlasService:
                 record.tool_calls = list(context.tool_calls) if context is not None else []
                 record.errors = list(context.errors) if context is not None else []
                 record.warnings = list(context.warnings) if context is not None else []
+                record.web_sources = list(context.web_sources) if context is not None else []
                 record.updated_at = time.time()
                 self._persist()
         except Exception as exc:
@@ -152,39 +183,56 @@ class AtlasService:
                 self._persist()
 
     def approve(self, record_id: str) -> TaskRecord:
-        self.ensure_runtime()
-        record = self._get(record_id)
-        if record.status != TaskStatus.WAITING_FOR_CONFIRMATION or not record.task_id:
-            raise HTTPException(status_code=409, detail="Task is not awaiting approval")
-        assert self.brain is not None
-        record.response = self.brain.approve_pending(record.task_id)
-        context = self.brain.last_context
-        record.status = context.status.value if context is not None else TaskStatus.COMPLETED.value
-        record.plan = _plan_snapshot(context)
-        record.tool_calls = list(context.tool_calls) if context is not None else []
-        record.errors = list(context.errors) if context is not None else []
-        record.warnings = list(context.warnings) if context is not None else []
-        record.updated_at = time.time()
-        with self._lock:
-            self._persist()
-        return record
+        return self._resolve(record_id, approve=True)
 
     def deny(self, record_id: str) -> TaskRecord:
+        return self._resolve(record_id, approve=False)
+
+    def _resolve(self, record_id: str, *, approve: bool) -> TaskRecord:
+        # Approve or deny once. A second in-flight request is rejected.
+        # This prevents duplicate authorization: the resolution lock admits one
+        # approve/deny per record at a time, and the status flips before the
+        # (possibly slow) resume begins.
         self.ensure_runtime()
-        record = self._get(record_id)
-        if record.status != TaskStatus.WAITING_FOR_CONFIRMATION or not record.task_id:
-            raise HTTPException(status_code=409, detail="Task is not awaiting approval")
-        assert self.brain is not None
-        record.response = self.brain.deny_pending(record.task_id)
-        context = self.brain.last_context
-        record.status = context.status.value if context is not None else TaskStatus.CANCELLED.value
-        record.plan = _plan_snapshot(context)
-        record.errors = list(context.errors) if context is not None else []
-        record.warnings = list(context.warnings) if context is not None else []
-        record.updated_at = time.time()
         with self._lock:
+            record = self._tasks.get(record_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail="Task not found")
+            if record_id in self._resolving:
+                raise HTTPException(status_code=409, detail="This action is already being processed")
+            if record.status != TaskStatus.WAITING_FOR_CONFIRMATION or not record.task_id:
+                raise HTTPException(status_code=409, detail="Task is not awaiting approval")
+            # Claim the record and mark it busy immediately so a second click
+            # cannot pass the guard above while the resume is running.
+            self._resolving.add(record_id)
+            record.status = TaskStatus.RUNNING.value
+            record.updated_at = time.time()
             self._persist()
-        return record
+        try:
+            assert self.brain is not None
+            if approve:
+                record.response = self.brain.approve_pending(record.task_id)
+            else:
+                record.response = self.brain.deny_pending(record.task_id)
+            context = self.brain.last_context
+            fallback = TaskStatus.COMPLETED.value if approve else TaskStatus.CANCELLED.value
+            with self._lock:
+                record.status = context.status.value if context is not None else fallback
+                record.plan = _plan_snapshot(context)
+                record.tool_calls = list(context.tool_calls) if context is not None else []
+                record.errors = list(context.errors) if context is not None else []
+                record.warnings = list(context.warnings) if context is not None else []
+                record.web_sources = list(context.web_sources) if context is not None else []
+                record.updated_at = time.time()
+                self._persist()
+            return record
+        finally:
+            with self._lock:
+                self._resolving.discard(record_id)
+    def queue_snapshot(self) -> dict[str, Any]:
+        # Return the running task id and the FIFO of pending task ids.
+        with self._lock:
+            return {"running": self._running_id, "pending": list(self._queue)}
 
     def _get(self, record_id: str) -> TaskRecord:
         with self._lock:
@@ -314,6 +362,11 @@ def applications() -> dict[str, Any]:
 def tasks() -> dict[str, Any]:
     with service._lock:
         return {"tasks": list(service._tasks.values())}
+
+@app.get("/api/queue")
+def queue() -> dict[str, Any]:
+    # Expose the single-worker task queue so the UI can show what is waiting.
+    return service.queue_snapshot()
 
 
 @app.post("/api/tasks", status_code=202)

@@ -1,6 +1,7 @@
 import type {
   ApplicationInfo,
   Health,
+  QueueSnapshot,
   SystemInfo,
   TaskRecord,
   ToolInfo,
@@ -30,6 +31,7 @@ export const api = {
   discoverTools: (query: string) => request<{ candidates: ToolCandidate[] }>(`/tool-discovery?query=${encodeURIComponent(query)}`),
   applications: () => request<{ applications: ApplicationInfo[] }>("/applications"),
   tasks: () => request<{ tasks: TaskRecord[] }>("/tasks"),
+  queue: () => request<QueueSnapshot>("/queue"),
   task: (id: string) => request<TaskRecord>(`/tasks/${id}`),
   createTask: (requestText: string) =>
     request<TaskRecord>("/tasks", {

@@ -5,7 +5,7 @@
 
 ## Existing backend assessment
 
-Atlas remains a Python CLI-first runtime. Brain classifies requests, Planner creates deterministic plans, Executor runs retrieval or explicit tool steps, and Memory persists conversations. The computer runtime currently provides bounded filesystem inspection, process/system inspection, installed-application inventory, and permission-gated executable launch. Ollama, ChromaDB, and the local knowledge index remain backend-only.
+Atlas remains a Python runtime with a React control room. Brain classifies requests, Planner creates deterministic plans, Executor runs retrieval or routed tool steps, and Memory persists conversations. The computer runtime provides bounded filesystem inspection, process/system inspection, installed-application inventory, generic application launch, confirmation-gated text entry, validated PowerShell, and read-only web search/page retrieval.
 
 There was no existing GUI or HTTP API. The frontend therefore uses a thin FastAPI adapter and does not duplicate planning, retrieval, permission, or tool execution logic in TypeScript.
 
@@ -53,6 +53,7 @@ Task execution is polled because the current backend has no event stream. The AP
 - Tool knowledge catalog with expandable PowerShell command records.
 - Capability discovery search that returns candidates without executing them.
 - Task plan details showing selected capability, candidates, generated command, interpreted result, and bounded raw output.
+- Current web research results with thumbnails, source/provider labels, snippets, watch links, and expandable raw output.
 - System dashboard using real backend values and `Unavailable` for unsupported metrics.
 - Honest unavailable states for backend surfaces that do not yet have APIs.
 
@@ -64,4 +65,5 @@ Task execution is polled because the current backend has no event stream. The AP
 - Terminal execution needs a separate validated PowerShell tool and streaming output model.
 - Settings need a validated configuration read/write contract.
 - Live task execution needs durable checkpoints rather than only durable task snapshots.
+- Web search currently depends on public YouTube search data and DuckDuckGo/Bing fallback providers; provider changes or bot challenges need graceful handling.
 - SSE/WebSocket events can replace polling after an event model exists.
