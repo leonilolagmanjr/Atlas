@@ -8,18 +8,17 @@ retrieval, indexing, vector storage, prompting, logging, and LLM access so each
 part can evolve independently.
 
 ## Current Version
-Atlas is currently implemented as the V3.3 command-intelligence foundation:
-a natural-language **Semantic Interpreter → Structured Intent → Planner →
-Capability Registry → Validation → Deterministic Executor → Recovery** pipeline
-on top of the existing V3.2 Brain, staged hybrid retrieval, and conversation
-memory.
+Atlas is currently implemented as the V3.4 semantic task-understanding runtime:
+a local-first **Semantic Task Interpreter → Task IR → Task Validator → Dynamic
+Task Planner → Capability Registry → Deterministic Executor → Observation/
+Verification → Bounded Replanning** pipeline on top of the existing Brain,
+staged hybrid retrieval, and conversation memory.
 
-The computer-agent architecture is being added incrementally. Permission-gated
-local computer inspection, generic application launch, controlled text entry,
-read-only PowerShell, and public web research are implemented. Observation,
-verification, downloads, browser interaction, and durable live checkpoints are
-still future work. See [ARCHITECTURE_ASSESSMENT.md](ARCHITECTURE_ASSESSMENT.md)
-for the current handoff and migration plan.
+The LLM interprets natural language into a structured, validated **Task**; it
+never executes anything and never emits shell text. Deterministic code decides
+how each validated capability is safely run. See
+[ARCHITECTURE_ASSESSMENT.md](ARCHITECTURE_ASSESSMENT.md) for the current handoff
+and migration plan.
 
 Implemented foundation:
 
@@ -45,84 +44,102 @@ Implemented foundation:
 - Validated, read-only PowerShell inspection for processes, services, system, and network state
 - Confirmation-gated text entry into resolved Windows applications
 - Read-only web search and public page retrieval with direct YouTube thumbnails and source links
-- Natural-language semantic interpretation via local Qwen with a deterministic fast path
-- Compositional `StructuredIntent` with first-class parameters (topic, tone, style, length, sort, destination)
-- Machine-readable capability catalog so the LLM selects only real registries
-- Dynamic multi-step planning (generate content → write to application)
-- Plan validation before execution and controlled, bounded failure recovery
+- Natural-language semantic task interpretation via local Qwen with a deterministic fast path
+- A first-class `Task` / `TaskAction` intermediate representation with first-class parameters (topic, tone, style, length, sort, destination, application, folder, filename)
+- Machine-readable capability registry (name, description, parameter schema, required parameters, risk, confirmation, verifiability)
+- Task validation (capability existence, required parameters, parameter types, dependencies, references, risk) before any planning
+- Dynamic multi-step planning with dependency ordering and `$variable` output references between steps
+- Post-action observation and honest verification (verified / unverified / failed)
+- Plan-wide bounded replanning with an anti-loop budget
 - Conversational task state for follow-up requests
-## Command Intelligence (Natural Language → Action)
+- Structured debug trace across every stage (task, validation, plan, execution, verification)
+## Semantic Task Understanding (Natural Language → Action)
 
 Atlas understands what the user *means*, not which command they typed. The same
-intent can be expressed many ways and Atlas normalizes it:
+task can be expressed many ways and Atlas normalizes it:
 
 ```text
 create / write / make / compose a poem about cars in Notepad
+put a poem about automobiles into Notepad
+make something poetic about cars and put it in Notepad
 search / find / look for / show me MrBeast videos on YouTube
 ```
 
-The command pipeline separates **LLM reasoning** from **deterministic execution**:
+The pipeline separates **LLM reasoning** from **deterministic execution**:
 
 ```text
 USER REQUEST
      ↓
-QWEN SEMANTIC INTERPRETER (or deterministic fast path)
+SEMANTIC TASK INTERPRETER (Qwen, or deterministic fast path)
      ↓
-STRUCTURED INTENT  { intent, action, target, topic, tone, style, length, sort, destination, confidence }
+TASK IR  { task_type, goal, actions[], entities, constraints, confidence }
      ↓
-TASK PLANNER (deterministic; catalog-constrained LLM fallback for novel requests)
+TASK VALIDATOR (capability existence, params, types, deps, refs, risk)
      ↓
-CAPABILITY CATALOG (tool names + parameter schemas)
+DYNAMIC TASK PLANNER (dependency order + $variable output references)
      ↓
-PLAN VALIDATION
+CAPABILITY REGISTRY (names + parameter schemas + risk + verification)
      ↓
-DETERMINISTIC EXECUTOR
+DETERMINISTIC EXECUTOR  →  OBSERVATION / VERIFICATION
      ↓
-STRUCTURED RESULT
-     ↓
-QWEN RECOVERY (bounded replanning on recoverable failure)  →  USER RESPONSE
+QWEN RECOVERY / bounded replanning (only on recoverable failure)  →  USER
 ```
 
 The LLM never executes anything. It decides *what* should happen; Atlas's
-deterministic layer decides *how* it is safely executed.
+deterministic layer validates it and decides *how* it is safely executed.
 
-### Structured intent
-A request like `create funny poem about cars in notepad` becomes:
-
-```json
-{
-  "intent": "write_content",
-  "action": "create",
-  "content_type": "poem",
-  "topic": "cars",
-  "tone": "funny",
-  "destination": "Notepad",
-  "confidence": 0.95
-}
-```
-
-and `find MrBeast's latest videos on YouTube` becomes:
+### The Task IR
+A request is interpreted into a structured task, not a single label. For
+`Create a poem in Notepad about cars.`:
 
 ```json
 {
-  "intent": "search",
-  "target": "youtube",
-  "query": "mrbeast",
-  "sort": "latest"
+  "task_type": "content_creation",
+  "goal": "create_content",
+  "actions": [
+    {"action_id": "a1", "capability": "content.generate",
+     "parameters": {"content_type": "poem", "topic": "cars"},
+     "produces": "generated_text"},
+    {"action_id": "a2", "capability": "applications.write_text",
+     "parameters": {"application": "Notepad", "text": "$generated_text"},
+     "depends_on": ["a1"]}
+  ],
+  "entities": {"application": "Notepad", "topic": "cars", "content_type": "poem"},
+  "execution_required": true,
+  "confidence": 0.85
 }
 ```
 
-Parameters are preserved end-to-end: they flow from interpretation into the
-executor's tool arguments. The planner builds the smallest valid plan, e.g. for
-content tasks:
+The critical property: adding `about cars` changes only the **topic**, never the
+destination. `Notepad` stays `Notepad`; `cars` becomes the content topic. Without
+this separation the modifier leaked into the application name and the command
+failed.
+
+### Capabilities, not commands
+The interpreter and planner reason over a machine-readable **capability
+registry** (name, description, parameter schema, required parameters, risk,
+confirmation requirement, verifiability). The model may only select from the
+registered capabilities. A plan that references an unknown capability, omits a
+required parameter, passes a wrong type, or references a `$variable` nobody
+produces is rejected during validation, before anything runs.
+
+### Variables and outputs
+A step can publish a named output that later steps consume by reference:
 
 ```text
-1. content.generate   { content_type, topic, tone, style, length }
-2. applications.write_text  { application, text: <generated content> }
+1. content.generate          produces $generated_text
+2. applications.write_text   text = $generated_text
+3. filesystem.search         produces $largest_match
+4. filesystem.move           source = $largest_match
 ```
 
-The second step consumes the first step's output by reference, so generated
-content is written verbatim rather than re-generated.
+Unresolved references never execute silently; they fail validation.
+
+### Verification
+After each action Atlas records an honest observation: `verified`, `unverified`,
+or `failed`. A launch is verified by a process id, a text write by a character
+count, a search by returned results. When Atlas cannot confirm an effect it says
+so rather than pretending success.
 
 ### Capabilities, not commands
 
@@ -250,8 +267,9 @@ Atlas/
   document_loader.py   Document reading
   executor.py          Sequential execution plan runner
   indexer.py           Incremental indexing
-  intent_classifier.py Rule-based coarse intent classification (legacy plan selection)
-  reasoning/           LLM reasoning layer (interpreter, planner prompts, recovery, diagnostics)
+  intent_classifier.py Rule-based coarse classification (legacy knowledge-plan selection only)
+  models_task.py       Task/TaskAction intermediate representation (the Task IR)
+  reasoning/           LLM reasoning layer (task interpreter, validator, planner, verifier, recovery, diagnostics)
   knowledge_search.py  Retrieval strategy and confidence policy
   llm.py               Ollama communication
   logger.py            Logging setup
@@ -296,17 +314,21 @@ status and failures.
 `models.py` contains shared dataclasses for execution context, task lifecycle,
 plans, steps, planner decisions, evidence, and retrieval results.
 
-`intent_classifier.py` remains a rule-based (no LLM) classifier that assigns
-coarse knowledge intents (`FACT`, `PERSON`, `LIST`, `COUNT`, `COMPARE`,
-`SUMMARIZE`, `EXPLAIN`, `DEFINITION`, `DATE`, `LOCATION`, `PROCEDURE`,
-`COMPUTER`, `UNKNOWN`). For natural-language computer-control requests, the
-`reasoning/` package now produces a compositional `StructuredIntent` that drives
-the planner directly.
+`intent_classifier.py` is retained only as a rule-based (no LLM) signal used by
+legacy plan selection for knowledge workflows. It is no longer the primary
+natural-language understanding path: the `reasoning/` package interprets free
+text into a structured `Task` that drives the planner directly. New natural-
+language behavior must not be implemented by adding more patterns here.
 
-`reasoning/` owns the LLM-facing reasoning stages. It contains the semantic
-interpreter, modular prompts, strict-JSON recovery helpers, bounded failure
-recovery, and the structured request diagnostics trace. It never imports a
-concrete provider and never executes commands.
+`models_task.py` defines the `Task` / `TaskAction` intermediate representation —
+the single boundary object between the LLM interpreter and Atlas's
+deterministic planning and execution layer.
+
+`reasoning/` owns the LLM-facing reasoning stages. It contains the semantic task
+interpreter, the task validator, the dynamic task planner, the action verifier,
+modular prompts, strict-JSON recovery helpers, bounded failure recovery, and the
+structured request diagnostics trace. It never imports a concrete provider and
+never executes commands.
 
 `web.py` provides read-only public web search and bounded page retrieval, with
 direct YouTube result parsing, provenance, and SSRF checks.
@@ -387,8 +409,12 @@ write a short poem about racing cars in notepad
 open notepad and write a poem about cars
 ```
 
-Atlas generates the content (with your topic, tone, style, and length) and then
-writes it into Notepad, pausing for approval before the write.
+The last example is the key one: adding `about cars` changes only the content
+topic, never the destination. Atlas generates the content (with your topic, tone,
+style, and length) and then writes it into Notepad, pausing for approval before
+the write. Because Atlas reasons over the *task* rather than matching a phrase,
+an unseen combination such as `write a short story about space exploration in
+Notepad` works without any new rule.
 
 Atlas also supports current public-web research from natural language:
 
@@ -474,15 +500,18 @@ Important settings live in `config.py`:
 - `MIN_SIMILARITY`
 - `LOG_RETRIEVAL`
 
-Command-intelligence settings:
+Task-understanding settings:
 
 - `ENABLE_LLM_INTERPRETATION` — master switch for Qwen-powered interpretation/planning/recovery
-- `INTERPRETER_CONFIDENCE_THRESHOLD` — deterministic confidence above which the LLM interpreter is skipped
+- `INTERPRETER_CONFIDENCE_THRESHOLD` — deterministic confidence above which the LLM interpreter is skipped (keeps mechanical requests fast)
 - `CLARIFICATION_CONFIDENCE_THRESHOLD` — below which Atlas asks instead of guessing
 - `MAX_RECOVERY_ATTEMPTS` — bounded LLM-assisted replans per failed step
 - `REASONING_TIMEOUT_SECONDS` — per-call timeout for reasoning stages
-- `DEBUG_PIPELINE` — emit the structured per-stage request trace
+- `DEBUG_PIPELINE` — emit the structured per-stage request trace (task, validation, plan, execution, verification)
 - `REDACT_KEYS` — keys redacted from diagnostics
+
+The plan-wide recovery budget (`executor.MAX_PLAN_RECOVERIES`, default 3) caps
+total retries for a single plan so a multi-step task cannot loop.
 `MIN_SIMILARITY` is used as part of the retrieval acceptance decision (`knowledge_search._decide()`),
 not as a single hard pre-check before all retries.
 
@@ -526,12 +555,22 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 .\.venv\Scripts\python.exe -m unittest discover -s tests -t .
 ```
 
-The test suite includes a dedicated command-understanding suite
-(`tests/test_command_understanding.py`) covering Notepad and YouTube language
-variations, application-control phrasings, parameter preservation, follow-up
-context, and ambiguity handling, plus execution/recovery tests
-(`tests/test_recovery_and_validation.py`) and fake-LLM end-to-end pipeline tests
-(`tests/test_pipeline_end_to_end.py`).
+The test suite includes:
+
+- `tests/test_task_pipeline.py` — the semantic task-understanding matrix
+  (including the `about cars` regression), generalization to unseen wording,
+  Task IR robustness against malformed output, validation, planning, and
+  verification.
+- `tests/test_task_pipeline_e2e.py` — the live Brain → interpreter → validator →
+  planner → executor → verifier chain with a fake model and fake tools, including
+  model-supplied tasks, rejected invented capabilities, malformed-output
+  fallback, and verification recording.
+- `tests/test_command_understanding.py` — language variations and parameter
+  preservation.
+- `tests/test_recovery_and_validation.py` — failure classification and bounded
+  recovery.
+
+See [TESTING.md](TESTING.md) for a full description of the test strategy.
 
 ## Roadmap
 

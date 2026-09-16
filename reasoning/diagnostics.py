@@ -37,14 +37,25 @@ def redact(value: Any) -> Any:
 
 @dataclass
 class PipelineTrace:
-    """Accumulate the stages of a single request for debugging."""
+    """Accumulate the stages of a single request for debugging.
+
+    Stages mirror the live pipeline:
+    USER -> TASK -> VALIDATION -> PLAN -> EXECUTION -> VERIFICATION -> RESPONSE.
+    """
 
     user_input: str
     intent: dict[str, Any] = field(default_factory=dict)
+    task: dict[str, Any] = field(default_factory=dict)
+    validation: dict[str, Any] = field(default_factory=dict)
     plan: list[dict[str, Any]] = field(default_factory=list)
     execution: list[dict[str, Any]] = field(default_factory=list)
+    verification: list[dict[str, Any]] = field(default_factory=list)
     response: str | None = None
 
+    def record_task(self, task: dict[str, Any]) -> None:
+        self.task = task
+    def record_validation(self, validation: dict[str, Any]) -> None:
+        self.validation = validation
     def record_intent(self, structured: StructuredIntent) -> None:
         self.intent = {
             "intent": structured.intent,
@@ -83,6 +94,7 @@ class PipelineTrace:
             }
             for call in context.tool_calls
         ]
+        self.verification = list(context.verification_results)
 
     def record_response(self, response: str | None) -> None:
         self.response = response
@@ -91,6 +103,10 @@ class PipelineTrace:
         """Emit the whole trace as one structured, redacted block."""
 
         lines = ["Atlas pipeline trace", f"USER INPUT: {self.user_input}"]
+        if self.task:
+            lines.append("TASK: " + _dump(self.task))
+        if self.validation:
+            lines.append("VALIDATION: " + _dump(self.validation))
         if self.intent:
             lines.append("INTENT: " + _dump(self.intent))
         if self.plan:
@@ -101,6 +117,10 @@ class PipelineTrace:
             lines.append("EXECUTION:")
             for index, call in enumerate(self.execution, start=1):
                 lines.append(f"  {index}. {_dump(call)}")
+        if self.verification:
+            lines.append("VERIFICATION:")
+            for index, item in enumerate(self.verification, start=1):
+                lines.append(f"  {index}. {_dump(item)}")
         if self.response is not None:
             lines.append(f"RESULT: {self.response}")
         logger.info("\n".join(lines))

@@ -1,8 +1,27 @@
 # Atlas Tool Intelligence
-
 Atlas tools are registered runtime capabilities. Tool execution remains behind
 `ToolRouter`, permission policy, and `Executor`; the planner does not execute
 subprocesses directly.
+
+## Capability registry
+`tools/capabilities.py` turns registered tool metadata into validated
+`Capability` descriptors and renders the compact catalog injected into LLM
+prompts. Each capability exposes:
+
+- name and description
+- parameter schema and required parameters
+- risk level and whether confirmation is required
+- whether it is verifiable and which outputs it produces
+`PLANNABLE_CAPABILITIES` defines the subset the LLM may select. It is a
+high-level surface (`content.generate`, `applications.*`, `filesystem.*`,
+`web.*`); low-level admin backends (`powershell.execute`, `processes.*`) remain
+registered and routable but are invisible to free-text interpretation, so the
+model can never select them from a natural-language request.
+
+The capability descriptor merges the real tool metadata (description, parameter
+schema, risk) with a contract overlay for the facts a tool class does not carry
+(required parameters, verifiability, produced output names). The router remains
+the authority on whether a capability can actually run.
 
 ## Knowledge records
 
@@ -63,6 +82,20 @@ changes, account changes, and scheduled-task changes.
 The provider is registered as read-only, so safe inspection runs without
 confirmation under the existing permission engine. Mutating PowerShell is not
 implemented and must be added as a separate risk-aware capability.
+
+## Filesystem capabilities
+Read-only: `filesystem.list`, `filesystem.read`, `filesystem.metadata`,
+`filesystem.search` (with an optional `path` subfolder scope).
+
+Permission-gated (medium risk, require confirmation): `filesystem.write`,
+`filesystem.create_folder`, `filesystem.move`, `filesystem.copy`. All are bounded
+to the configured `COMPUTER_ROOT`; a path outside the root is rejected. `move`
+and `copy` treat an existing destination directory as "move into it", preserving
+the file name.
+
+These back high-level natural-language tasks such as "create a folder called
+Projects on my desktop" or "find the largest PDF in Downloads and move it to my
+Documents folder" without exposing raw shell commands.
 
 ## Named applications
 

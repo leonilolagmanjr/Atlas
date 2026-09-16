@@ -37,6 +37,15 @@ class ToolMetadata:
     output_schema: dict[str, Any] = field(default_factory=dict)
     permission_level: PermissionLevel = PermissionLevel.READ_ONLY
     risk_level: RiskLevel = RiskLevel.READ_ONLY
+    #: Parameters a caller must supply. Empty means the tool has sensible
+    #: defaults and accepts an empty argument mapping.
+    required_parameters: tuple[str, ...] = ()
+    #: Whether this tool exposes a structured observation for verification.
+    #: When True the runtime may confirm the action actually took effect.
+    verifiable: bool = False
+    #: Names this capability can produce for later steps to reference, e.g.
+    #: ("generated_text",). Used to document the variable/output contract.
+    produces: tuple[str, ...] = ()
 
 
 @dataclass

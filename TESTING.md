@@ -14,6 +14,16 @@ Push-Location frontend; npm run build; Pop-Location
 
 The Python suite uses the standard library `unittest` runner and covers:
 
+- Semantic task understanding (`tests/test_task_pipeline.py`): the
+  `Create a poem in Notepad` vs `Create a poem in Notepad about cars`
+  regression, many phrasings resolving to the same task family, generalization
+  to unseen combinations, the full specification matrix, Task IR robustness
+  against malformed model output, validation, dependency-ordered planning with
+  `$variable` references, and verification.
+- The live task pipeline (`tests/test_task_pipeline_e2e.py`): Brain →
+  interpreter → validator → planner → executor → verifier with a fake model and
+  fake tools, including model-supplied tasks, rejected invented capabilities,
+  malformed-output fallback, and verification recording.
 - Execution context serialization and lifecycle states.
 - Tool metadata, validation, registration, routing, and permission decisions.
 - Bounded filesystem inspection and traversal rejection.
@@ -31,6 +41,30 @@ The Python suite uses the standard library `unittest` runner and covers:
 - Controlled application text-entry planning and mocked clipboard-paste execution.
 - Web search intent, Bing fallback parsing, public URL validation, source attribution, and untrusted-page handling.
 - Direct YouTube renderer parsing, MrBeast video relevance filtering, watch-link generation, and thumbnail metadata.
+
+## Semantic task verification
+Set `DEBUG_PIPELINE = True` in `config.py` to emit the structured per-request
+trace for every request:
+
+```text
+Atlas pipeline trace
+USER INPUT: Create a poem in Notepad about cars.
+TASK: {"task_type": "content_creation", "goal": "create_content", "actions": [...]}
+VALIDATION: {"valid": true, "requires_confirmation": true, "risk_level": "medium_risk"}
+INTENT: {...}
+PLAN:
+  1. {"id": "a1", "tool": "content.generate", "parameters": {"topic": "cars", ...}}
+  2. {"id": "a2", "tool": "applications.write_text", "parameters": {"text": "$generated_text"}}
+EXECUTION:
+  1. {...}
+  2. {...}
+VERIFICATION:
+  1. {"capability": "content.generate", ...}
+  2. {"capability": "applications.write_text", "verified": true, ...}
+RESULT: ...
+```
+
+Sensitive keys are redacted via `REDACT_KEYS`.
 
 ## Manual runtime checks completed
 

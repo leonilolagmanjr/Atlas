@@ -6,10 +6,14 @@ from pathlib import Path
 
 from computer.applications import InstalledApplicationSearchTool, InstalledApplicationsTool
 from computer.filesystem import (
+    FilesystemCopyTool,
+    FilesystemCreateFolderTool,
     FilesystemListTool,
     FilesystemMetadataTool,
+    FilesystemMoveTool,
     FilesystemReadTool,
     FilesystemSearchTool,
+    FilesystemWriteTool,
 )
 from computer.launch import ApplicationLaunchTool, NamedApplicationLaunchTool
 from computer.powershell import PowerShellTool
@@ -35,6 +39,10 @@ def register_read_only_tools(
         FilesystemReadTool(root=root),
         FilesystemMetadataTool(root=root),
         FilesystemSearchTool(root=root),
+        FilesystemWriteTool(root=root),
+        FilesystemCreateFolderTool(root=root),
+        FilesystemMoveTool(root=root),
+        FilesystemCopyTool(root=root),
     ]
     knowledge = ToolKnowledgeStore(load_json(Path(__file__).parent.parent / "tools" / "powershell_commands.json"))
     for tool in [

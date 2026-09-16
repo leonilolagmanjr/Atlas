@@ -232,7 +232,6 @@ class CapabilityCatalogTests(unittest.TestCase):
     def test_catalog_only_exposes_plannable_capabilities(self):
         from tools import ExecutionMode, PermissionEngine, ToolRegistry, ToolRouter
         from computer.runtime import register_read_only_tools
-
         registry = ToolRegistry()
         register_read_only_tools(registry)
         catalog = render_capability_catalog(registry)
@@ -240,9 +239,12 @@ class CapabilityCatalogTests(unittest.TestCase):
         self.assertIn("content.generate", catalog)
         self.assertIn("applications.write_text", catalog)
         self.assertIn("web.search", catalog)
-        # Inspection-only tools must not be offered to the planner.
-        self.assertNotIn("filesystem.read", catalog)
+        # High-level filesystem capabilities are now part of the plannable
+        # surface (a task like "create a folder on my desktop" needs them),
+        # while low-level admin backends remain invisible to the LLM.
+        self.assertIn("filesystem.create_folder", catalog)
         self.assertNotIn("powershell.execute", catalog)
+        self.assertNotIn("processes.list", catalog)
 
 
 class PlannerLLMSelectionTests(unittest.TestCase):

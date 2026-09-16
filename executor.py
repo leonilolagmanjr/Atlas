@@ -25,6 +25,9 @@ from tools.result_interpreter import interpret_tool_result
 logger = logging.getLogger(__name__)
 
 UNKNOWN_RESPONSE = "I don't know based on my knowledge base."
+#: Plan-wide cap on LLM-assisted recovery attempts. Prevents a plan from looping
+#: even when individual steps stay within their own retry limit.
+MAX_PLAN_RECOVERIES = 3
 #: Sentinel prefix marking a plan argument that references an earlier
 #: step's produced output instead of a literal value.
 GENERATED_TEXT_REF = "$generated_text"
@@ -49,6 +52,8 @@ class Executor:
         self._memory_manager = memory_manager
         self._tool_router = tool_router
         self._recovery = recovery
+        from reasoning.verifier import TaskVerifier
+        self._verifier = TaskVerifier()
         self._handlers: dict[str, Callable[[ExecutionContext, ExecutionStep], None]] = {
             "retrieve_knowledge": self._retrieve_knowledge,
             "generate_response": self._generate_response,
@@ -72,6 +77,7 @@ class Executor:
 
         # Re-execution after an approval pause must resume, not restart. Steps
         # that already completed (e.g. content generation) are not run again.
+        recovery_budget = int(context.metadata.get("recovery_budget", MAX_PLAN_RECOVERIES))
         for step in plan.steps:
             if step.status == StepStatus.COMPLETED:
                 logger.info(
@@ -90,11 +96,15 @@ class Executor:
                 )
                 continue
             self._execute_step(context, step)
-            if step.status == StepStatus.FAILED and self._recovery is not None:
+            if step.status == StepStatus.FAILED and self._recovery is not None and recovery_budget > 0:
                 # One bounded, observable recovery attempt per failed step.
                 # Recovery may only rewrite arguments for the same capability.
+                # A plan-wide budget prevents runaway retry loops when several
+                # steps fail in sequence.
                 if self._recovery.attempt_recovery(context, step):
+                    recovery_budget -= 1
                     self._execute_step(context, step)
+                    self._record_replan(context, step)
 
         if plan.status not in {PlanStatus.FAILED, PlanStatus.WAITING_FOR_CONFIRMATION}:
             plan.status = PlanStatus.COMPLETED
@@ -218,6 +228,8 @@ class Executor:
 
         context.metadata.setdefault("tool_results", []).append(result.output)
         self._capture_produced_output(step, result.output, context)
+        # Observation/verification: record honest evidence for this action.
+        self._record_verification(context, tool_name, result.output)
         if tool_name == "web.search" and isinstance(result.output, dict):
             context.web_sources.extend(
                 str(item.get("url"))
@@ -384,6 +396,45 @@ class Executor:
             if isinstance(text, str):
                 produced[GENERATED_TEXT_REF] = text
                 produced.setdefault("generated_text", text)
+        # filesystem.search may publish a single selected match (e.g. "the
+        # largest PDF") for a downstream move/copy step to consume.
+        if step.metadata.get("tool") == "filesystem.search":
+            self._publish_selected_match(step, output, produced)
+
+    @staticmethod
+    def _publish_selected_match(step: ExecutionStep, output: object, produced: dict) -> None:
+        if not isinstance(output, dict):
+            return
+        matches = output.get("matches")
+        if not isinstance(matches, list) or not matches:
+            return
+        select = str(step.metadata.get("parameters", {}).get("select") or "").casefold()
+        if select not in {"largest", "smallest", "newest", "oldest", "latest"}:
+            return
+        chosen = _select_match(matches, select)
+        if chosen is not None:
+            produced["largest_match"] = chosen
+            produced.setdefault("search_results", matches)
+
+    def _record_replan(self, context: ExecutionContext, step: ExecutionStep) -> None:
+        context.metadata.setdefault("replan_history", []).append(
+            {
+                "step_id": step.id,
+                "capability": step.metadata.get("tool"),
+                "status": step.status.value,
+                "attempts": step.metadata.get("recovery_attempts", 0),
+            }
+        )
+
+    def _record_verification(self, context: ExecutionContext, tool_name: str, output: object) -> None:
+        # Observe the tool output and record whether the intended effect is
+        # supported by evidence. Unverified outcomes are surfaced, never silently
+        # upgraded to success.
+        outcome = self._verifier.verify(tool_name, output, success=True)
+        context.observations.append(
+            {"tool": tool_name, "status": outcome.status, "detail": outcome.detail}
+        )
+        context.verification_results.append(outcome.to_dict())
 
     def _finalize_content(self, context: ExecutionContext, step: ExecutionStep) -> None:
         # Publish generated content as the final response for content-only tasks.
@@ -403,8 +454,12 @@ class Executor:
         context.status = TaskStatus.FAILED
         classification = classify_failure(context)
         context.metadata["failure_classification"] = classification
+        recovered = context.metadata.get("replan_history") or []
         if context.errors:
-            context.final_response = f"Atlas could not complete this task: {context.errors[-1]}"
+            message = f"Atlas could not complete this task: {context.errors[-1]}"
+            if recovered:
+                message += " (a safe retry was attempted first and did not succeed)"
+            context.final_response = message
         else:
             context.final_response = UNKNOWN_RESPONSE
 
@@ -446,6 +501,37 @@ def classify_failure(context: ExecutionContext) -> dict[str, object]:
         category = "execution_error"
     recoverable = category in {"invalid_arguments", "execution_error", "timeout"}
     return {"category": category, "recoverable": recoverable, "message": message}
+
+
+def _select_match(matches: list, select: str) -> str | None:
+    """Pick one match by size or modification time; return its path string."""
+
+    def stats(path_value: object) -> tuple[int, float] | None:
+        import os
+        try:
+            info = os.stat(str(path_value))
+        except OSError:
+            return None
+        return (info.st_size, info.st_mtime)
+
+    scored: list[tuple[int, float, str]] = []
+    for match in matches:
+        info = stats(match)
+        if info is None:
+            continue
+        scored.append((info[0], info[1], str(match)))
+    if not scored:
+        # Fall back to the first match so a move/copy target still resolves.
+        return str(matches[0]) if matches else None
+    if select == "largest":
+        return max(scored, key=lambda item: item[0])[2]
+    if select == "smallest":
+        return min(scored, key=lambda item: item[0])[2]
+    if select in {"newest", "latest"}:
+        return max(scored, key=lambda item: item[1])[2]
+    if select == "oldest":
+        return min(scored, key=lambda item: item[1])[2]
+    return scored[0][2]
 
 
 def _unique_sources(chunks: list[object]) -> list[str]:

@@ -1,11 +1,11 @@
 # Atlas Architecture
-**Version:** V3.2 (Brain + Intent Classification + Deterministic Planning + Staged Hybrid Retrieval + Permissioned Computer Tool Runtime)
+**Version:** V3.4 (Semantic Task Understanding + Validated Task IR + Dynamic Planning + Verification)
 
 The verified implementation status and migration plan are maintained in
 [ARCHITECTURE_ASSESSMENT.md](ARCHITECTURE_ASSESSMENT.md). This document defines
-target boundaries as well as the current implemented runtime. Observer/verifier,
-downloads, browser automation, durable live checkpoints, and GUI/voice/vision
-capabilities are not implied to exist.
+target boundaries as well as the current implemented runtime. Downloads, browser
+automation, durable live checkpoints, and GUI/voice/vision capabilities are not
+implied to exist.
 
 ---
 
@@ -68,7 +68,7 @@ User -> Brain -> Planner -> Tool Router -> Permission Engine
 					Computer / Internet / Knowledge runtimes
 ```
 
-## Command intelligence pipeline (implemented)
+## Semantic task-understanding pipeline (implemented)
 
 Natural-language requests flow through an explicit LLM-reasoning /
 deterministic-execution separation:
@@ -76,28 +76,35 @@ deterministic-execution separation:
 ```text
 USER REQUEST
      |
-QWEN SEMANTIC INTERPRETER (deterministic fast path when confident)
+SEMANTIC TASK INTERPRETER (Qwen; deterministic fast path when confident)
      |
-STRUCTURED INTENT (intent, action, target, topic, tone, style, length, sort, destination, confidence)
+TASK IR (task_type, goal, actions[], entities, constraints, confidence)
      |
-TASK PLANNER (deterministic; catalog-constrained LLM fallback)
+TASK VALIDATOR (capability existence, required params, types, deps, refs, risk)
      |
-CAPABILITY CATALOG (registered tool names + parameter schemas)
+DYNAMIC TASK PLANNER (dependency order + $variable output references)
+     |
+CAPABILITY REGISTRY (registered names + parameter schemas + risk + verification)
      |
 PLAN VALIDATION
      |
 DETERMINISTIC EXECUTOR
      |
-STRUCTURED RESULT
+OBSERVATION / VERIFICATION (verified | unverified | failed)
      |
-QWEN RECOVERY (bounded replanning on recoverable failure)  ->  USER RESPONSE
+QWEN RECOVERY / bounded replanning (only on recoverable failure)  ->  USER RESPONSE
 ```
 
 Invariant: **the LLM never executes anything.** It determines *what* should
-happen; the deterministic layer determines *how* it is safely executed. The LLM
-receives a capability catalog and may only select from registered capabilities.
-Plans referencing unknown capabilities, missing tools, or malformed parameter
-blocks are rejected before execution.
+happen (as a structured Task); the deterministic layer validates it and
+determines *how* it is safely executed. The LLM receives a capability catalog
+and may only select from registered capabilities. Tasks referencing unknown
+capabilities, missing required parameters, wrong parameter types, broken
+dependencies, or dangling `$variable` references are rejected before execution.
+
+The Task IR also preserves the distinction the old flat intent could not: a
+modifier like `about cars` is a content *topic*, never part of the destination
+application name.
 
 Execution categories are coarse and extensible: `CONVERSATION`,
 `KNOWLEDGE_QUERY`, `CREATIVE_GENERATION`, `APPLICATION_CONTROL`,
@@ -146,9 +153,15 @@ Atlas currently contains:
 * Logging
 * Configuration management
 * Brain orchestration
-* Rule-based intent classification (no LLM)
-* Deterministic planning
-* Sequential plan execution
+* LLM-first semantic task interpretation with a deterministic fast path
+* Structured `Task` / `TaskAction` intermediate representation
+* Capability registry with parameter schemas, required parameters, and risk
+* Task validation before planning
+* Dynamic, dependency-ordered planning with `$variable` output references
+* Deterministic planning and sequential plan execution
+* Post-action observation and honest verification (verified / unverified / failed)
+* Bounded, plan-wide replanning with an anti-loop budget
+* Rule-based intent classification (no LLM) retained for legacy knowledge plan selection
 * Shared execution context models
 * Conversation memory and persisted session lifecycle
 * Tool registry, permission engine, and permission-aware router
@@ -213,11 +226,12 @@ brain.py               Request orchestration and execution state tracking
 executor.py            Sequential plan runner and tool execution boundary
 planner.py             Deterministic plan creation and explicit action intent routing
 models.py              Shared execution context, task, and plan models
+models_task.py         Task/TaskAction intermediate representation (the Task IR)
 config.py              Centralized runtime configuration
 logger.py              Central logging configuration
 llm.py                 LLM provider wrapper and Ollama call boundary
-intent_classifier.py   Rule-based coarse classification for knowledge plan selection
-reasoning/             LLM reasoning layer (semantic interpreter, prompts, recovery, diagnostics)
+intent_classifier.py   Rule-based coarse classification for legacy knowledge plan selection
+reasoning/             LLM reasoning layer (task interpreter, validator, planner, verifier, prompts, recovery, diagnostics)
 
 knowledge/             User knowledge base (PDFs)
 memory/                Conversation sessions, models, storage, and context builder
@@ -349,14 +363,23 @@ Dataclasses should live here when multiple modules need the same model.
 
 Owns the LLM-facing reasoning stages. It contains:
 
-* `interpreter.py` — turns free text into a compositional `StructuredIntent`
-  (deterministic fast path + Qwen fallback), with clarification policy and
-  conversational context merging.
-* `prompts.py` — small, single-purpose prompts for interpreter, planner,
+* `task_interpreter.py` — turns free text into a structured `Task` (Qwen-first
+  with a deterministic, semantic fast path and fallback). This is the primary
+  interpretation path.
+* `task_validator.py` — validates a task against the capability registry
+  (existence, required parameters, types, dependencies, references, risk).
+* `task_planner.py` — turns a validated task into an execution plan with
+  dependency ordering and `$variable` output references.
+* `verifier.py` — deterministic post-action observation/verification that never
+  claims unconfirmed success.
+* `interpreter.py` — the legacy flat-intent interpreter, retained for
+  back-compatibility and as a shared `classify_category` signal.
+* `prompts.py` — small, single-purpose prompts for the task interpreter, planner,
   recovery, and content generation.
 * `json_llm.py` — strict structured-output helper with JSON extraction and repair.
 * `recovery.py` — bounded, catalog-constrained recovery for failed steps.
-* `diagnostics.py` — structured per-request trace with redaction.
+* `diagnostics.py` — structured per-request trace (task, validation, plan,
+  execution, verification) with redaction.
 
 This package never imports a concrete provider and never executes commands.
 
@@ -366,21 +389,25 @@ This package never imports a concrete provider and never executes commands.
 Responsible only for creating an execution plan.
 
 The planner is deterministic by default: it maps a `StructuredIntent` onto the
-smallest valid plan. It consults the LLM only for compositional requests the
-rule table cannot express, and then only to select from the capability catalog.
+smallest valid plan (used for legacy knowledge/compare/summarize workflows and as
+an informational fallback). For computer-control requests, the `reasoning/`
+`TaskPlanner` maps a validated `Task` onto a dependency-ordered plan.
 
 ---
 
 ## executor.py
-
 Responsible for executing an `ExecutionPlan` step-by-step and updating the
 shared `ExecutionContext`.
 
 It owns retrieval, LLM, and explicitly planned tool execution for the current
 plan actions. Tool actions are routed through `ToolRouter` before execution.
+After each successful tool call it records an honest observation/verification
+(`reasoning.verifier`) and publishes named outputs for later steps. On a
+recoverable failure it performs one bounded, catalog-constrained recovery attempt
+per step, capped by a plan-wide budget (`MAX_PLAN_RECOVERIES`) to prevent loops.
 
-Future executor versions may add retries, branching, parallelism, and
-conditional steps without moving those responsibilities back into Brain.
+Future executor versions may add branching and parallelism without moving those
+responsibilities back into Brain.
 
 ---
 

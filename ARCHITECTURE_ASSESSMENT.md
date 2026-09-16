@@ -1,27 +1,34 @@
 # Atlas Architecture Assessment
 
-**Audit date:** 2026-09-16
-**Audited version:** V3.2 codebase
+**Audit date:** 2026-09-16 (updated for the V3.4 semantic task pipeline)
+**Audited version:** V3.4 codebase
 
 ## Current architecture
 
-The implemented runtime is a local-first assistant with deterministic orchestration:
+The implemented runtime is a local-first assistant with LLM interpretation
+deterministic orchestration:
 
 ```text
-CLI / React control room -> Brain -> IntentClassifier -> Planner -> Executor
-                                            |                 |
-                                            |                 +-> ToolRouter -> PermissionEngine
-                                            |                                      |
-                                            |                                      +-> Computer / PowerShell / Web tools
-                                            +-> Knowledge retrieval -> ChromaDB
-                                            +-> Evidence-gated Ollama response
-                                            +-> Conversation Memory
+CLI / React control room
+        |
+      Brain
+        |-- Reasoning package (LLM proposes meaning, deterministic code executes)
+        |     Semantic Task Interpreter -> Task IR -> Task Validator -> Task Planner
+        |-- Executor -> ToolRouter -> PermissionEngine -> Computer / PowerShell / Web tools
+        |-- Verifier (observation / verification)
+        |-- Recovery (bounded, catalog-constrained replanning)
+        |-- Knowledge retrieval -> ChromaDB
+        |-- Evidence-gated Ollama response
+        |-- Conversation Memory
 ```
 
 - `atlas.py` initializes logging, indexing, vector storage, memory, Brain, and the CLI loop.
-- `brain.py` creates one `ExecutionContext`, classifies intent, creates a plan, and delegates execution.
-- `planner.py` creates deterministic retrieval, computer, application, text-entry, and web-search plans.
-- `executor.py` runs retrieval, LLM, and routed tool steps and preserves bounded structured results.
+- `brain.py` creates one `ExecutionContext` and runs interpret -> validate -> plan -> execute -> verify.
+- `reasoning/task_interpreter.py` turns free text into a structured `Task`.
+- `reasoning/task_validator.py` validates the task against the capability registry.
+- `reasoning/task_planner.py` builds a dependency-ordered plan with `$variable` references.
+- `planner.py` retains deterministic legacy plans (knowledge, compare, summarize, informational fallback).
+- `executor.py` runs retrieval, LLM, and routed tool steps, records verification, and applies bounded recovery.
 - `knowledge_search.py` owns staged semantic, keyword, and metadata retrieval with diagnostics.
 - `indexer.py`, `document_loader.py`, `chunker.py`, and `vector_store.py` form the local document pipeline.
 - `memory/` provides persisted conversational sessions and prompt history.
@@ -32,13 +39,19 @@ CLI / React control room -> Brain -> IntentClassifier -> Planner -> Executor
 - `launch_atlas.bat` and `launch_atlas.ps1` start the API, frontend, and browser together.
 
 ## What works
-
 - CLI conversation and session commands.
 - Ollama-backed local generation.
+- LLM-first semantic task interpretation with a deterministic fast path.
+- Structured `Task` / `TaskAction` intermediate representation.
+- Capability registry with parameter schemas, required parameters, risk, and verification contracts.
+- Task validation before any planning or execution.
+- Dynamic, dependency-ordered planning with `$variable` output references.
+- Post-action observation and honest verification (verified / unverified / failed).
+- Bounded, plan-wide replanning with an anti-loop budget.
 - PDF indexing with incremental file hashing.
 - ChromaDB storage and hybrid retrieval.
 - Retrieval confidence gating that can skip the LLM when evidence is weak.
-- Deterministic intent classification and plan execution.
+- Deterministic plan execution.
 - Persisted conversation memory with session management.
 - Centralized configuration and logging.
 - Read-only PowerShell inspection with command validation and structured results.
@@ -47,7 +60,7 @@ CLI / React control room -> Brain -> IntentClassifier -> Planner -> Executor
 
 ## Partial or incomplete
 
-- `ExecutionContext` now tracks task lifecycle, tool calls, permissions, observations, web sources, verification placeholders, and JSON-safe snapshots. Observer/verifier behavior itself is still not implemented. API task snapshots now persist durably, while live execution contexts remain process-local.
+- `ExecutionContext` tracks task lifecycle, tool calls, permissions, observations, web sources, verification results, and JSON-safe snapshots. The observer/verifier is now implemented for the plannable capability set; capabilities without a verification contract are reported as `unverified` rather than assumed successful. API task snapshots persist durably, while live execution contexts remain process-local.
 - The plan/step model supports existing retrieval actions and explicit `invoke_tool` steps routed through `ToolRouter`.
 - The provider abstraction exists, while the public LLM facade still constructs `OllamaProvider` directly.
 - Memory is conversation/session memory; long-term memory, provenance, confidence, and retrieval are not implemented.
@@ -56,8 +69,7 @@ CLI / React control room -> Brain -> IntentClassifier -> Planner -> Executor
 - Automated contract tests cover the runtime, computer tools, PowerShell, web search, YouTube parsing, application resolution, text entry, APIs, and frontend build.
 
 ## Planned or missing
-
-- Observer and verifier as first-class components.
+- Downloads, browser automation, and richer page extraction.
 - Web downloads, browser interaction, richer page extraction, and full source trust scoring.
 - Approval-aware multi-tool planning and failure recovery.
 - GUI, voice, and vision interfaces.
@@ -75,7 +87,7 @@ The existing Brain/Planner/Executor boundary, shared dataclasses, evidence model
 | Permissions | SAFE, CONFIRM, AUTONOMOUS modes and task-bound confirmation pause implemented | Persist per-task approvals and add richer policy configuration |
 | Computer control | Inspection, generic named launch, and confirmation-gated text entry routed through Executor | Add richer window targeting and controlled document/file writes |
 | Terminal safety | Read-only validated PowerShell with trusted command knowledge and structured results | Add AST-aware validation only if mutation is enabled later |
-| Observation and verification | Not present | Add post-action observation and evidence-based verification |
+| Observation and verification | Implemented for the plannable capability set (`reasoning/verifier.py`); unverifiable capabilities reported honestly | Extend verification contracts to more capabilities |
 | Internet access | Read-only web search/page retrieval with direct YouTube results, thumbnails, provenance, and SSRF checks | Add browser automation, downloads with approval, and source trust scoring |
 | Testing | 55 Python tests plus frontend build and live smoke checks | Add browser automation and broader retrieval/LLM integration tests |
 

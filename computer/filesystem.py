@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -121,7 +122,11 @@ class FilesystemSearchTool(_BoundedFilesystemTool):
         name="filesystem.search",
         description="Search filenames below the allowed root without modifying files.",
         category="computer.filesystem",
-        input_schema={"pattern": {"type": "string"}, "max_results": {"type": "integer"}},
+        input_schema={
+            "pattern": {"type": "string", "description": "filename glob, e.g. *.pdf"},
+            "path": {"type": "string", "description": "optional subfolder to search"},
+            "max_results": {"type": "integer"},
+        },
         output_schema={"matches": {"type": "array"}},
         permission_level=PermissionLevel.READ_ONLY,
         risk_level=RiskLevel.READ_ONLY,
@@ -132,8 +137,13 @@ class FilesystemSearchTool(_BoundedFilesystemTool):
             self.validate(parameters)
             pattern = str(parameters["pattern"])
             max_results = min(max(int(parameters.get("max_results", 100)), 1), 500)
+            # "search my Downloads folder" scopes the walk; otherwise the whole
+            # allowed root is searched. The path is bounded by _path().
+            base = self._path(str(parameters["path"])) if parameters.get("path") else self._root
+            if not base.is_dir():
+                return ToolResult.failure(f"Directory not found: {base}", recoverable=True)
             matches: list[str] = []
-            for path in self._root.rglob("*"):
+            for path in base.rglob("*"):
                 if fnmatch.fnmatch(path.name, pattern):
                     matches.append(str(path))
                     if len(matches) >= max_results:
@@ -144,4 +154,154 @@ class FilesystemSearchTool(_BoundedFilesystemTool):
                 output={"matches": matches, "truncated": len(matches) >= max_results},
             )
         except (KeyError, OSError, ValueError) as exc:
+            return ToolResult.failure(str(exc), recoverable=True)
+class FilesystemWriteTool(_BoundedFilesystemTool):
+    """Permission-gated UTF-8 text write under the allowed root."""
+
+    metadata = ToolMetadata(
+        name="filesystem.write",
+        description="Write UTF-8 text to a file under the allowed root.",
+        category="computer.filesystem",
+        input_schema={
+            "path": {"type": "string", "description": "destination file path"},
+            "text": {"type": "string", "description": "text to write"},
+            "overwrite": {"type": "boolean", "description": "replace an existing file"},
+        },
+        output_schema={"path": {"type": "string"}, "bytes": {"type": "integer"}},
+        permission_level=PermissionLevel.MEDIUM_RISK,
+        risk_level=RiskLevel.MEDIUM,
+    )
+
+    def execute(self, parameters: dict[str, Any]) -> ToolResult:
+        try:
+            self.validate(parameters)
+            path = self._path(str(parameters["path"]))
+            text = str(parameters["text"])
+            overwrite = bool(parameters.get("overwrite", False))
+            if path.exists() and not overwrite:
+                return ToolResult.failure(
+                    f"File already exists: {path}. Pass overwrite=true to replace it.",
+                    recoverable=True,
+                )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+            return ToolResult(
+                success=True,
+                status="completed",
+                output={"path": str(path), "bytes": len(text.encode("utf-8"))},
+            )
+        except (KeyError, OSError, ValueError) as exc:
+            return ToolResult.failure(str(exc), recoverable=True)
+
+
+class FilesystemCreateFolderTool(_BoundedFilesystemTool):
+    """Permission-gated directory creation under the allowed root."""
+
+    metadata = ToolMetadata(
+        name="filesystem.create_folder",
+        description="Create a directory under the allowed root.",
+        category="computer.filesystem",
+        input_schema={"path": {"type": "string", "description": "directory to create"}},
+        output_schema={"path": {"type": "string"}, "created": {"type": "boolean"}},
+        permission_level=PermissionLevel.MEDIUM_RISK,
+        risk_level=RiskLevel.MEDIUM,
+    )
+
+    def execute(self, parameters: dict[str, Any]) -> ToolResult:
+        try:
+            self.validate(parameters)
+            path = self._path(str(parameters["path"]))
+            existed = path.exists()
+            path.mkdir(parents=True, exist_ok=True)
+            return ToolResult(
+                success=True,
+                status="completed",
+                output={"path": str(path), "created": not existed},
+            )
+        except (KeyError, OSError, ValueError) as exc:
+            return ToolResult.failure(str(exc), recoverable=True)
+
+
+class FilesystemMoveTool(_BoundedFilesystemTool):
+    """Permission-gated move/rename under the allowed root."""
+
+    metadata = ToolMetadata(
+        name="filesystem.move",
+        description="Move or rename a file or directory under the allowed root.",
+        category="computer.filesystem",
+        input_schema={
+            "source": {"type": "string"},
+            "destination": {"type": "string"},
+            "overwrite": {"type": "boolean"},
+        },
+        output_schema={"source": {"type": "string"}, "destination": {"type": "string"}},
+        permission_level=PermissionLevel.MEDIUM_RISK,
+        risk_level=RiskLevel.MEDIUM,
+    )
+
+    def execute(self, parameters: dict[str, Any]) -> ToolResult:
+        try:
+            self.validate(parameters)
+            source = self._path(str(parameters["source"]))
+            destination = self._path(str(parameters["destination"]))
+            if not source.exists():
+                return ToolResult.failure(f"Source not found: {source}", recoverable=True)
+            if destination.exists() and not bool(parameters.get("overwrite", False)):
+                return ToolResult.failure(
+                    f"Destination already exists: {destination}", recoverable=True
+                )
+            # A destination directory means "move into it", preserving the name.
+            if destination.is_dir():
+                destination = destination / source.name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source.replace(destination)
+            return ToolResult(
+                success=True,
+                status="completed",
+                output={"source": str(source), "destination": str(destination)},
+            )
+        except (KeyError, OSError, ValueError) as exc:
+            return ToolResult.failure(str(exc), recoverable=True)
+
+
+class FilesystemCopyTool(_BoundedFilesystemTool):
+    """Permission-gated copy under the allowed root."""
+
+    metadata = ToolMetadata(
+        name="filesystem.copy",
+        description="Copy a file or directory under the allowed root.",
+        category="computer.filesystem",
+        input_schema={
+            "source": {"type": "string"},
+            "destination": {"type": "string"},
+            "overwrite": {"type": "boolean"},
+        },
+        output_schema={"source": {"type": "string"}, "destination": {"type": "string"}},
+        permission_level=PermissionLevel.MEDIUM_RISK,
+        risk_level=RiskLevel.MEDIUM,
+    )
+
+    def execute(self, parameters: dict[str, Any]) -> ToolResult:
+        try:
+            self.validate(parameters)
+            source = self._path(str(parameters["source"]))
+            destination = self._path(str(parameters["destination"]))
+            if not source.exists():
+                return ToolResult.failure(f"Source not found: {source}", recoverable=True)
+            if source.is_dir():
+                return ToolResult.failure("Directory copy is not supported", recoverable=False)
+            if destination.is_dir():
+                destination = destination / source.name
+            if destination.exists() and not bool(parameters.get("overwrite", False)):
+                return ToolResult.failure(
+                    f"Destination already exists: {destination}", recoverable=True
+                )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+            return ToolResult(
+                success=True,
+                status="completed",
+                output={"source": str(source), "destination": str(destination)},
+            )
+        except (KeyError, OSError, ValueError, shutil.Error) as exc:
             return ToolResult.failure(str(exc), recoverable=True)

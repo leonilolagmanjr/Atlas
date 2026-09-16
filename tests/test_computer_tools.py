@@ -74,6 +74,12 @@ class ComputerToolTests(unittest.TestCase):
                 "filesystem.read",
                 "filesystem.metadata",
                 "filesystem.search",
+                # High-level, permission-gated filesystem mutations added for the
+                # structured task pipeline (Phase 4 capability registry).
+                "filesystem.write",
+                "filesystem.create_folder",
+                "filesystem.move",
+                "filesystem.copy",
                 "processes.list",
                 "processes.inspect",
                 "system.info",
