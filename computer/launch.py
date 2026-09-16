@@ -119,30 +119,71 @@ def resolve_application_name(name: str) -> Path | None:
     candidates.extend(_registry_application_executables(normalized))
 
     # Portable and per-user applications often install under a directory whose
-    # name matches the request. Keep the scan shallow and file-type restricted.
-    for root in (local_app_data, program_files):
+    # name matches the request. Match on any meaningful token ("razer synapse"
+    # -> "Razer") and scan a few levels deep for the real executable.
+    name_tokens = {token for token in re.findall(r"[a-z0-9]+", normalized) if len(token) >= 3}
+    program_files_x86 = Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"))
+    for root in (local_app_data, program_files, program_files_x86):
         if not root.is_dir():
             continue
         for directory in root.iterdir():
-            if normalized not in directory.name.casefold():
+            directory_name = directory.name.casefold()
+            if normalized not in directory_name and not (name_tokens & set(re.findall(r"[a-z0-9]+", directory_name))):
                 continue
             try:
-                candidates.extend(directory.glob("*.exe"))
-                candidates.extend(directory.glob("*/*.exe"))
+                for depth_glob in ("*.exe", "*/*.exe", "*/*.exe"):
+                    candidates.extend(directory.glob(depth_glob))
             except OSError:
                 continue
+    # Rank candidates: exact/named matches and non-helper binaries first, so a
+    # nested engine (RazerAppEngine.exe) beats an uninstaller/setup stub.
+    def _rank(candidate: Path) -> tuple[int, int, str]:
+        stem = candidate.stem.casefold()
+        noise = any(marker in stem for marker in _REGISTRY_EXE_NOISE)
+        named = stem == normalized or stem in name_tokens
+        token_match = any(token in stem for token in name_tokens)
+        tier = 0 if named else 1 if (token_match and not noise) else 2 if not noise else 3
+        return (tier, len(stem), stem)
 
-    name_tokens = {token for token in re.findall(r"[a-z0-9]+", normalized) if len(token) >= 3}
-    candidates.sort(
-        key=lambda candidate: 0
-        if candidate.stem.casefold() in name_tokens or candidate.stem.casefold() == normalized
-        else 1
-    )
+    candidates.sort(key=_rank)
     for candidate in candidates:
         if candidate.is_file() and candidate.suffix.casefold() == ".exe":
             return candidate.resolve()
     return None
 
+
+# Substrings that mark an executable as an installer/updater/helper rather than
+# the application itself. These are de-prioritized so the real binary wins.
+_REGISTRY_EXE_NOISE = (
+    "uninstall",
+    "installer",
+    "setup",
+    "upgrade",
+    "update",
+    "helper",
+    "service",
+    "crashpad",
+    "crashreport",
+)
+
+
+def _name_tokens(text: str) -> set[str]:
+    return {token for token in re.findall(r"[a-z0-9]+", text.casefold()) if len(token) >= 3}
+
+
+def _matches_registry_entry(normalized_name: str, display_name: str, install_location: Path | None) -> bool:
+    # Accept if the full request appears, or if every meaningful token of the
+    # request appears (e.g. "razer synapse" matches "Razer Synapse 3").
+    haystacks = [display_name]
+    if install_location is not None:
+        haystacks.append(install_location.as_posix().casefold())
+    for haystack in haystacks:
+        if normalized_name in haystack:
+            return True
+        request_tokens = _name_tokens(normalized_name)
+        if request_tokens and request_tokens.issubset(_name_tokens(haystack)):
+            return True
+    return False
 
 def _registry_application_executables(normalized_name: str) -> list[Path]:
     if sys.platform != "win32":
@@ -168,19 +209,53 @@ def _registry_application_executables(normalized_name: str) -> list[Path]:
                             install_location_value = str(_registry_value(app_key, winreg, "InstallLocation") or "").strip()
                             install_location = Path(install_location_value) if install_location_value else None
                             display_icon = str(_registry_value(app_key, winreg, "DisplayIcon") or "")
-                            if normalized_name not in display_name and (install_location is None or normalized_name not in install_location.name.casefold()):
+                            if not _matches_registry_entry(normalized_name, display_name, install_location):
                                 continue
                             icon_path = Path(re.split(r",\s*-?\d+$", display_icon.strip('"'), maxsplit=1)[0])
                             if icon_path.suffix.casefold() == ".exe":
                                 candidates.append(icon_path)
+                            # Some entries leave InstallLocation empty but the
+                            # DisplayIcon sits inside the real install dir (Razer
+                            # Synapse: ProgramData\Razer\Razer Synapse\synapse.ico).
+                            if install_location is None and display_icon:
+                                icon_dir = icon_path.parent
+                                if icon_dir.is_dir():
+                                    install_location = icon_dir
                             if install_location is not None and install_location.is_dir():
-                                candidates.extend(install_location.glob("*.exe"))
-                                candidates.extend(install_location.glob("*/*.exe"))
+                                # Scan a few levels deep and rank by name match so
+                                # nested engines (RazerAppEngine) are found while
+                                # uninstallers/setup stubs are pushed down.
+                                for depth_glob in ("*.exe", "*/*.exe", "*/*.exe"):
+                                    for found in install_location.glob(depth_glob):
+                                        if found.is_file():
+                                            candidates.append(found)
                     except OSError:
                         continue
         except OSError:
             continue
-    return candidates
+    return _rank_registry_candidates(normalized_name, candidates)
+
+
+def _rank_registry_candidates(normalized_name: str, candidates: list[Path]) -> list[Path]:
+    # Best candidate first: stem shares a token with the request and is not an
+    # installer/updater/helper. Sorting here lets resolve_application_name pick
+    # the real binary rather than the alphabetically-first helper exe.
+    request_tokens = _name_tokens(normalized_name)
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate).casefold()
+        if key not in seen:
+            seen.add(key)
+            unique.append(candidate)
+
+    def score(candidate: Path) -> tuple[int, int, str]:
+        stem = candidate.stem.casefold()
+        noise = any(marker in stem for marker in _REGISTRY_EXE_NOISE)
+        token_match = any(token in stem for token in request_tokens)
+        return (0 if (token_match and not noise) else 1 if not noise else 2, len(stem), stem)
+
+    return sorted(unique, key=score)
 
 
 def _registry_value(key: Any, winreg: Any, name: str) -> Any:
