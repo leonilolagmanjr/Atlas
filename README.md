@@ -198,6 +198,31 @@ Use `/approve` or `/deny` after Atlas pauses for confirmation. Application-name
 resolution (for example, mapping `Open VS Code` to a verified executable) is
 not implemented yet.
 
+## Web console
+
+The repository includes a React/Vite control room in `frontend/`. It uses the
+local API and does not duplicate Atlas planning or tool execution in the
+browser.
+
+Start the API from the repository root:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000
+```
+
+In a second terminal:
+
+```powershell
+Set-Location frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173`. The command workspace, task polling, approval
+flow, installed applications, tool registry, system inspection, and honest
+backend-unavailable states are connected to the current runtime. Files,
+Knowledge, Memory, and editable Settings require additional API endpoints.
+
 In addition to normal questions, Atlas supports conversation/session commands:
 - `/new [title]`
 - `/list`

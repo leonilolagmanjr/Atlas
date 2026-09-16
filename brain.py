@@ -34,6 +34,7 @@ class Brain:
     ) -> None:
         self._planner = planner or Planner()
         self._pending_context: ExecutionContext | None = None
+        self._last_context: ExecutionContext | None = None
         self._executor = executor or Executor(
             vector_store=vector_store,
             system_prompt=system_prompt,
@@ -48,6 +49,7 @@ class Brain:
 
         started_at = time.perf_counter()
         context = ExecutionContext(user_input=user_input, normalized_input=user_input.strip())
+        self._last_context = context
 
         logger.info("Brain received request")
 
@@ -91,6 +93,12 @@ class Brain:
             context.execution_plan.status.value if context.execution_plan is not None else "none",
         )
         return context.final_response or UNKNOWN_RESPONSE
+
+    @property
+    def last_context(self) -> ExecutionContext | None:
+        """Expose the latest task snapshot to an API adapter."""
+
+        return self._last_context
 
     def approve_pending(self) -> str:
         """Approve and resume the current in-memory confirmation-paused plan."""
