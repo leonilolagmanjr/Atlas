@@ -12,6 +12,23 @@ Atlas is not a chatbot.
 
 Atlas is designed to become an extensible AI platform capable of reasoning, planning, learning, remembering, and using tools.
 
+## Local-first computer-agent migration
+
+The repository audit is complete. The current implementation is a local RAG
+runtime, not yet a computer-control agent. The incremental migration is:
+
+1. Execution context: task lifecycle, tool calls, permissions, observations, and verification state.
+2. Tool contract: metadata, schemas, validation, structured results, registry, and routing.
+3. Permission engine: risk levels and SAFE, CONFIRM, and AUTONOMOUS modes.
+4. Safe computer tools: read-only filesystem, process, application, and system inspection.
+5. Controlled PowerShell execution with command validation and structured output.
+6. Observer and verifier with evidence-based success reporting.
+7. Internet search, webpage retrieval, provenance, controlled downloads, and package management.
+8. Multi-tool planning and recovery, followed later by GUI, voice, and vision adapters.
+
+The detailed audit, gap analysis, file map, and Phase 1 plan are in
+`ARCHITECTURE_ASSESSMENT.md`.
+
 
 ---
 

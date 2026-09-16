@@ -71,6 +71,10 @@ MAX_SESSIONS: int = 50
 # Auto-save session/messaging changes to disk.
 AUTO_SAVE: bool = True
 
+# ---- Computer tools ----
+EXECUTION_MODE: str = "confirm"
+COMPUTER_ROOT: Path = PROJECT_ROOT
+
 # ---- Logging ----
 LOG_LEVEL: str = "INFO"
 LOG_TO_FILE: bool = False

@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from collections.abc import Callable
 from typing import Optional
 
 from memory.memory_manager import MemoryManager
@@ -46,8 +47,16 @@ def _session_to_export_dict(meta: ConversationSessionMetadata, messages: list[di
 
 
 class CLI:
-    def __init__(self, *, memory_manager: MemoryManager) -> None:
+    def __init__(
+        self,
+        *,
+        memory_manager: MemoryManager,
+        approve_callback: Callable[[], str] | None = None,
+        deny_callback: Callable[[], str] | None = None,
+    ) -> None:
         self._memory = memory_manager
+        self._approve_callback = approve_callback
+        self._deny_callback = deny_callback
 
     def _ensure_active(self) -> None:
         if not self._memory.get_active_session_id():
@@ -65,6 +74,8 @@ class CLI:
             "  /export <session_id>        Export session to JSON file\n"
             "  /import <path>              Import session JSON and create it\n"
             "  /clear                       Clear active session messages (keeps session)\n"
+            "  /approve                     Approve the pending Atlas action\n"
+            "  /deny                        Cancel the pending Atlas action\n"
             "  /help                         Show this help\n"
             "\n"
             "Any other input is treated as a user question.\n"
@@ -83,6 +94,16 @@ class CLI:
 
         if cmd == "/help":
             return self.help_text()
+
+        if cmd == "/approve":
+            if self._approve_callback is None:
+                return "Approval is not available in this runtime."
+            return self._approve_callback()
+
+        if cmd == "/deny":
+            if self._deny_callback is None:
+                return "Cancellation is not available in this runtime."
+            return self._deny_callback()
 
         if cmd == "/new":
             title = _parse_title(rest) if rest else None

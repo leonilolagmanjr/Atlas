@@ -33,6 +33,19 @@ class PlanStatus(str, Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     SKIPPED = "SKIPPED"
+    WAITING_FOR_CONFIRMATION = "WAITING_FOR_CONFIRMATION"
+
+
+class TaskStatus(str, Enum):
+    """Lifecycle state for the complete user task."""
+
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+    UNCERTAIN = "UNCERTAIN"
+    WAITING_FOR_CONFIRMATION = "WAITING_FOR_CONFIRMATION"
 
 
 @dataclass
@@ -110,9 +123,23 @@ class ExecutionContext:
     """Central state for a single Atlas request execution."""
 
     user_input: str
+    task_id: str = field(default_factory=lambda: str(uuid4()))
     normalized_input: Optional[str] = None
+    goal: Optional[str] = None
     intent: Optional[str] = None
+    status: TaskStatus = TaskStatus.PENDING
     execution_plan: Optional[ExecutionPlan] = None
+    current_step: Optional[str] = None
+    completed_steps: list[str] = field(default_factory=list)
+    pending_steps: list[str] = field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    memory_references: list[str] = field(default_factory=list)
+    web_sources: list[str] = field(default_factory=list)
+    permissions: list[dict[str, Any]] = field(default_factory=list)
+    observations: list[dict[str, Any]] = field(default_factory=list)
+    verification_results: list[dict[str, Any]] = field(default_factory=list)
     evidence: Evidence = field(default_factory=Evidence)
     retrieval_result: Optional[RetrievalResult] = None
     llm_response: Optional[str] = None
@@ -121,4 +148,38 @@ class ExecutionContext:
     confidence: Optional[float] = None
     execution_time: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def request(self) -> str:
+        """Expose the task request using the runtime terminology."""
+
+        return self.user_input
+
+    @property
+    def final_result(self) -> Optional[str]:
+        """Expose the final response using the runtime terminology."""
+
+        return self.final_response
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-compatible snapshot for logs and checkpoints."""
+
+        return _json_safe(self)
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if hasattr(value, "__dataclass_fields__"):
+        return {
+            name: _json_safe(getattr(value, name))
+            for name in value.__dataclass_fields__
+        }
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
 

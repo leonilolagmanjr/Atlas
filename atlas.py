@@ -9,13 +9,15 @@ import logging
 from pathlib import Path
 
 from brain import Brain
-from config import KNOWLEDGE_FOLDER, LOG_FILE, LOG_LEVEL, LOG_TO_FILE
+from computer.runtime import register_read_only_tools
+from config import COMPUTER_ROOT, EXECUTION_MODE, KNOWLEDGE_FOLDER, LOG_FILE, LOG_LEVEL, LOG_TO_FILE
 from indexer import index_knowledge_base
 from logger import setup_logging
 from vector_store import VectorStore
 
 from cli import CLI
 from memory.memory_manager import MemoryManager
+from tools import ExecutionMode, PermissionEngine, ToolRegistry, ToolRouter
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +47,24 @@ def main() -> None:
     index_knowledge_base(vector_store=vector_store, knowledge_folder=KNOWLEDGE_FOLDER)
 
     memory_manager = MemoryManager()
-    cli = CLI(memory_manager=memory_manager)
+    tool_registry = ToolRegistry()
+    register_read_only_tools(tool_registry, root=COMPUTER_ROOT)
+    tool_router = ToolRouter(
+        registry=tool_registry,
+        permission_engine=PermissionEngine(mode=ExecutionMode(EXECUTION_MODE.lower())),
+    )
 
     brain = Brain(
         vector_store=vector_store,
         system_prompt=system_prompt,
         retrieval_template=retrieval_template,
         memory_manager=memory_manager,
+        tool_router=tool_router,
+    )
+    cli = CLI(
+        memory_manager=memory_manager,
+        approve_callback=brain.approve_pending,
+        deny_callback=brain.deny_pending,
     )
 
     logger.info("Startup: entering chat loop")

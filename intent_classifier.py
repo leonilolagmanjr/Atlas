@@ -27,6 +27,7 @@ INTENT_LABELS = {
     "DATE",
     "LOCATION",
     "PROCEDURE",
+    "APPLICATION",
     "UNKNOWN",
 }
 
@@ -55,6 +56,15 @@ class IntentClassifier:
         signals: dict[str, str] = {}
 
         # ORDER MATTERS: more specific patterns first.
+        if _matches_any(normalized, [r"\bopen\b", r"\blaunch\b", r"\bstart\b"]) and ".exe" in normalized:
+            signals["pattern"] = "application-launch"
+            return IntentClassification(
+                intent="APPLICATION",
+                confidence=0.92,
+                rationale="detected an executable application launch request",
+                signals=signals,
+            )
+
         if _matches_any(normalized, [
             r"\bcompare\b",
             r"\bvs\b",

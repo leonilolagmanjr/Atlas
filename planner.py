@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from models import ExecutionPlan, ExecutionStep, PlannerDecision
 
 logger = logging.getLogger(__name__)
+
+EXECUTABLE_RE = re.compile(r"(?:[A-Za-z]:[\\/][^\n]*?\.exe|[^\s]+\.exe)", re.IGNORECASE)
 
 
 class Planner:
@@ -19,7 +22,24 @@ class Planner:
 
         # Plan templates are deterministic rule outputs.
         # Even before retrieval strategies diverge, the *plan shape* differs.
-        if intent == "COMPARE":
+        if intent == "APPLICATION":
+            executable_match = EXECUTABLE_RE.search(user_question)
+            executable = executable_match.group(0).strip('"\'') if executable_match else ""
+            steps = [
+                ExecutionStep(
+                    id="launch_application",
+                    name="Launch Application",
+                    action="invoke_tool",
+                    description="Launch the explicitly selected executable after permission approval.",
+                    metadata={
+                        "tool": "applications.launch",
+                        "parameters": {"executable": executable},
+                    },
+                )
+            ]
+            strategy = "deterministic_application_launch"
+
+        elif intent == "COMPARE":
             steps = [
                 ExecutionStep(
                     id="retrieve_compare_left",

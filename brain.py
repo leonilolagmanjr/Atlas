@@ -8,11 +8,12 @@ import time
 from executor import Executor, UNKNOWN_RESPONSE
 from intent_classifier import IntentClassifier
 
-from models import ExecutionContext
+from models import ExecutionContext, PlanStatus, TaskStatus
 from planner import Planner
 from vector_store import VectorStore
 
 from memory.memory_manager import MemoryManager
+from tools.router import ToolRouter
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +30,16 @@ class Brain:
         planner: Planner | None = None,
         executor: Executor | None = None,
         memory_manager: MemoryManager | None = None,
+        tool_router: ToolRouter | None = None,
     ) -> None:
         self._planner = planner or Planner()
+        self._pending_context: ExecutionContext | None = None
         self._executor = executor or Executor(
             vector_store=vector_store,
             system_prompt=system_prompt,
             retrieval_template=retrieval_template,
             memory_manager=memory_manager,
+            tool_router=tool_router,
         )
 
 
@@ -66,6 +70,8 @@ class Brain:
             context.execution_plan = planner_decision.plan
             context.metadata["planner_decision"] = planner_decision
             self._executor.execute(planner_decision.plan, context)
+            if context.status == TaskStatus.WAITING_FOR_CONFIRMATION:
+                self._pending_context = context
             return self._complete(context, started_at)
 
         except Exception:
@@ -85,3 +91,33 @@ class Brain:
             context.execution_plan.status.value if context.execution_plan is not None else "none",
         )
         return context.final_response or UNKNOWN_RESPONSE
+
+    def approve_pending(self) -> str:
+        """Approve and resume the current in-memory confirmation-paused plan."""
+
+        context = self._pending_context
+        if context is None or context.execution_plan is None:
+            return "There is no pending action to approve."
+        tool_names = {
+            str(step.metadata.get("tool"))
+            for step in context.execution_plan.steps
+            if step.action == "invoke_tool" and step.metadata.get("tool")
+        }
+        context.metadata["approved_tools"] = tool_names
+        self._executor.execute(context.execution_plan, context)
+        if context.status != TaskStatus.WAITING_FOR_CONFIRMATION:
+            self._pending_context = None
+        return context.final_response or "The pending action completed."
+
+    def deny_pending(self) -> str:
+        """Cancel the current in-memory confirmation-paused plan."""
+
+        context = self._pending_context
+        if context is None:
+            return "There is no pending action to deny."
+        context.status = TaskStatus.CANCELLED
+        if context.execution_plan is not None:
+            context.execution_plan.status = PlanStatus.SKIPPED
+        context.final_response = "Action cancelled."
+        self._pending_context = None
+        return context.final_response

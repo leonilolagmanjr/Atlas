@@ -2,6 +2,10 @@
 
 **Version:** V3.2 (Planner + Intent Classification + Staged Hybrid Retrieval)
 
+The verified implementation status and migration plan are maintained in
+[ARCHITECTURE_ASSESSMENT.md](ARCHITECTURE_ASSESSMENT.md). This document defines
+target boundaries; future computer-agent features are not implied to exist.
+
 ---
 
 # Vision
@@ -56,39 +60,10 @@ Favor composition over inheritance where appropriate.
 Atlas is divided into independent layers.
 
 ```
-User
-
-↓
-
-Brain
-
-↓
-
-Planner
-
-↓
-
-Memory (subsystem)
-
-↓
-
-Knowledge
-
-↓
-
-Tool Manager
-
-↓
-
-Tools
-
-↓
-
-LLM
-
-↓
-
-Response
+User -> Brain -> Planner -> Tool Router -> Permission Engine
+							   -> Executor -> Observer -> Verifier
+								   |             |
+					Computer / Internet / Knowledge runtimes
 ```
 
 ## Memory subsystem (implemented)
@@ -373,7 +348,7 @@ The Brain is the "operating system" of Atlas.
 
 ---
 
-# Tool Manager (Future)
+# Tool Manager (planned)
 
 Atlas tools must be independent.
 
@@ -395,13 +370,16 @@ Git
 
 Image
 
-The Tool Manager chooses which tool executes.
+The Tool Registry will expose tool metadata and schemas. The Tool Router will
+resolve structured plan steps. The Permission Engine must approve an action
+before the Executor can invoke it. These components are not yet wired into the
+current retrieval-only executor.
 
 ---
 
-# Memory (Future)
+# Memory
 
-Memory is divided into:
+Conversation memory is implemented. The following layers remain planned:
 
 Conversation Memory
 

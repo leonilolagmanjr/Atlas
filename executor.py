@@ -16,10 +16,12 @@ from models import (
     PlanStatus,
     RetrievalResult,
     StepStatus,
+    TaskStatus,
 )
 from vector_store import VectorStore
 
 from memory.memory_manager import MemoryManager
+from tools.router import ToolRouter
 
 logger = logging.getLogger(__name__)
 
@@ -36,15 +38,18 @@ class Executor:
         system_prompt: str,
         retrieval_template: str,
         memory_manager: MemoryManager | None = None,
+        tool_router: ToolRouter | None = None,
     ) -> None:
         self._vector_store = vector_store
         self._system_prompt = system_prompt
         self._retrieval_template = retrieval_template
         self._memory_manager = memory_manager
+        self._tool_router = tool_router
         self._handlers: dict[str, Callable[[ExecutionContext, ExecutionStep], None]] = {
             "retrieve_knowledge": self._retrieve_knowledge,
             "generate_response": self._generate_response,
             "merge_evidence": self._merge_evidence,
+            "invoke_tool": self._invoke_tool,
         }
 
 
@@ -55,12 +60,13 @@ class Executor:
 
         started_at = time.perf_counter()
         context.execution_plan = plan
+        context.status = TaskStatus.RUNNING
         plan.status = PlanStatus.RUNNING
 
         logger.info("Executor started plan: plan_id=%s steps=%d", plan.plan_id, len(plan.steps))
 
         for step in plan.steps:
-            if plan.status == PlanStatus.FAILED:
+            if plan.status in {PlanStatus.FAILED, PlanStatus.WAITING_FOR_CONFIRMATION}:
                 step.status = StepStatus.SKIPPED
                 logger.info(
                     "Executor skipped step: plan_id=%s step_id=%s action=%s",
@@ -72,8 +78,13 @@ class Executor:
 
             self._execute_step(context, step)
 
-        if plan.status != PlanStatus.FAILED:
+        if plan.status not in {PlanStatus.FAILED, PlanStatus.WAITING_FOR_CONFIRMATION}:
             plan.status = PlanStatus.COMPLETED
+            context.status = TaskStatus.COMPLETED
+        elif plan.status == PlanStatus.WAITING_FOR_CONFIRMATION:
+            context.status = TaskStatus.WAITING_FOR_CONFIRMATION
+        else:
+            context.status = TaskStatus.FAILED
 
         context.execution_time = time.perf_counter() - started_at
         plan.metadata["execution_time"] = context.execution_time
@@ -113,6 +124,10 @@ class Executor:
 
         try:
             handler(context, step)
+            if context.execution_plan and context.execution_plan.status == PlanStatus.WAITING_FOR_CONFIRMATION:
+                step.status = StepStatus.PENDING
+                step.metadata["execution_time"] = time.perf_counter() - started_at
+                return
             step.status = StepStatus.COMPLETED
             step.metadata["execution_time"] = time.perf_counter() - started_at
             logger.info(
@@ -128,6 +143,48 @@ class Executor:
             step.metadata["execution_time"] = time.perf_counter() - started_at
             self._mark_failed(context)
             logger.exception("Executor failed step: plan_id=%s step_id=%s action=%s", plan_id, step.id, step.action)
+
+    def _invoke_tool(self, context: ExecutionContext, step: ExecutionStep) -> None:
+        if self._tool_router is None:
+            raise RuntimeError("Tool router is not configured")
+
+        tool_name = str(step.metadata.get("tool", "")).strip()
+        parameters = step.metadata.get("parameters") or {}
+        if not tool_name:
+            raise ValueError("Tool invocation is missing a tool name")
+        if not isinstance(parameters, dict):
+            raise TypeError("Tool invocation parameters must be a dictionary")
+
+        context.selected_tool = tool_name
+        result = self._tool_router.execute(
+            tool_name,
+            parameters,
+            approved=tool_name in context.metadata.pop("approved_tools", set()),
+        )
+        context.tool_calls.append(
+            {
+                "tool": tool_name,
+                "parameters": parameters,
+                "status": result.status,
+                "success": result.success,
+            }
+        )
+        step.result = result
+        step.metadata["tool_status"] = result.status
+
+        if result.status == "confirmation_required":
+            context.permissions.append(result.metadata)
+            context.warnings.append(result.error or "Tool confirmation required")
+            context.execution_plan.status = PlanStatus.WAITING_FOR_CONFIRMATION
+            context.status = TaskStatus.WAITING_FOR_CONFIRMATION
+            context.final_response = "This action requires your confirmation before Atlas can continue."
+            return
+        if not result.success:
+            context.errors.append(result.error or f"Tool failed: {tool_name}")
+            raise RuntimeError(result.error or f"Tool failed: {tool_name}")
+
+        context.metadata.setdefault("tool_results", []).append(result.output)
+        context.final_response = f"Completed tool action: {tool_name}."
 
     def _merge_evidence(self, context: ExecutionContext, step: ExecutionStep) -> None:
         """Merge accumulated evidence_context_parts and evidence_chunks.
@@ -253,6 +310,7 @@ class Executor:
     def _mark_failed(self, context: ExecutionContext) -> None:
         if context.execution_plan is not None:
             context.execution_plan.status = PlanStatus.FAILED
+        context.status = TaskStatus.FAILED
         context.final_response = UNKNOWN_RESPONSE
 
 

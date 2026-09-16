@@ -1,6 +1,7 @@
 # Atlas
 
-Atlas is a modular, local-first AI operating system foundation.
+Atlas is a local-first AI runtime foundation for retrieval, planning, memory,
+and eventually controlled computer and internet tools.
 
 It is not designed as a monolithic chatbot. Atlas separates orchestration,
 retrieval, indexing, vector storage, prompting, logging, and LLM access so each
@@ -8,7 +9,13 @@ part can evolve independently.
 
 ## Current Version
 
-Atlas is currently implemented as the V3.2 Brain foundation (intent-based deterministic planning + staged hybrid retrieval).
+Atlas is currently implemented as the V3.2 Brain foundation (intent-based
+deterministic planning, staged hybrid retrieval, and conversation memory).
+
+The computer-agent architecture is being added incrementally. Computer control,
+internet access, permissions, observation, and verification are not yet
+implemented. See [ARCHITECTURE_ASSESSMENT.md](ARCHITECTURE_ASSESSMENT.md) for
+the verified audit and migration plan.
 
 Implemented foundation:
 
@@ -28,6 +35,7 @@ Implemented foundation:
 - Retrieval diagnostics
 - Hybrid retrieval with semantic, keyword, and metadata signals
 - Adaptive retrieval confidence policy
+- Windows computer tools for bounded filesystem, process, system, and installed-application inspection, plus permission-gated executable launch
 
 ## Retrieval Pipeline
 
@@ -121,6 +129,8 @@ Atlas/
     retrieval.txt
   knowledge/
     *.pdf
+  tools/               Tool contracts and runtime integrations (in progress)
+  computer/            Read-only local computer tools (in progress)
   database/            Local generated ChromaDB data, ignored by git
 ```
 
@@ -182,6 +192,11 @@ python atlas.py
 ```
 
 Atlas indexes changed documents at startup and then enters a backend CLI loop.
+
+Explicit executable launch requests are planned as permission-gated actions.
+Use `/approve` or `/deny` after Atlas pauses for confirmation. Application-name
+resolution (for example, mapping `Open VS Code` to a verified executable) is
+not implemented yet.
 
 In addition to normal questions, Atlas supports conversation/session commands:
 - `/new [title]`
