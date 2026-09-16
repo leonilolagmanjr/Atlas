@@ -1,6 +1,6 @@
-# Atlas V3.2 TODO
+# Atlas V3.2 Status
 
-## Computer-agent foundation
+## Completed
 
 - [x] Audit current runtime and document implementation gaps
 - [x] Add serializable task-oriented ExecutionContext fields
@@ -13,23 +13,25 @@
 - [x] Add controlled application launch with explicit permission
 - [x] Wire ToolRegistry and ToolRouter into Brain/Executor plan execution
 - [x] Add planner intent and approval UX for explicit application actions
-- [ ] Resolve application names to trusted executable paths
 - [x] Add local FastAPI adapter for current runtime capabilities
 - [x] Add React/Vite control room for exposed API capabilities
 - [x] Add API/frontend smoke documentation and tests
+- [x] Implement rule-based intent classifier (no LLM)
+- [x] Populate `ExecutionContext.intent` in `Brain.process()` before planning
+- [x] Add `memory/` conversational session subsystem and persisted session lifecycle
+- [x] Audit and align documentation with implementation (README.md, ARCHITECTURE.md, ROADMAP.md, INSTALL.md, CONFIGURATION.md, TESTING.md)
+- [x] Run syntax/import validation and frontend build verification
+
+## Planned / not yet implemented
+
+- [ ] Resolve application names to trusted executable paths
 - [ ] Add knowledge, memory, and filesystem API endpoints
 - [ ] Add PowerShell terminal tool and streamed command output
 - [ ] Add internet runtime with provenance and download safety
+- [ ] Add durable task history outside the current in-memory API process
+- [ ] Add observer/verifier as first-class components after safe tool execution is stable
 
-- [x] Read/confirm current architecture: Brain/Planner/Executor and models
-- [x] Implement rule-based intent classifier (no LLM)
-- [x] Populate `ExecutionContext.intent` in `Brain.process()` before planning
+## Current operating posture
 
-- [x] Provider abstraction scaffolding (base + ollama provider)
-- [x] Planner and executor module boundaries are in place (deterministic planner + sequential executor)
-
-- [x] Audit and align documentation with implementation (README.md, ARCHITECTURE.md, ROADMAP.md)
-- [x] Decide whether to add missing doc files (INSTALL.md, CONFIGURATION.md) if they are absent
-
-- [ ] Run syntax/import checks and a few manual CLI questions for multiple intents
+Atlas is now a verified local-first foundation with retrieval, memory, tool permissioning, and a browser-based control room. The remaining items are additive capabilities rather than core architecture gaps.
 

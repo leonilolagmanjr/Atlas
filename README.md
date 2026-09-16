@@ -258,6 +258,23 @@ not as a single hard pre-check before all retries.
 
 ## Generated Files
 
+During normal operation Atlas may create or update the following generated artifacts in the repository:
+
+- `database/`
+  - ChromaDB storage and persisted index metadata
+  - `database/index_state.json` for incremental PDF reindexing
+  - optional log output when file logging is enabled
+- `memory/sessions/`
+  - per-session conversation stores and metadata persisted on disk
+- `knowledge/`
+  - user-provided source documents, typically PDFs
+- `.venv/`
+  - local Python environment created during setup
+- `frontend/node_modules/`
+  - installed NPM dependencies when the UI is started locally
+
+These folders are runtime outputs, not source code, and are expected to change as the project is used.
+
 The following are local runtime artifacts and should not be committed:
 
 - `__pycache__/`

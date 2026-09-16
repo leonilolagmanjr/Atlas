@@ -12,6 +12,19 @@ Atlas is not a chatbot.
 
 Atlas is designed to become an extensible AI platform capable of reasoning, planning, learning, remembering, and using tools.
 
+## Current status (2026-09-16)
+
+Atlas is currently at V3.2: a local retrieval runtime with deterministic planning, persistent conversation memory, permission-aware tool routing, and a FastAPI + React control room. The codebase is not yet a fully autonomous computer agent, but the foundation is implemented and documented.
+
+The currently verified runtime includes:
+
+- local PDF ingestion and incremental indexing
+- hybrid retrieval with semantic, keyword, and metadata evidence
+- permission-aware tool registry and explicit executable launch gating
+- read-only Windows system, filesystem, process, and application inspection
+- session memory persistence and CLI commands for conversation lifecycle
+- FastAPI adapter and browser-based control-room UI
+
 ## Local-first computer-agent migration
 
 The repository audit is complete. The current implementation is a local RAG
@@ -99,12 +112,15 @@ Tool Registry
 
 ### Capabilities
 
-Current V3.1 foundation:
+Current V3.2 foundation:
 
 * Deterministic execution plans
 * Sequential plan execution
 * Shared execution context
 * Planner and executor module boundaries
+* Conversation memory and session persistence
+* Tool registry and permission-aware routing
+* Local FastAPI adapter and control-room frontend
 
 Future V3 capabilities:
 

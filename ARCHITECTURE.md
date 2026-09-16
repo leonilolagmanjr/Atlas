@@ -99,12 +99,13 @@ Atlas currently contains:
 * Deterministic planning
 * Sequential plan execution
 * Shared execution context models
+* Conversation memory and persisted session lifecycle
 * Tool registry, permission engine, and permission-aware router
 * Read-only Windows filesystem, process, system, and application inspection
 * Explicit executable launch with confirmation pause/resume
 * FastAPI adapter and React/Vite control room
 
-Future versions will build upon this foundation.
+This is the verified current implementation baseline. Future versions will build upon this foundation, but the runtime is already a working local-first AI assistant with explicit tool boundaries and approval gating.
 
 ---
 
@@ -169,19 +170,28 @@ Multi-agent collaboration
 ```
 Atlas/
 
-atlas.py
-config.py
-logger.py
-llm.py
+api.py                 FastAPI adapter for health, system, tools, tasks, and approval flows
+atlas.py               CLI entry point and REPL loop
+brain.py               Request orchestration and execution state tracking
+executor.py            Sequential plan runner and tool execution boundary
+planner.py             Deterministic plan creation and explicit action intent routing
+models.py              Shared execution context, task, and plan models
+config.py              Centralized runtime configuration
+logger.py              Central logging configuration
+llm.py                 LLM provider wrapper and Ollama call boundary
+intent_classifier.py   Rule-based request classification for plan selection
 
-knowledge/
-memory/
-tools/
-prompts/
+knowledge/             User knowledge base (PDFs)
+memory/                Conversation sessions, models, storage, and context builder
+prompts/               Retrieval and system prompt templates
+providers/             Provider interface and concrete provider implementations
+tools/                 Tool contracts, registry, router, and permission policy
+computer/              Read-only Windows system and app inspection tools
+frontend/              React/Vite control room
 
-database/
-logs/
-cache/
+database/              ChromaDB data, index metadata, and generated runtime state
+logs/                  Optional application logs
+cache/                 Reserved for future performance/local caches
 ```
 
 Folders should remain modular.
