@@ -64,6 +64,21 @@ This repository does not use a `.env` loader in code; the settings are defined a
   - Default: `qwen2.5:7b`
   - Used by `providers/ollama_provider.py` when calling `ollama.chat()`.
 
+## Computer runtime and API
+
+- `EXECUTION_MODE: str`
+  - Default: `confirm`
+  - Values: `safe`, `confirm`, or `autonomous`.
+  - Controls permission decisions for registered tools.
+
+- `COMPUTER_ROOT: Path`
+  - Default: repository root.
+  - Filesystem tools reject paths outside this root.
+
+The web API binds to `127.0.0.1:8000` when started with the documented
+`uvicorn` command. The Vite frontend uses `http://127.0.0.1:8000/api` unless
+`VITE_ATLAS_API_URL` is supplied at frontend build time.
+
 ## Logging
 
 - `LOG_LEVEL: str`

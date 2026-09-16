@@ -84,7 +84,7 @@ Only the required layers should execute for each request.
 
 ---
 
-# Current Version (V3.1)
+# Current Version (V3.2 + local web console)
 
 Atlas currently contains:
 
@@ -99,6 +99,10 @@ Atlas currently contains:
 * Deterministic planning
 * Sequential plan execution
 * Shared execution context models
+* Tool registry, permission engine, and permission-aware router
+* Read-only Windows filesystem, process, system, and application inspection
+* Explicit executable launch with confirmation pause/resume
+* FastAPI adapter and React/Vite control room
 
 Future versions will build upon this foundation.
 
@@ -306,7 +310,8 @@ The current planner is deterministic and does not call the LLM.
 Responsible for executing an `ExecutionPlan` step-by-step and updating the
 shared `ExecutionContext`.
 
-It owns retrieval and LLM execution for the current plan actions.
+It owns retrieval, LLM, and explicitly planned tool execution for the current
+plan actions. Tool actions are routed through `ToolRouter` before execution.
 
 Future executor versions may add retries, branching, parallelism, and
 conditional steps without moving those responsibilities back into Brain.
@@ -348,7 +353,7 @@ The Brain is the "operating system" of Atlas.
 
 ---
 
-# Tool Manager (planned)
+# Tool Manager
 
 Atlas tools must be independent.
 
@@ -370,10 +375,10 @@ Git
 
 Image
 
-The Tool Registry will expose tool metadata and schemas. The Tool Router will
-resolve structured plan steps. The Permission Engine must approve an action
-before the Executor can invoke it. These components are not yet wired into the
-current retrieval-only executor.
+The Tool Registry exposes tool metadata and schemas. The Tool Router resolves
+structured plan steps and evaluates the Permission Engine before invocation.
+The Executor pauses plans that require confirmation. The current registry
+contains read-only computer inspection and explicit executable launch tools.
 
 ---
 
@@ -388,6 +393,17 @@ Session Memory
 Long-Term Memory
 
 Each layer has different responsibilities.
+
+## Web API and frontend
+
+`api.py` is a thin local FastAPI adapter over the existing Brain, tools, and
+computer runtime. It exposes health, system, tool, application, and in-memory
+task endpoints. `frontend/` is a React/Vite control room that polls task state,
+renders approval boundaries, and displays only data returned by the API. It
+does not implement planning or tool execution.
+
+Internet search, webpage retrieval, downloads, PowerShell execution, and GUI
+automation are not implemented in the current source.
 
 ---
 

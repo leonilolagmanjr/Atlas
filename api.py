@@ -55,7 +55,9 @@ class AtlasService:
     brain: Brain | None = None
     registry: ToolRegistry | None = None
     _tasks: dict[str, TaskRecord] = field(default_factory=dict)
-    _executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=2))
+    # Brain currently owns one pending approval context, so API tasks must be
+    # serialized until task state is moved into an independent runtime object.
+    _executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=1))
     _lock: threading.RLock = field(default_factory=threading.RLock)
 
     def ensure_runtime(self) -> None:

@@ -20,11 +20,14 @@ The code imports these third-party libraries:
 - `sentence-transformers`
 - `pypdf`
 - `ollama`
+- `fastapi`
+- `uvicorn`
+- `httpx` (API test client)
 
 Install them with pip:
 
 ```powershell
-pip install chromadb sentence-transformers pypdf ollama
+pip install -r requirements.txt
 ```
 
 ## 4) Pull the configured Ollama model
@@ -46,4 +49,17 @@ Place one or more PDF files in:
 - `knowledge/`
 
 At startup, Atlas will index any changed files in that folder.
+
+## 6) Optional web console
+
+Run the API and frontend development server in separate terminals:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000
+Set-Location frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173` after both processes are running.
 

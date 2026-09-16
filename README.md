@@ -12,10 +12,11 @@ part can evolve independently.
 Atlas is currently implemented as the V3.2 Brain foundation (intent-based
 deterministic planning, staged hybrid retrieval, and conversation memory).
 
-The computer-agent architecture is being added incrementally. Computer control,
-internet access, permissions, observation, and verification are not yet
-implemented. See [ARCHITECTURE_ASSESSMENT.md](ARCHITECTURE_ASSESSMENT.md) for
-the verified audit and migration plan.
+The computer-agent architecture is being added incrementally. Permission-gated
+local computer inspection and explicit executable launch are implemented;
+internet access, terminal execution, observation, and result verification are
+not yet implemented. See [ARCHITECTURE_ASSESSMENT.md](ARCHITECTURE_ASSESSMENT.md)
+for the verified audit and migration plan.
 
 Implemented foundation:
 
@@ -143,12 +144,13 @@ chat loop.
 `brain.py` creates the execution context, asks the planner for a plan, passes
 that plan to the executor, and returns the final response.
 
-`planner.py` creates a deterministic two-step plan for every request:
-retrieve knowledge, then generate a response.
+`planner.py` creates deterministic retrieval/response plans and explicit
+application launch plans when the request contains an executable path.
 
 `executor.py` owns step-by-step execution. It updates the shared execution
-context, runs retrieval, decides whether there is enough evidence to call the
-LLM, and records step status and failures.
+context, runs retrieval or routed tools, pauses for confirmation when required,
+decides whether there is enough evidence to call the LLM, and records step
+status and failures.
 
 `models.py` contains shared dataclasses for execution context, plans, steps,
 planner decisions, evidence, and retrieval results.

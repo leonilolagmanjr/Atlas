@@ -14,6 +14,12 @@
 - [x] Wire ToolRegistry and ToolRouter into Brain/Executor plan execution
 - [x] Add planner intent and approval UX for explicit application actions
 - [ ] Resolve application names to trusted executable paths
+- [x] Add local FastAPI adapter for current runtime capabilities
+- [x] Add React/Vite control room for exposed API capabilities
+- [x] Add API/frontend smoke documentation and tests
+- [ ] Add knowledge, memory, and filesystem API endpoints
+- [ ] Add PowerShell terminal tool and streamed command output
+- [ ] Add internet runtime with provenance and download safety
 
 - [x] Read/confirm current architecture: Brain/Planner/Executor and models
 - [x] Implement rule-based intent classifier (no LLM)

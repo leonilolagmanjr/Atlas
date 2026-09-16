@@ -37,19 +37,17 @@ CLI -> Brain -> IntentClassifier -> Planner -> Executor
 
 ## Partial or incomplete
 
-- `ExecutionContext` tracks retrieval and response state, but not a full task lifecycle, tool calls, permissions, observations, verification, or serializable results.
-- The plan/step model is useful, but actions are string names resolved by a private executor handler map.
+- `ExecutionContext` now tracks task lifecycle, tool calls, permissions, observations, verification placeholders, and JSON-safe snapshots. Observer/verifier behavior itself is still not implemented.
+- The plan/step model supports existing retrieval actions and explicit `invoke_tool` steps routed through `ToolRouter`.
 - The provider abstraction exists, while the public LLM facade still constructs `OllamaProvider` directly.
 - Memory is conversation/session memory; long-term memory, provenance, confidence, and retrieval are not implemented.
 - Error handling records failed plan steps but has no recovery policy or user cancellation state.
-- Filesystem, process, system, and installed-application inspection tools now exist behind the tool contracts. Executable launch is available only through the permission-aware router and executor, but planner intent and CLI approval UX are not yet implemented.
+- Filesystem, process, system, and installed-application inspection tools now exist behind the tool contracts. Executable launch is available only through the permission-aware router and executor, with explicit-path planner intent and CLI/API approval UX.
 - Automated contract tests now cover the initial runtime and computer-tool slice.
 
 ## Planned or missing
 
-- Tool metadata, schemas, validation, structured results, and registry/router.
-- Permission policy and SAFE, CONFIRM, and AUTONOMOUS modes.
-- Computer runtime: filesystem, applications, processes, system inspection, and controlled PowerShell.
+- Controlled PowerShell and other terminal execution.
 - Observer and verifier as first-class components.
 - Internet runtime with search, webpage retrieval, downloads, provenance, and source trust.
 - Approval-aware multi-tool planning and failure recovery.
@@ -63,14 +61,14 @@ The existing Brain/Planner/Executor boundary, shared dataclasses, evidence model
 
 | Vision requirement | Current state | Migration direction |
 | --- | --- | --- |
-| Structured execution context | Retrieval-centric dataclass | Add task lifecycle fields and serialization helpers |
-| Standardized tools | Fixed executor handlers | Add tool contract, result model, registry, and router |
-| Permissions | Not present | Add explicit risk levels, policy decisions, and confirmation hooks |
+| Structured execution context | Task lifecycle and JSON-safe snapshot implemented | Add durable checkpoints and richer verification evidence |
+| Standardized tools | Tool contract, result model, registry, router, and executor integration implemented | Add more runtimes and schema-level validation |
+| Permissions | SAFE, CONFIRM, AUTONOMOUS modes and confirmation pause implemented | Persist per-task approvals and add richer policy configuration |
 | Computer control | Inspection plus permission-gated executable launch routed through Executor, with explicit-path planning and CLI approval | Resolve application names to trusted executable paths, then add controlled writes |
 | Terminal safety | Not present | Add validated PowerShell tool with structured results |
 | Observation and verification | Not present | Add post-action observation and evidence-based verification |
 | Internet access | Not present | Add source-aware search, retrieval, and download tools |
-| Testing | No test suite directory | Add focused contract and integration tests per phase |
+| Testing | 20 Python tests plus frontend build and live smoke checks | Add browser automation and broader retrieval/LLM integration tests |
 
 ## Proposed target architecture
 
@@ -87,15 +85,15 @@ User -> Brain -> Planner -> Tool Router -> Permission Engine
 
 1. Preserve the existing retrieval plan and CLI behavior while introducing additive models.
 2. Add contract tests before wiring new tools into the default runtime.
-3. Introduce a registry and route existing knowledge retrieval through it only after compatibility tests pass.
-4. Add permission evaluation in dry-run mode before any mutating computer capability.
-5. Add read-only Windows tools, then controlled writes, with verification for each action. The initial filesystem, process, and system inspection tools are now implemented but remain opt-in until routing is added.
+3. Introduce a registry and route explicit tool steps through it; existing knowledge retrieval remains compatible.
+4. Add permission evaluation before any mutating computer capability.
+5. Add read-only Windows tools, then controlled writes, with verification for each action. Read-only inspection and explicit-path launch are now implemented and routed.
 6. Add internet tools with source provenance and download approval before package installation.
 7. Keep GUI, voice, and vision as adapters over the same planning and tool contracts.
 
 ## Phase 1 implementation plan
 
-Phase 1 is an audit and contract-hardening phase. It should deliver:
+The audit and initial contract-hardening phase delivered:
 
 - This assessment and an accurate status in the project documentation.
 - A serializable execution context with explicit task, step, tool, permission, observation, and verification state.
