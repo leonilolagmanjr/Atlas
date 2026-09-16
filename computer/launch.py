@@ -43,6 +43,9 @@ _APPLICATION_ALIASES: dict[str, tuple[str, ...]] = {
     "steam": ("steam.exe",),
     "vlc": ("vlc.exe",),
     "settings": ("SystemSettings.exe",),
+    "fallout new vegas": ("FalloutNV.exe", "FalloutNVLauncher.exe"),
+    "fallout nv": ("FalloutNV.exe", "FalloutNVLauncher.exe"),
+    "fnv": ("FalloutNV.exe", "FalloutNVLauncher.exe"),
 }
 
 def _windows_search_dirs() -> list[Path]:
@@ -137,13 +140,43 @@ def resolve_application_name(name: str) -> Path | None:
                 continue
     # Rank candidates: exact/named matches and non-helper binaries first, so a
     # nested engine (RazerAppEngine.exe) beats an uninstaller/setup stub.
-    def _rank(candidate: Path) -> tuple[int, int, str]:
+    def _rank(candidate: Path) -> tuple[int, int, int, int, str]:
         stem = candidate.stem.casefold()
         noise = any(marker in stem for marker in _REGISTRY_EXE_NOISE)
         named = stem == normalized or stem in name_tokens
-        token_match = any(token in stem for token in name_tokens)
-        tier = 0 if named else 1 if (token_match and not noise) else 2 if not noise else 3
-        return (tier, len(stem), stem)
+        # Exact match on the full normalized name (e.g., "fallout new vegas" vs "vegas")
+        exact_full = stem == normalized.replace(" ", "")
+        # Count how many request tokens appear in the stem
+        token_match_count = sum(1 for token in name_tokens if token in stem)
+        # Also check parent directory name for token matches (helps with abbreviated exe names)
+        parent_dir_tokens = set()
+        try:
+            parent_name = candidate.parent.name.casefold()
+            parent_dir_tokens = {token for token in re.findall(r"[a-z0-9]+", parent_name) if len(token) >= 3}
+        except Exception:
+            pass
+        parent_token_match_count = sum(1 for token in name_tokens if token in parent_dir_tokens)
+        total_token_matches = token_match_count + parent_token_match_count
+        # Tier 0: exact full name match (highest priority)
+        # Tier 1: exact stem match or named token match
+        # Tier 2: multiple token matches without noise (more tokens = better)
+        # Tier 3: single token match without noise
+        # Tier 4: no token match, no noise
+        # Tier 5: noise (installers, helpers, etc.)
+        if exact_full:
+            tier = 0
+        elif named:
+            tier = 1
+        elif total_token_matches >= 2 and not noise:
+            tier = 2
+        elif total_token_matches == 1 and not noise:
+            tier = 3
+        elif not noise:
+            tier = 4
+        else:
+            tier = 5
+        # Negative total_token_matches so more matches = better (lower tuple)
+        return (tier, -total_token_matches, -parent_token_match_count, len(stem), stem)
 
     candidates.sort(key=_rank)
     for candidate in candidates:
@@ -249,11 +282,36 @@ def _rank_registry_candidates(normalized_name: str, candidates: list[Path]) -> l
             seen.add(key)
             unique.append(candidate)
 
-    def score(candidate: Path) -> tuple[int, int, str]:
+    def score(candidate: Path) -> tuple[int, int, int, int, str]:
         stem = candidate.stem.casefold()
         noise = any(marker in stem for marker in _REGISTRY_EXE_NOISE)
-        token_match = any(token in stem for token in request_tokens)
-        return (0 if (token_match and not noise) else 1 if not noise else 2, len(stem), stem)
+        token_match_count = sum(1 for token in request_tokens if token in stem)
+        # Also check parent directory name for token matches (helps with abbreviated exe names)
+        parent_dir_tokens = set()
+        try:
+            parent_name = candidate.parent.name.casefold()
+            parent_dir_tokens = {token for token in re.findall(r"[a-z0-9]+", parent_name) if len(token) >= 3}
+        except Exception:
+            pass
+        parent_token_match_count = sum(1 for token in request_tokens if token in parent_dir_tokens)
+        total_token_matches = token_match_count + parent_token_match_count
+        exact_full = stem == normalized_name.replace(" ", "")
+        # Tier 0: exact full name match
+        # Tier 1: multiple token matches without noise
+        # Tier 2: single token match without noise
+        # Tier 3: no noise but no token match
+        # Tier 4: noise (installers, helpers, etc.)
+        if exact_full:
+            tier = 0
+        elif total_token_matches >= 2 and not noise:
+            tier = 1
+        elif total_token_matches == 1 and not noise:
+            tier = 2
+        elif not noise:
+            tier = 3
+        else:
+            tier = 4
+        return (tier, -total_token_matches, -parent_token_match_count, len(stem), stem)
 
     return sorted(unique, key=score)
 

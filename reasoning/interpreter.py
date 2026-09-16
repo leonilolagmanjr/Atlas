@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Execution categories are intentionally coarse and extensible.
 CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "WEB_SEARCH": ("youtube", "search", "find", "google", "web", "online", "videos"),
+    "WEB_SEARCH": ("search", "find", "google", "web", "online", "videos"),
     "APPLICATION_CONTROL": ("notepad", "calculator", "chrome", "vscode", "open", "launch", "write", "type"),
     "CREATIVE_GENERATION": ("poem", "story", "essay", "song", "joke", "write", "compose", "generate"),
     "FILE_OPERATION": ("file", "folder", "directory", "save", "read", "delete", "rename"),
@@ -66,6 +66,10 @@ _ON_SITE_RE = re.compile(r"\b(?:on|in|at|from)\s+(youtube|google|the web|the int
 _FOR_QUERY_RE = re.compile(r"\b(?:for|find|about)\s+(.+?)(?:\s+(?:videos?|on|in)\b|$)", re.IGNORECASE)
 _YOUTUBE_RE = re.compile(r"\byoutube\b", re.IGNORECASE)
 _VIDEO_WORD_RE = re.compile(r"\bvideo?s?\b", re.IGNORECASE)
+_SEARCH_WEB_RE = re.compile(
+    r"\b(?:search|look up|google|browse|find)\b[^.]*?\b(?:web|internet|online)\b",
+    re.IGNORECASE,
+)
 
 _WEB_TARGETS = {"youtube", "google", "the web", "the internet"}
 # Sort/quantity words that must not leak into a search query.
@@ -78,6 +82,13 @@ _QUERY_STOPWORDS = {
 _SEARCH_TARGET_HINTS = ("youtube", "video", "videos", "channel", "watch")
 # Unresolved references that must never be treated as a concrete target.
 _PRONOUNS = {"it", "that", "this", "them", "those", "there", "the same", "one"}
+
+# Explicit search verbs that indicate a search/retrieval intent.
+_SEARCH_VERBS = ("search", "find", "look", "show", "get", "pull", "browse", "google")
+# Create/generate verbs that indicate content creation.
+_CREATE_VERBS = ("create", "write", "make", "generate", "compose", "produce", "draft", "put")
+# Open/launch verbs for application control.
+_OPEN_VERBS = ("open", "launch", "start", "run")
 
 
 class SemanticInterpreter:
@@ -137,6 +148,11 @@ class SemanticInterpreter:
         tone: Optional[str] = None
         length: Optional[str] = None
 
+        # Detect action verbs
+        has_search_verb = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _SEARCH_VERBS)
+        has_create_verb = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _CREATE_VERBS)
+        has_open_verb = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _OPEN_VERBS)
+
         for canonical, verbs in _ACTION_VERBS.items():
             if any(re.search(rf"\b{verb}\w*\b", lowered) for verb in verbs):
                 action = canonical
@@ -157,17 +173,22 @@ class SemanticInterpreter:
         if destination:
             confidence = max(confidence, 0.7)
 
-        site_match = _ON_SITE_RE.search(normalized)
-        if site_match:
-            target = site_match.group(1).casefold()
-        elif _YOUTUBE_RE.search(normalized):
+        # Site/search target: ONLY when there's an explicit search verb.
+        site = None
+        if has_search_verb:
+            site_match = _ON_SITE_RE.search(normalized)
+            if site_match:
+                target = site_match.group(1).casefold()
+            elif _YOUTUBE_RE.search(lowered) or _VIDEO_WORD_RE.search(lowered):
+                target = "youtube"
+        # If no search verb, youtube is a topic (handled by _ABOUT_RE above).
+        # A search verb aimed at the web with no named host still means search.
+        elif has_search_verb and _matches_any_token(lowered, _SEARCH_TARGET_HINTS):
             target = "youtube"
-        elif action == "search" and _VIDEO_WORD_RE.search(normalized):
-            target = "youtube"
+        elif has_search_verb and _SEARCH_WEB_RE.search(normalized):
+            target = "the web"
 
-        wants_web = target in _WEB_TARGETS or (
-            action == "search" and _matches_any_token(lowered, _SEARCH_TARGET_HINTS)
-        )
+        wants_web = target in _WEB_TARGETS
 
         if wants_web:
             intent = "search"
@@ -207,8 +228,6 @@ class SemanticInterpreter:
             if re.search(rf"\b{word}\b", lowered):
                 sort = canonical
                 break
-        if _matches_any_token(lowered, _SEARCH_TARGET_HINTS) and not target and intent == "search":
-            target = "youtube"
 
         return StructuredIntent(
             intent=intent,

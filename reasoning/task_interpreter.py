@@ -31,13 +31,24 @@ logger = logging.getLogger(__name__)
 
 #: Verbs mapped to a canonical action, grouped by what the request targets.
 _OPEN_VERBS = ("open", "launch", "start", "run")
-_SEARCH_VERBS = ("search", "find", "look", "show", "google", "browse")
+_SEARCH_VERBS = ("search", "find", "look", "show", "get", "pull", "browse", "google")
 _CREATE_VERBS = ("create", "write", "make", "generate", "compose", "produce", "draft", "put")
 _MOVE_VERBS = ("move", "rename", "relocate")
 _COPY_VERBS = ("copy", "duplicate")
 _DELETE_VERBS = ("delete", "remove", "erase")
 
 _WEB_HOSTS = ("youtube", "google", "the web", "the internet", "online")
+_SEARCH_PLATFORMS = frozenset({"youtube", "google", "the web", "the internet"})
+
+# Known application names to avoid misclassifying as topics.
+_KNOWN_APPLICATIONS = frozenset({
+    "notepad", "wordpad", "calculator", "calc", "paint", "mspaint",
+    "explorer", "file explorer", "task manager", "command prompt", "cmd",
+    "terminal", "powershell", "windows terminal", "vscode", "vs code",
+    "visual studio code", "chrome", "google chrome", "edge", "microsoft edge",
+    "firefox", "word", "excel", "powerpoint", "outlook", "spotify", "discord",
+    "steam", "vlc", "settings"
+})
 
 _TONE_WORDS = (
     "funny", "serious", "sad", "happy", "formal", "casual", "dramatic",
@@ -78,6 +89,19 @@ _QUESTION_WORDS = ("what", "who", "when", "where", "why", "how", "explain",
                    "define", "compare", "summarize", "summarise", "describe")
 _PRONOUNS = {"it", "that", "this", "them", "those", "there", "the same", "one", "something"}
 
+# Site names that can be search platforms. These are NOT topics on their own.
+_SEARCH_PLATFORMS = frozenset({"youtube", "google", "the web", "the internet"})
+
+# Known application names to avoid misclassifying as topics.
+_KNOWN_APPLICATIONS = frozenset({
+    "notepad", "wordpad", "calculator", "calc", "paint", "mspaint",
+    "explorer", "file explorer", "task manager", "command prompt", "cmd",
+    "terminal", "powershell", "windows terminal", "vscode", "vs code",
+    "visual studio code", "chrome", "google chrome", "edge", "microsoft edge",
+    "firefox", "word", "excel", "powerpoint", "outlook", "spotify", "discord",
+    "steam", "vlc", "settings"
+})
+
 _ABOUT_RE = re.compile(
     r"\b(?:about|regarding|concerning|on the topic of|related to|re:)\s+"
     r"(.+?)"
@@ -113,8 +137,17 @@ _SEARCH_WEB_RE = re.compile(
     r"\b(?:search|look up|google|browse|find)\b[^.]*?\b(?:web|internet|online)\b",
     re.IGNORECASE,
 )
+# YouTube as a bare word is NOT a search trigger; it requires an explicit search verb.
+# The bare word "youtube" appearing in a prompt about content creation is a TOPIC.
 _YOUTUBE_RE = re.compile(r"\byoutube\b", re.IGNORECASE)
 _VIDEO_RE = re.compile(r"\bvideos?\b", re.IGNORECASE)
+
+# Explicit search verbs that indicate a search/retrieval intent.
+_SEARCH_VERBS = ("search", "find", "look", "show", "get", "pull", "browse", "google")
+# Create/generate verbs that indicate content creation.
+_CREATE_VERBS = ("create", "write", "make", "generate", "compose", "produce", "draft", "put")
+# Open/launch verbs for application control.
+_OPEN_VERBS = ("open", "launch", "start", "run")
 
 # "save it as cars.txt" / "save as cars.txt" / "named cars.txt"
 _SAVE_AS_RE = re.compile(
@@ -284,6 +317,11 @@ class SemanticTaskInterpreter:
         lowered = text.casefold()
         entities: dict[str, Any] = {}
 
+        # Detect explicit search intent first.
+        has_search_verb = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _SEARCH_VERBS)
+        has_create_verb = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _CREATE_VERBS)
+        has_open_verb = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _OPEN_VERBS)
+
         # Explicit application: "open X", else "in X" / "using X".
         application = None
         open_match = _OPEN_APP_RE.search(text)
@@ -322,31 +360,40 @@ class SemanticTaskInterpreter:
         if content_type:
             entities["content_type"] = content_type
 
-        # Topic: "about X" is the strongest signal.
+        # Topic: "about X" is the strongest signal for content creation.
         topic_match = _ABOUT_RE.search(text)
         if topic_match:
             topic = topic_match.group(1).strip(" ,.")
             if topic:
                 entities["topic"] = topic
 
-        # Search query and site.
+        # Search platform/site: ONLY when there's an explicit search verb.
+        # A bare mention of "youtube" or "google" without a search verb is a TOPIC,
+        # not a search target.
         site = None
-        site_match = _SITE_RE.search(text)
-        if site_match:
-            site = (site_match.group(1) or site_match.group(2) or "the web").casefold()
-            if site in {"web", "internet", "online"}:
+        if has_search_verb:
+            site_match = _SITE_RE.search(text)
+            if site_match:
+                site = (site_match.group(1) or site_match.group(2) or "the web").casefold()
+                if site in {"web", "internet", "online"}:
+                    site = "the web"
+            elif has_search_verb and _YOUTUBE_RE.search(lowered):
+                # Explicit "search youtube" or "find on youtube" -> YouTube is the platform.
+                site = "youtube"
+            elif _SEARCH_WEB_RE.search(text):
                 site = "the web"
-        elif _YOUTUBE_RE.search(lowered):
-            site = "youtube"
+            else:
+                # Search verb present but no explicit site -> default to the web.
+                site = "the web"
+        # If no search verb but we have a create verb + "about youtube", youtube is the TOPIC.
+        # The topic is already captured by _ABOUT_RE above.
         if site:
             entities["site"] = site
-            if site == "youtube" and content_type is None:
+            # Only default content_type to "video" for actual search requests.
+            if site == "youtube" and content_type is None and not has_create_verb:
                 entities["content_type"] = "video"
-        # A search verb aimed at the web with no named host still means search.
-        elif _SEARCH_WEB_RE.search(text):
-            entities["site"] = "the web"
 
-        # Sort/filter qualifiers.
+        # Sort/filter qualifiers (apply to both search and file operations).
         sort_match = _LARGEST_RE.search(lowered)
         if sort_match:
             entities["sort"] = _SORT_WORDS.get(sort_match.group(1).casefold(), sort_match.group(1).casefold())
@@ -407,7 +454,7 @@ class SemanticTaskInterpreter:
         lowered = candidate.casefold().strip()
         if not lowered or lowered in _PRONOUNS:
             return False
-        if lowered in _CONTENT_NOUNS or lowered in _WEB_HOSTS:
+        if lowered in _CONTENT_NOUNS or lowered in _SEARCH_PLATFORMS:
             return False
         if lowered.startswith(("about ", "funny ", "short ", "long ", "a ", "an ", "the ", "and ")):
             return False
@@ -439,9 +486,25 @@ class SemanticTaskInterpreter:
 
         site = entities.get("site")
         content_type = entities.get("content_type")
-        wants_web = site in _WEB_HOSTS or (has_search and (site or _VIDEO_RE.search(lowered)))
+        topic = entities.get("topic")
 
-        # 1. Web search dominates when a site/video is named.
+        # Check for file operations FIRST (before web search) because search verbs
+        # like "find" can apply to both files and web.
+        # 1. Folder creation.
+        if has_folder_word and has_create and not has_delete:
+            path = self._folder_path(entities)
+            if path:
+                return [self._create_folder_action(path)]
+
+        # 2. File search / move / copy.
+        if has_move or has_copy or (has_search and self._is_file_request(text, entities)):
+            return self._file_actions(text, entities, move=has_move, copy=has_copy, search=has_search or not (has_move or has_copy))
+
+        # 3. Web search dominates when a site/video is explicitly named as a search platform.
+        # A site is only a search target if it was explicitly set (which only
+        # happens when there's a search verb). If there's no site, we don't
+        # want web search.
+        wants_web = site in _WEB_HOSTS
         if wants_web:
             query = self._search_query(text, entities)
             actions.append(
@@ -467,18 +530,9 @@ class SemanticTaskInterpreter:
                 )
             return actions
 
-        # 2. Folder creation.
-        if has_folder_word and has_create and not has_delete:
-            path = self._folder_path(entities)
-            if path:
-                return [self._create_folder_action(path)]
-
-        # 3. File search / move / copy.
-        if has_move or has_copy or (has_search and self._is_file_request(text, entities)):
-            return self._file_actions(text, entities, move=has_move, copy=has_copy, search=has_search or not (has_move or has_copy))
-
         # 4. Content creation, optionally written into an application.
-        if has_create and (content_type or entities.get("topic") or entities.get("application")):
+        # This triggers on create verbs OR when there's a content_type/topic with a destination.
+        if has_create and (content_type or topic or entities.get("application")):
             return self._content_actions(entities)
 
         # 5. Plain application launch.

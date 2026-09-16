@@ -179,6 +179,15 @@ Rules:
   multiple actions when the user explicitly requests multiple things.
 - Keep the destination/application separate from the content topic. "a poem in
   Notepad about cars" means content topic = cars and destination = Notepad.
+- CRITICAL: Distinguish TOPIC from SEARCH PLATFORM.
+  * "search YouTube for X" -> site=youtube, query=X (search intent)
+  * "create a poem about YouTube" -> topic=YouTube, content_type=poem (create intent)
+  * "write a story about Google" -> topic=Google (create intent)
+  * "find videos about cats" -> site=youtube, query=cats (search intent)
+  * "explain how YouTube works" -> topic=YouTube (informational intent)
+  A named website, application, company, or technology can be the SUBJECT of
+  content rather than the target of an action. Only set "site" when the user
+  expresses a SEARCH, FIND, BROWSE, or LOOKUP intent.
 - When a later action consumes an earlier action's result, reference it with
   "$name" (for example the generated text is "$generated_text"). Set "produces"
   on the action that creates that value.
