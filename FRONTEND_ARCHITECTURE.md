@@ -32,14 +32,16 @@ The shell is desktop-first and responsive. The Command workspace is the primary 
 | GET | `/api/health` | Local API/model availability |
 | GET | `/api/system` | Real OS, CPU, Python, and disk data |
 | GET | `/api/tools` | Registered tool metadata and permission levels |
+| GET | `/api/tool-knowledge` | Data-driven PowerShell command knowledge records |
+| GET | `/api/tool-discovery?query=...` | Non-executing capability candidate discovery |
 | GET | `/api/applications` | Installed Windows application metadata |
-| GET | `/api/tasks` | In-memory task records |
+| GET | `/api/tasks` | Durable task records restored from local task history |
 | POST | `/api/tasks` | Submit `{ "request": "..." }`, returns a queued task |
 | GET | `/api/tasks/{id}` | Poll task status, plan, tool calls, warnings, and errors |
 | POST | `/api/tasks/{id}/approve` | Resume the current approval-paused task |
 | POST | `/api/tasks/{id}/deny` | Cancel the current approval-paused task |
 
-Task execution is polled because the current backend has no event stream. The API runs Brain in a bounded worker pool and reports the actual `ExecutionContext` state. Approval is intentionally explicit and local to the current API process.
+Task execution is polled because the current backend has no event stream. The API runs Brain in a bounded worker pool and reports the actual `ExecutionContext` state. Task snapshots survive an API restart, but live execution contexts do not; pending, running, and approval-paused tasks are marked interrupted rather than resumed without context. Approval is explicitly bound to the task ID.
 
 ## Implemented frontend features
 
@@ -48,6 +50,9 @@ Task execution is polled because the current backend has no event stream. The AP
 - Polling task status and rendering plan steps, approval state, results, warnings, and failures.
 - Application inventory from real Windows uninstall metadata.
 - Tool registry with category and permission/risk display.
+- Tool knowledge catalog with expandable PowerShell command records.
+- Capability discovery search that returns candidates without executing them.
+- Task plan details showing selected capability, candidates, generated command, interpreted result, and bounded raw output.
 - System dashboard using real backend values and `Unavailable` for unsupported metrics.
 - Honest unavailable states for backend surfaces that do not yet have APIs.
 
@@ -58,5 +63,5 @@ Task execution is polled because the current backend has no event stream. The AP
 - Files need safe browse/read/search endpoints with the same root bounds as computer tools.
 - Terminal execution needs a separate validated PowerShell tool and streaming output model.
 - Settings need a validated configuration read/write contract.
-- Task history needs durable storage rather than the API process's in-memory records.
+- Live task execution needs durable checkpoints rather than only durable task snapshots.
 - SSE/WebSocket events can replace polling after an event model exists.

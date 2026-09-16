@@ -4,6 +4,8 @@ import type {
   SystemInfo,
   TaskRecord,
   ToolInfo,
+  ToolCandidate,
+  ToolKnowledge,
 } from "../types";
 
 const API_BASE = import.meta.env.VITE_ATLAS_API_URL ?? "http://127.0.0.1:8000/api";
@@ -24,6 +26,8 @@ export const api = {
   health: () => request<Health>("/health"),
   system: () => request<SystemInfo>("/system"),
   tools: () => request<{ tools: ToolInfo[] }>("/tools"),
+  toolKnowledge: (query = "") => request<{ tools: ToolKnowledge[] }>(`/tool-knowledge${query ? `?query=${encodeURIComponent(query)}` : ""}`),
+  discoverTools: (query: string) => request<{ candidates: ToolCandidate[] }>(`/tool-discovery?query=${encodeURIComponent(query)}`),
   applications: () => request<{ applications: ApplicationInfo[] }>("/applications"),
   tasks: () => request<{ tasks: TaskRecord[] }>("/tasks"),
   task: (id: string) => request<TaskRecord>(`/tasks/${id}`),

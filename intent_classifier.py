@@ -28,6 +28,7 @@ INTENT_LABELS = {
     "LOCATION",
     "PROCEDURE",
     "APPLICATION",
+    "COMPUTER",
     "UNKNOWN",
 }
 
@@ -62,6 +63,33 @@ class IntentClassifier:
                 intent="APPLICATION",
                 confidence=0.92,
                 rationale="detected an executable application launch request",
+                signals=signals,
+            )
+
+        if _matches_any(normalized, [r"\bopen\b", r"\blaunch\b", r"\bstart\b"]) and _looks_like_named_application_request(normalized):
+            signals["pattern"] = "named-application-launch"
+            return IntentClassification(
+                intent="APPLICATION",
+                confidence=0.9,
+                rationale="detected a named application launch request",
+                signals=signals,
+            )
+
+        if _matches_any(normalized, [
+            r"\bram\b",
+            r"\bmemory usage\b",
+            r"\bprocess(?:es)?\b",
+            r"\bwindows service",
+            r"\bnetwork connection",
+            r"\btcp connection",
+            r"\bwindows version\b",
+            r"\bcomputer information\b",
+        ]):
+            signals["pattern"] = "computer-inspection"
+            return IntentClassification(
+                intent="COMPUTER",
+                confidence=0.9,
+                rationale="detected a local computer inspection request",
                 signals=signals,
             )
 
@@ -257,4 +285,13 @@ def _normalize(text: str) -> str:
 
 def _matches_any(text: str, patterns: list[str]) -> bool:
     return any(re.search(p, text) for p in patterns)
+
+
+def _looks_like_named_application_request(text: str) -> bool:
+    match = re.search(r"\b(?:open|launch|start)\s+(.+)$", text)
+    if not match:
+        return False
+    target = match.group(1).strip()
+    excluded = {"a file", "the file", "a folder", "the folder", "a directory", "the directory", "a website", "the website"}
+    return bool(target) and target not in excluded and not target.startswith(("http://", "https://"))
 

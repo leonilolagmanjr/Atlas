@@ -61,10 +61,23 @@ Atlas is divided into independent layers.
 
 ```
 User -> Brain -> Planner -> Tool Router -> Permission Engine
+							   -> Tool Discovery -> Tool Knowledge
 							   -> Executor -> Observer -> Verifier
 								   |             |
 					Computer / Internet / Knowledge runtimes
 ```
+
+For the current PowerShell slice, the planning path is:
+
+```text
+User request -> IntentClassifier -> Planner -> ToolDiscovery
+			 -> PowerShell knowledge record -> Validator -> PermissionEngine
+			 -> Executor -> structured result interpreter -> User
+```
+
+PowerShell knowledge is data-driven and stored in
+`tools/powershell_commands.json`. Only documented read-only commands are
+currently executable.
 
 ## Memory subsystem (implemented)
 

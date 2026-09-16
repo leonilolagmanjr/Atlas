@@ -24,6 +24,18 @@ class ApiSmokeTests(unittest.TestCase):
         self.assertIn("system", response.json())
         self.assertIn("disk", response.json()["system"])
 
+    def test_tool_knowledge_exposes_powerShell_records(self):
+        response = self.client.get("/api/tool-knowledge")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(any(item["name"] == "Get-Process" for item in response.json()["tools"]))
+
+    def test_tool_discovery_returns_candidates_without_execution(self):
+        response = self.client.get("/api/tool-discovery", params={"query": "inspect memory usage"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["candidates"][0]["tool"], "Get-Process")
+
 
 if __name__ == "__main__":
     unittest.main()

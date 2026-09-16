@@ -37,11 +37,11 @@ CLI -> Brain -> IntentClassifier -> Planner -> Executor
 
 ## Partial or incomplete
 
-- `ExecutionContext` now tracks task lifecycle, tool calls, permissions, observations, verification placeholders, and JSON-safe snapshots. Observer/verifier behavior itself is still not implemented.
+- `ExecutionContext` now tracks task lifecycle, tool calls, permissions, observations, verification placeholders, and JSON-safe snapshots. Observer/verifier behavior itself is still not implemented. API task snapshots now persist durably, while live execution contexts remain process-local.
 - The plan/step model supports existing retrieval actions and explicit `invoke_tool` steps routed through `ToolRouter`.
 - The provider abstraction exists, while the public LLM facade still constructs `OllamaProvider` directly.
 - Memory is conversation/session memory; long-term memory, provenance, confidence, and retrieval are not implemented.
-- Error handling records failed plan steps but has no recovery policy or user cancellation state.
+- Error handling records failed plan steps but has no recovery policy or user cancellation state. Restart recovery explicitly marks pending, running, and approval-paused API tasks as interrupted failures.
 - Filesystem, process, system, and installed-application inspection tools now exist behind the tool contracts. Executable launch is available only through the permission-aware router and executor, with explicit-path planner intent and CLI/API approval UX.
 - Automated contract tests now cover the initial runtime and computer-tool slice.
 
@@ -61,14 +61,14 @@ The existing Brain/Planner/Executor boundary, shared dataclasses, evidence model
 
 | Vision requirement | Current state | Migration direction |
 | --- | --- | --- |
-| Structured execution context | Task lifecycle and JSON-safe snapshot implemented | Add durable checkpoints and richer verification evidence |
+| Structured execution context | Task lifecycle, JSON-safe snapshots, durable API task history implemented | Add durable execution checkpoints and richer verification evidence |
 | Standardized tools | Tool contract, result model, registry, router, and executor integration implemented | Add more runtimes and schema-level validation |
-| Permissions | SAFE, CONFIRM, AUTONOMOUS modes and confirmation pause implemented | Persist per-task approvals and add richer policy configuration |
+| Permissions | SAFE, CONFIRM, AUTONOMOUS modes and task-bound confirmation pause implemented | Persist per-task approvals and add richer policy configuration |
 | Computer control | Inspection plus permission-gated executable launch routed through Executor, with explicit-path planning and CLI approval | Resolve application names to trusted executable paths, then add controlled writes |
 | Terminal safety | Not present | Add validated PowerShell tool with structured results |
 | Observation and verification | Not present | Add post-action observation and evidence-based verification |
 | Internet access | Not present | Add source-aware search, retrieval, and download tools |
-| Testing | 20 Python tests plus frontend build and live smoke checks | Add browser automation and broader retrieval/LLM integration tests |
+| Testing | 44 Python tests plus frontend build and live smoke checks | Add browser automation and broader retrieval/LLM integration tests |
 
 ## Proposed target architecture
 

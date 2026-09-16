@@ -33,7 +33,7 @@ class Brain:
         tool_router: ToolRouter | None = None,
     ) -> None:
         self._planner = planner or Planner()
-        self._pending_context: ExecutionContext | None = None
+        self._pending_contexts: dict[str, ExecutionContext] = {}
         self._last_context: ExecutionContext | None = None
         self._executor = executor or Executor(
             vector_store=vector_store,
@@ -73,7 +73,7 @@ class Brain:
             context.metadata["planner_decision"] = planner_decision
             self._executor.execute(planner_decision.plan, context)
             if context.status == TaskStatus.WAITING_FOR_CONFIRMATION:
-                self._pending_context = context
+                self._pending_contexts[context.task_id] = context
             return self._complete(context, started_at)
 
         except Exception:
@@ -100,10 +100,10 @@ class Brain:
 
         return self._last_context
 
-    def approve_pending(self) -> str:
-        """Approve and resume the current in-memory confirmation-paused plan."""
+    def approve_pending(self, task_id: str | None = None) -> str:
+        """Approve and resume a confirmation-paused plan."""
 
-        context = self._pending_context
+        context = self._pending_context(task_id)
         if context is None or context.execution_plan is None:
             return "There is no pending action to approve."
         tool_names = {
@@ -114,18 +114,25 @@ class Brain:
         context.metadata["approved_tools"] = tool_names
         self._executor.execute(context.execution_plan, context)
         if context.status != TaskStatus.WAITING_FOR_CONFIRMATION:
-            self._pending_context = None
+            self._pending_contexts.pop(context.task_id, None)
         return context.final_response or "The pending action completed."
 
-    def deny_pending(self) -> str:
-        """Cancel the current in-memory confirmation-paused plan."""
+    def deny_pending(self, task_id: str | None = None) -> str:
+        """Cancel a confirmation-paused plan."""
 
-        context = self._pending_context
+        context = self._pending_context(task_id)
         if context is None:
             return "There is no pending action to deny."
         context.status = TaskStatus.CANCELLED
         if context.execution_plan is not None:
             context.execution_plan.status = PlanStatus.SKIPPED
         context.final_response = "Action cancelled."
-        self._pending_context = None
+        self._pending_contexts.pop(context.task_id, None)
         return context.final_response
+
+    def _pending_context(self, task_id: str | None) -> ExecutionContext | None:
+        if task_id:
+            return self._pending_contexts.get(task_id)
+        if len(self._pending_contexts) == 1:
+            return next(iter(self._pending_contexts.values()))
+        return None

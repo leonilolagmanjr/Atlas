@@ -21,6 +21,13 @@ The Python suite uses the standard library `unittest` runner and covers:
 - Non-shell application launch and confirmation gating.
 - Application intent, deterministic planning, executor pause/resume boundaries, and CLI approval callbacks.
 - FastAPI health and system smoke endpoints.
+- Durable task snapshot restoration and interrupted-task handling.
+- Tool knowledge JSON import and capability discovery.
+- PowerShell command safety validation, structured execution, and timeout boundaries.
+- Natural-language computer intent and knowledge-backed PowerShell planning.
+- Real Windows PowerShell smoke execution through `PowerShellTool` with JSON result interpretation.
+- Frontend API contracts for tool knowledge and non-executing tool discovery.
+- Natural-language arbitrary named application resolution and confirmation-gated launch planning.
 
 ## Manual runtime checks completed
 
@@ -40,8 +47,9 @@ On 2026-09-16:
 - A successful Ollama generation through `Brain`, because it depends on the running Ollama service and a retrieval context accepted by the local Chroma index.
 - Retrieval quality against a representative PDF corpus.
 - Internet search, URL retrieval, downloads, or webpage prompt-injection handling: no internet runtime exists in the current source.
-- PowerShell execution: no terminal tool exists yet.
-- Durable web task history: API task records are process-memory only.
+- Broad live PowerShell coverage: one safe process pipeline was verified; the unit suite continues to mock subprocesses for deterministic failure and timeout cases.
+- Resuming a live execution context after an API restart: task snapshots are
+	durable, but execution checkpoints are not implemented yet.
 - Browser automated regression coverage: the live browser smoke check was manual through the VS Code browser tool.
 
 ## Security checks
@@ -54,3 +62,4 @@ The implemented computer boundary was checked for:
 - Critical permission defaults: denied.
 
 Internet, download, webpage-instruction, secret-handling, and terminal-command security checks remain pending because those capabilities are not implemented.
+PowerShell mutation, AST-aware validation, and live command cancellation remain pending.

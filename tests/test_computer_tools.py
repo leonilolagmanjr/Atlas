@@ -80,6 +80,8 @@ class ComputerToolTests(unittest.TestCase):
                 "applications.list_installed",
                 "applications.search_installed",
                 "applications.launch",
+                "applications.launch_named",
+                "powershell.execute",
             ),
         )
 

@@ -37,6 +37,9 @@ Implemented foundation:
 - Hybrid retrieval with semantic, keyword, and metadata signals
 - Adaptive retrieval confidence policy
 - Windows computer tools for bounded filesystem, process, system, and installed-application inspection, plus permission-gated executable launch
+- Durable API task snapshots with task-bound approval and interruption handling
+- Data-driven tool knowledge and capability discovery
+- Validated, read-only PowerShell inspection for processes, services, system, and network state
 
 ## Retrieval Pipeline
 
@@ -164,6 +167,14 @@ exposes stored chunks for keyword and metadata retrieval.
 
 `llm.py` only talks to Ollama.
 
+`TOOLS.md` describes the general tool knowledge and discovery system. PowerShell
+is the first knowledge-backed provider; documented commands are validated
+before execution and remain separate from the LLM provider.
+
+The control room exposes the same tool catalog and discovery flow through the
+Tools view. PowerShell plans show their selected capability, candidate tools,
+generated command, interpreted result, and expandable raw output.
+
 ## Setup
 
 Create and activate a virtual environment:
@@ -187,6 +198,14 @@ ollama pull qwen2.5:7b
 
 ## Running
 
+### One-click web console
+
+Double-click [launch_atlas.bat](launch_atlas.bat). It opens the FastAPI
+backend, the Vite frontend, and the control room in your browser.
+
+The launcher expects the repository virtual environment and frontend
+dependencies to already exist. For first-time setup, follow [INSTALL.md](INSTALL.md).
+
 Place PDF knowledge files in `knowledge/`, then run:
 
 ```powershell
@@ -195,10 +214,11 @@ python atlas.py
 
 Atlas indexes changed documents at startup and then enters a backend CLI loop.
 
-Explicit executable launch requests are planned as permission-gated actions.
-Use `/approve` or `/deny` after Atlas pauses for confirmation. Application-name
-resolution (for example, mapping `Open VS Code` to a verified executable) is
-not implemented yet.
+Explicit executable and named-application launch requests are planned as
+permission-gated actions. For example, `Open Discord` resolves a trusted
+Discord executable without shell invocation, and the same resolver supports
+other installed desktop applications. Use `/approve` or `/deny` after Atlas
+pauses for confirmation.
 
 ## Web console
 
@@ -220,7 +240,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`. The command workspace, task polling, approval
+Open `http://localhost:5173`. The command workspace, durable task polling, task-bound approval
 flow, installed applications, tool registry, system inspection, and honest
 backend-unavailable states are connected to the current runtime. Files,
 Knowledge, Memory, and editable Settings require additional API endpoints.

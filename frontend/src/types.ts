@@ -22,6 +22,34 @@ export interface ToolInfo {
   risk_level: string;
 }
 
+export interface ToolKnowledge {
+  name: string;
+  type: string;
+  category: string;
+  description: string;
+  purpose: string[];
+  examples: string[];
+  aliases: string[];
+  related_tools: string[];
+  requires_admin: boolean;
+  risk_level: string;
+  destructive: boolean;
+  read_only: boolean;
+  expected_output: string;
+  platforms: string[];
+  powershell_versions: string[];
+  metadata: Record<string, unknown>;
+}
+
+export interface ToolCandidate {
+  tool: string;
+  tool_type: string;
+  reason: string;
+  risk_level: string;
+  read_only: boolean;
+  score: number;
+}
+
 export interface SystemInfo {
   system: {
     os: string;
@@ -57,6 +85,15 @@ export interface TaskPlan {
   steps: PlanStep[];
 }
 
+export interface ToolCall {
+  tool?: string;
+  status?: string;
+  success?: boolean;
+  parameters?: Record<string, unknown>;
+  output?: unknown;
+  error?: string | null;
+}
+
 export interface TaskRecord {
   id: string;
   request: string;
@@ -66,7 +103,7 @@ export interface TaskRecord {
   updated_at: number;
   task_id: string | null;
   plan: TaskPlan | null;
-  tool_calls: Array<Record<string, unknown>>;
+  tool_calls: ToolCall[];
   errors: string[];
   warnings: string[];
 }

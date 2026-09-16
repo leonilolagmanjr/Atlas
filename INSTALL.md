@@ -63,3 +63,12 @@ npm run dev
 
 Open `http://localhost:5173` after both processes are running.
 
+## 7) One-click launch
+
+After setup, double-click `launch_atlas.bat` in the repository root. It starts
+the API and frontend in separate PowerShell windows and opens the web console.
+The launcher checks for `.venv`, Node/npm, and `frontend/node_modules` before
+starting.
+
+Close those two PowerShell windows to stop the local Atlas services.
+

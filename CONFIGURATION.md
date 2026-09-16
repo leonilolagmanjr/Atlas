@@ -75,6 +75,12 @@ This repository does not use a `.env` loader in code; the settings are defined a
   - Default: repository root.
   - Filesystem tools reject paths outside this root.
 
+- `TASK_STORE_FILE: Path`
+  - Default: `<repo>/database/tasks.json`.
+  - Stores API task snapshots using atomic replacement.
+  - Live execution contexts are not serialized yet; interrupted in-flight
+    tasks are marked failed when the API restarts.
+
 The web API binds to `127.0.0.1:8000` when started with the documented
 `uvicorn` command. The Vite frontend uses `http://127.0.0.1:8000/api` unless
 `VITE_ATLAS_API_URL` is supplied at frontend build time.

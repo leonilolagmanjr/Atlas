@@ -42,6 +42,7 @@ import type {
   TaskRecord,
   TaskStatus,
   ToolInfo,
+  ToolKnowledge,
 } from "./types";
 import "./styles.css";
 
@@ -80,12 +81,14 @@ function App() {
   const [health, setHealth] = useState<Health | null>(null);
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [tools, setTools] = useState<ToolInfo[]>([]);
+  const [toolKnowledge, setToolKnowledge] = useState<ToolKnowledge[]>([]);
   const [applications, setApplications] = useState<ApplicationInfo[]>([]);
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [activeTask, setActiveTask] = useState<TaskRecord | null>(null);
   const [request, setRequest] = useState("");
   const [loading, setLoading] = useState(false);
   const [appsLoading, setAppsLoading] = useState(false);
+  const [toolsLoading, setToolsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
@@ -110,6 +113,15 @@ function App() {
       .catch((reason: Error) => setError(reason.message))
       .finally(() => setAppsLoading(false));
   }, [section, applications.length, appsLoading]);
+
+  useEffect(() => {
+    if (section !== "tools" || toolKnowledge.length > 0 || toolsLoading) return;
+    setToolsLoading(true);
+    api.toolKnowledge()
+      .then((result) => setToolKnowledge(result.tools))
+      .catch((reason: Error) => setError(reason.message))
+      .finally(() => setToolsLoading(false));
+  }, [section, toolKnowledge.length, toolsLoading]);
 
   useEffect(() => {
     if (!activeTask || !["PENDING", "RUNNING"].includes(activeTask.status)) return;
@@ -215,7 +227,7 @@ function App() {
           {section === "command" ? <CommandWorkspace activeTask={activeTask} request={request} setRequest={setRequest} loading={loading} onSubmit={submitTask} onApprove={approveTask} onDeny={denyTask} completedCount={completedCount} /> : null}
           {section === "tasks" ? <TasksView tasks={tasks} activeTask={activeTask} onSelect={setActiveTask} /> : null}
           {section === "applications" ? <ApplicationsView applications={applications} loading={appsLoading} /> : null}
-          {section === "tools" ? <ToolsView tools={tools} /> : null}
+          {section === "tools" ? <ToolsView tools={tools} knowledge={toolKnowledge} loading={toolsLoading} /> : null}
           {section === "system" ? <SystemView system={system} health={health} /> : null}
           {section === "files" || section === "knowledge" || section === "memory" || section === "settings" ? <UnavailableView section={section} /> : null}
         </div>
@@ -288,11 +300,18 @@ function TaskPanel({ task, onApprove, onDeny }: { task: TaskRecord; onApprove: (
       <div className="section-heading"><div><span className="eyebrow">Current task</span><h2>{statusLabels[task.status]}</h2></div><StatusPill status={task.status} /></div>
       <p className="task-request">{task.request}</p>
       {waiting ? <div className="approval-box"><div><LockKeyhole size={18} /><div><strong>Atlas is ready to act</strong><span>This action changes your computer. Review the plan and approve it to continue.</span></div></div><div className="approval-actions"><button className="button-muted" onClick={onDeny}><X size={15} /> Deny</button><button className="button-primary" onClick={onApprove}><Check size={15} /> Approve action</button></div></div> : null}
-      {task.plan ? <div className="plan-list"><div className="plan-label">Execution plan</div>{task.plan.steps.map((step) => <div className="plan-step" key={step.id}><span className={`step-icon ${step.status.toLowerCase()}`}><StepIcon status={step.status} /></span><span>{step.name}</span><small>{step.status.replaceAll("_", " ").toLowerCase()}</small></div>)}</div> : null}
+      {task.plan ? <div className="plan-list"><div className="plan-label">Execution plan</div>{task.plan.steps.map((step) => <div className="plan-step-group" key={step.id}><div className="plan-step"><span className={`step-icon ${step.status.toLowerCase()}`}><StepIcon status={step.status} /></span><span>{step.name}</span><small>{step.status.replaceAll("_", " ").toLowerCase()}</small></div>{typeof step.metadata.capability === "string" ? <div className="plan-detail"><strong>{step.metadata.capability}</strong>{Array.isArray(step.metadata.candidates) ? <span> Candidates: {step.metadata.candidates.join(", ")}</span> : null}{typeof step.metadata.command === "string" ? <code>{step.metadata.command}</code> : null}</div> : null}</div>)}</div> : null}
       {task.response ? <div className="result-box"><span>Atlas result</span><p>{task.response}</p></div> : null}
+      {task.tool_calls.length ? <div className="tool-results"><div className="plan-label">Tool output</div>{task.tool_calls.map((call, index) => <details key={`${call.tool ?? "tool"}-${index}`}><summary>{call.tool ?? "Tool"} <span>{call.status ?? "unknown"}</span></summary><pre>{formatToolOutput(call.output)}</pre></details>)}</div> : null}
       {task.errors.length ? <div className="failure-box"><CircleAlert size={15} /> {task.errors.join(" ")}</div> : null}
     </section>
   );
+}
+
+function formatToolOutput(output: unknown) {
+  if (typeof output === "string") return output;
+  if (output === undefined || output === null) return "No structured output.";
+  return JSON.stringify(output, null, 2);
 }
 
 function StepIcon({ status }: { status: string }) {
@@ -314,8 +333,37 @@ function ApplicationsView({ applications, loading }: { applications: Application
   return <PageFrame eyebrow="Computer / detected software" title="Applications" description="Installed applications detected from Windows uninstall metadata."><div className="data-grid">{loading ? <LoadingState /> : applications.length ? applications.map((application) => <div className="application-row" key={`${application.name}-${application.version}`}><div className="app-icon"><AppWindow size={18} /></div><div><strong>{application.name}</strong><span>{application.publisher || "Publisher unavailable"}</span></div><small>{application.version || "Version unavailable"}</small><span className="availability"><span /> Detected</span></div>) : <UnavailableMessage title="No application data" detail="The backend returned no installed application entries." />}</div></PageFrame>;
 }
 
-function ToolsView({ tools }: { tools: ToolInfo[] }) {
-  return <PageFrame eyebrow="Runtime / capability registry" title="Available tools" description="Capabilities currently exposed by the Atlas backend and their permission boundaries."><div className="tool-grid">{tools.map((tool) => <div className="tool-card" key={tool.name}><div className="tool-card-top"><span className="tool-symbol"><Zap size={16} /></span><span className={`risk risk-${tool.risk_level}`}>{tool.permission_level.replaceAll("_", " ")}</span></div><strong>{tool.name}</strong><p>{tool.description}</p><small>{tool.category}</small></div>)}{!tools.length ? <UnavailableMessage title="Tool registry unavailable" detail="Start the Atlas API to inspect real capabilities." /> : null}</div></PageFrame>;
+function ToolsView({ tools, knowledge, loading }: { tools: ToolInfo[]; knowledge: ToolKnowledge[]; loading: boolean }) {
+  const [query, setQuery] = useState("");
+  const [candidates, setCandidates] = useState<Array<{ tool: string; reason: string; risk_level: string; read_only: boolean }>>([]);
+  const [discovering, setDiscovering] = useState(false);
+
+  async function discover(event: FormEvent) {
+    event.preventDefault();
+    if (!query.trim() || discovering) return;
+    setDiscovering(true);
+    try {
+      const result = await api.discoverTools(query.trim());
+      setCandidates(result.candidates);
+    } catch (reason) {
+      setCandidates([]);
+    } finally {
+      setDiscovering(false);
+    }
+  }
+
+  return <PageFrame eyebrow="Runtime / capability registry" title="Available tools" description="Inspect live runtime capabilities, search the authoritative PowerShell knowledge catalog, and preview tool candidates without executing them.">
+    <form className="tool-discovery" onSubmit={discover}>
+      <Search size={17} />
+      <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find tools for inspecting memory, services, or files" />
+      <button type="submit" disabled={discovering || !query.trim()} title="Discover tools">{discovering ? <RotateCw size={15} className="spin" /> : <Search size={15} />}</button>
+    </form>
+    {candidates.length ? <div className="candidate-panel"><div className="plan-label">Discovery candidates</div>{candidates.map((candidate) => <div className="candidate-row" key={candidate.tool}><div><strong>{candidate.tool}</strong><span>{candidate.reason}</span></div><small>{candidate.read_only ? "read only" : candidate.risk_level}</small></div>)}</div> : null}
+    <div className="tool-section-label">Registered runtime tools</div>
+    <div className="tool-grid">{tools.map((tool) => <div className="tool-card" key={tool.name}><div className="tool-card-top"><span className="tool-symbol"><Zap size={16} /></span><span className={`risk risk-${tool.risk_level}`}>{tool.permission_level.replaceAll("_", " ")}</span></div><strong>{tool.name}</strong><p>{tool.description}</p><small>{tool.category}</small></div>)}{!tools.length ? <UnavailableMessage title="Tool registry unavailable" detail="Start the Atlas API to inspect real capabilities." /> : null}</div>
+    <div className="tool-section-label">PowerShell knowledge catalog</div>
+    <div className="knowledge-table">{loading ? <LoadingState /> : knowledge.map((record) => <details key={record.name}><summary><span><strong>{record.name}</strong><small>{record.category}</small></span><em>{record.read_only ? "SAFE / READ ONLY" : record.risk_level.toUpperCase()}</em></summary><div className="knowledge-detail"><p>{record.description}</p><span>{record.purpose.join(" · ")}</span>{record.examples.length ? <pre>{record.examples.join("\n")}</pre> : null}</div></details>)}</div>
+  </PageFrame>;
 }
 
 function SystemView({ system, health }: { system: SystemInfo | null; health: Health | null }) {

@@ -75,6 +75,9 @@ AUTO_SAVE: bool = True
 EXECUTION_MODE: str = "confirm"
 COMPUTER_ROOT: Path = PROJECT_ROOT
 
+# ---- API task history ----
+TASK_STORE_FILE: Path = PROJECT_ROOT / "database" / "tasks.json"
+
 # ---- Logging ----
 LOG_LEVEL: str = "INFO"
 LOG_TO_FILE: bool = False

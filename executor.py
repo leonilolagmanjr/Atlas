@@ -22,6 +22,7 @@ from vector_store import VectorStore
 
 from memory.memory_manager import MemoryManager
 from tools.router import ToolRouter
+from tools.result_interpreter import interpret_tool_result
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,8 @@ class Executor:
                 "parameters": parameters,
                 "status": result.status,
                 "success": result.success,
+                "output": _bounded_tool_output(result.output),
+                "error": result.error,
             }
         )
         step.result = result
@@ -184,7 +187,7 @@ class Executor:
             raise RuntimeError(result.error or f"Tool failed: {tool_name}")
 
         context.metadata.setdefault("tool_results", []).append(result.output)
-        context.final_response = f"Completed tool action: {tool_name}."
+        context.final_response = interpret_tool_result(tool_name, result)
 
     def _merge_evidence(self, context: ExecutionContext, step: ExecutionStep) -> None:
         """Merge accumulated evidence_context_parts and evidence_chunks.
@@ -311,7 +314,10 @@ class Executor:
         if context.execution_plan is not None:
             context.execution_plan.status = PlanStatus.FAILED
         context.status = TaskStatus.FAILED
-        context.final_response = UNKNOWN_RESPONSE
+        if context.errors:
+            context.final_response = f"Atlas could not complete this task: {context.errors[-1]}"
+        else:
+            context.final_response = UNKNOWN_RESPONSE
 
 
 def _unique_sources(chunks: list[object]) -> list[str]:
@@ -323,3 +329,18 @@ def _unique_sources(chunks: list[object]) -> list[str]:
             seen.add(source)
             sources.append(source)
     return sources
+
+
+def _bounded_tool_output(output: object, *, max_characters: int = 100_000) -> object:
+    """Keep API task snapshots useful without allowing unbounded tool output."""
+
+    if isinstance(output, str):
+        return output[:max_characters]
+    if isinstance(output, dict):
+        bounded = dict(output)
+        for key in ("stdout", "stderr"):
+            value = bounded.get(key)
+            if isinstance(value, str):
+                bounded[key] = value[:max_characters]
+        return bounded
+    return output

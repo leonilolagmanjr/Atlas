@@ -6,6 +6,7 @@ import logging
 import re
 
 from models import ExecutionPlan, ExecutionStep, PlannerDecision
+from tools.powershell_planner import PowerShellTaskPlanner
 
 logger = logging.getLogger(__name__)
 
@@ -20,24 +21,65 @@ class Planner:
 
         intent = intent or "UNKNOWN"
 
+        if intent == "COMPUTER":
+            powershell_plan = PowerShellTaskPlanner().create(user_question)
+            if powershell_plan is not None:
+                steps = [
+                    ExecutionStep(
+                        id="discover_powershell_tool",
+                        name="Discover PowerShell Tool",
+                        action="invoke_tool",
+                        description="Select a documented PowerShell capability for the requested inspection.",
+                        metadata={
+                            "tool": "powershell.execute",
+                            "parameters": {"command": powershell_plan.command},
+                            "capability": powershell_plan.capability,
+                            "candidates": [candidate.tool for candidate in powershell_plan.candidates],
+                        },
+                    )
+                ]
+                plan = ExecutionPlan(user_question=user_question, steps=steps)
+                return PlannerDecision(
+                    plan=plan,
+                    strategy="knowledge_backed_powershell_selection",
+                    confidence=0.9,
+                    metadata={"step_count": len(steps), "intent": intent},
+                )
+
         # Plan templates are deterministic rule outputs.
         # Even before retrieval strategies diverge, the *plan shape* differs.
         if intent == "APPLICATION":
             executable_match = EXECUTABLE_RE.search(user_question)
             executable = executable_match.group(0).strip('"\'') if executable_match else ""
-            steps = [
-                ExecutionStep(
-                    id="launch_application",
-                    name="Launch Application",
-                    action="invoke_tool",
-                    description="Launch the explicitly selected executable after permission approval.",
-                    metadata={
-                        "tool": "applications.launch",
-                        "parameters": {"executable": executable},
-                    },
-                )
-            ]
-            strategy = "deterministic_application_launch"
+            if not executable:
+                application = _named_application(user_question)
+                steps = [
+                    ExecutionStep(
+                        id="launch_named_application",
+                        name="Launch Named Application",
+                        action="invoke_tool",
+                        description="Resolve the requested application to a trusted executable and launch it after approval.",
+                        metadata={
+                            "tool": "applications.launch_named",
+                            "parameters": {"application": application},
+                        },
+                    )
+                ]
+                strategy = "deterministic_named_application_launch"
+            else:
+                steps = [
+                    ExecutionStep(
+                        id="launch_application",
+                        name="Launch Application",
+                        action="invoke_tool",
+                        description="Launch the explicitly selected executable after permission approval.",
+                        metadata={
+                            "tool": "applications.launch",
+                            "parameters": {"executable": executable},
+                        },
+                    )
+                ]
+                strategy = "deterministic_application_launch"
 
         elif intent == "COMPARE":
             steps = [
@@ -156,4 +198,9 @@ class Planner:
             decision.strategy,
         )
         return decision
+
+
+def _named_application(request: str) -> str:
+    match = re.search(r"\b(?:open|launch|start)\s+(.+)$", request, re.IGNORECASE)
+    return match.group(1).strip().strip('"\'') if match else ""
 

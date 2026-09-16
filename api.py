@@ -22,11 +22,14 @@ from brain import Brain
 from computer.applications import InstalledApplicationsTool
 from computer.runtime import register_read_only_tools
 from computer.system import SystemInfoTool
-from config import COMPUTER_ROOT, EXECUTION_MODE, OLLAMA_MODEL
+from config import COMPUTER_ROOT, EXECUTION_MODE, OLLAMA_MODEL, TASK_STORE_FILE
 from indexer import index_knowledge_base
 from memory.memory_manager import MemoryManager
 from models import TaskStatus
+from task_store import TaskStore
 from tools import ExecutionMode, PermissionEngine, ToolRegistry, ToolRouter
+from tools.discovery import ToolDiscovery
+from tools.knowledge import ToolKnowledgeStore, load_json
 from vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
@@ -55,10 +58,29 @@ class AtlasService:
     brain: Brain | None = None
     registry: ToolRegistry | None = None
     _tasks: dict[str, TaskRecord] = field(default_factory=dict)
-    # Brain currently owns one pending approval context, so API tasks must be
-    # serialized until task state is moved into an independent runtime object.
+    _task_store: TaskStore = field(default_factory=lambda: TaskStore(path=TASK_STORE_FILE))
     _executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=1))
     _lock: threading.RLock = field(default_factory=threading.RLock)
+
+    def __post_init__(self) -> None:
+        persisted = self._task_store.load()
+        for task_id, payload in persisted.items():
+            try:
+                record = TaskRecord(**payload)
+            except Exception:
+                logger.warning("Skipping invalid persisted task: %s", task_id)
+                continue
+            if record.status in {
+                TaskStatus.PENDING.value,
+                TaskStatus.RUNNING.value,
+                TaskStatus.WAITING_FOR_CONFIRMATION.value,
+            }:
+                record.status = TaskStatus.FAILED.value
+                record.response = "Task interrupted when the Atlas API stopped."
+                record.errors.append("The task could not be resumed after an API restart.")
+                record.updated_at = time.time()
+            self._tasks[record.id] = record
+        self._persist()
 
     def ensure_runtime(self) -> None:
         if self.brain is not None:
@@ -96,6 +118,7 @@ class AtlasService:
         )
         with self._lock:
             self._tasks[record.id] = record
+            self._persist()
         self._executor.submit(self._run, record.id)
         return record
 
@@ -104,6 +127,7 @@ class AtlasService:
             record = self._tasks[record_id]
             record.status = TaskStatus.RUNNING.value
             record.updated_at = time.time()
+            self._persist()
         try:
             assert self.brain is not None
             response = self.brain.process(record.request)
@@ -117,6 +141,7 @@ class AtlasService:
                 record.errors = list(context.errors) if context is not None else []
                 record.warnings = list(context.warnings) if context is not None else []
                 record.updated_at = time.time()
+                self._persist()
         except Exception as exc:
             logger.exception("API task failed")
             with self._lock:
@@ -124,28 +149,41 @@ class AtlasService:
                 record.response = "Atlas could not complete this task."
                 record.errors = [str(exc)]
                 record.updated_at = time.time()
+                self._persist()
 
     def approve(self, record_id: str) -> TaskRecord:
         self.ensure_runtime()
         record = self._get(record_id)
+        if record.status != TaskStatus.WAITING_FOR_CONFIRMATION or not record.task_id:
+            raise HTTPException(status_code=409, detail="Task is not awaiting approval")
         assert self.brain is not None
-        record.response = self.brain.approve_pending()
+        record.response = self.brain.approve_pending(record.task_id)
         context = self.brain.last_context
         record.status = context.status.value if context is not None else TaskStatus.COMPLETED.value
         record.plan = _plan_snapshot(context)
         record.tool_calls = list(context.tool_calls) if context is not None else []
+        record.errors = list(context.errors) if context is not None else []
+        record.warnings = list(context.warnings) if context is not None else []
         record.updated_at = time.time()
+        with self._lock:
+            self._persist()
         return record
 
     def deny(self, record_id: str) -> TaskRecord:
         self.ensure_runtime()
         record = self._get(record_id)
+        if record.status != TaskStatus.WAITING_FOR_CONFIRMATION or not record.task_id:
+            raise HTTPException(status_code=409, detail="Task is not awaiting approval")
         assert self.brain is not None
-        record.response = self.brain.deny_pending()
+        record.response = self.brain.deny_pending(record.task_id)
         context = self.brain.last_context
         record.status = context.status.value if context is not None else TaskStatus.CANCELLED.value
         record.plan = _plan_snapshot(context)
+        record.errors = list(context.errors) if context is not None else []
+        record.warnings = list(context.warnings) if context is not None else []
         record.updated_at = time.time()
+        with self._lock:
+            self._persist()
         return record
 
     def _get(self, record_id: str) -> TaskRecord:
@@ -154,6 +192,9 @@ class AtlasService:
         if record is None:
             raise HTTPException(status_code=404, detail="Task not found")
         return record
+
+    def _persist(self) -> None:
+        self._task_store.save(self._tasks)
 
 
 def _read_prompt(name: str) -> str:
@@ -178,11 +219,21 @@ def _plan_snapshot(context: Any) -> dict[str, Any] | None:
                     key: value
                     for key, value in step.metadata.items()
                     if key not in {"parameters"}
-                },
+                } | _safe_plan_parameters(step),
             }
             for step in plan.steps
         ],
     }
+
+
+def _safe_plan_parameters(step: Any) -> dict[str, Any]:
+    """Expose non-sensitive planning details needed by the control room."""
+
+    if step.metadata.get("tool") != "powershell.execute":
+        return {}
+    parameters = step.metadata.get("parameters") or {}
+    command = parameters.get("command") if isinstance(parameters, dict) else None
+    return {"command": command} if isinstance(command, str) else {}
 
 
 service = AtlasService()
@@ -225,6 +276,30 @@ def tools() -> dict[str, Any]:
             for metadata in service.registry.list_metadata()
         ]
     }
+
+
+@app.get("/api/tool-knowledge")
+def tool_knowledge(query: str = "", limit: int = 50) -> dict[str, Any]:
+    """Expose the data-driven tool catalog used by planner discovery."""
+
+    records = load_json(COMPUTER_ROOT / "tools" / "powershell_commands.json")
+    store = ToolKnowledgeStore(records)
+    bounded_limit = min(max(limit, 1), 100)
+    selected = store.search(query, tool_type="powershell", limit=bounded_limit) if query.strip() else store.list_records()[:bounded_limit]
+    return {"tools": [record.to_dict() for record in selected]}
+
+
+@app.get("/api/tool-discovery")
+def tool_discovery(query: str, limit: int = 5) -> dict[str, Any]:
+    """Return structured candidates without executing a command."""
+
+    records = load_json(COMPUTER_ROOT / "tools" / "powershell_commands.json")
+    candidates = ToolDiscovery(ToolKnowledgeStore(records)).discover(
+        query,
+        tool_type="powershell",
+        limit=min(max(limit, 1), 20),
+    )
+    return {"candidates": [candidate.__dict__ for candidate in candidates]}
 
 
 @app.get("/api/applications")

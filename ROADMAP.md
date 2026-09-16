@@ -24,6 +24,9 @@ The currently verified runtime includes:
 - read-only Windows system, filesystem, process, and application inspection
 - session memory persistence and CLI commands for conversation lifecycle
 - FastAPI adapter and browser-based control-room UI
+- durable API task history with explicit interruption handling on restart
+- task-ID-bound approval and denial for API actions
+- data-driven tool knowledge, capability discovery, and read-only PowerShell execution
 
 ## Local-first computer-agent migration
 
@@ -38,6 +41,12 @@ runtime, not yet a computer-control agent. The incremental migration is:
 6. Observer and verifier with evidence-based success reporting.
 7. Internet search, webpage retrieval, provenance, controlled downloads, and package management.
 8. Multi-tool planning and recovery, followed later by GUI, voice, and vision adapters.
+
+The first execution-runtime hardening slice is now implemented: API task
+snapshots persist under `database/tasks.json`, and approval actions are bound
+to the matching execution task. In-flight tasks are reported as interrupted
+after an API restart rather than appearing resumable without their runtime
+context.
 
 The detailed audit, gap analysis, file map, and Phase 1 plan are in
 `ARCHITECTURE_ASSESSMENT.md`.
