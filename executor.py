@@ -184,6 +184,19 @@ class Executor:
             raise TypeError("Tool invocation parameters must be a dictionary")
 
         parameters = self._resolve_arguments(parameters, context)
+        # A required parameter that resolved to None means an upstream reference
+        # (e.g. "$top_result_url" when the search returned nothing) produced no
+        # value. Fail the step with an honest message instead of calling the tool
+        # with a null argument.
+        missing = [key for key, value in parameters.items() if value is None]
+        if missing:
+            context.errors.append(
+                f"{tool_name} could not run: no value was available for "
+                + ", ".join(missing)
+            )
+            raise RuntimeError(
+                f"{tool_name} is missing a required value: " + ", ".join(missing)
+            )
         context.selected_tool = tool_name
         # Approval is not consumed on read: multiple steps in the same plan may
         # require it, and a resumed plan must still be considered approved. Do
@@ -389,14 +402,18 @@ class Executor:
         produced = context.metadata.setdefault("produced", {})
         name = step.metadata.get("produces")
         tool = step.metadata.get("tool")
-        if name:
-            # A web search publishes a human-readable summary as the named
-            # output so a downstream write step (Notepad/file) receives usable
-            # text rather than a raw result mapping.
-            if tool == "web.search" and isinstance(output, dict):
-                produced[str(name)] = _render_web_results(output)
-            else:
-                produced[str(name)] = output
+        if name and tool == "web.search" and isinstance(output, dict):
+            # A search publishes both a human-readable summary (for a fallback
+            # write) and the top result URL (so a follow-up web.fetch can read
+            # the page the user actually wants placed somewhere).
+            produced[str(name)] = _render_web_results(output)
+            produced.setdefault("top_result_url", _top_result_url(output))
+        elif name and tool == "web.fetch" and isinstance(output, dict):
+            # A fetch publishes its page text (not the raw {url, text} mapping)
+            # so a downstream write receives usable content.
+            produced[str(name)] = str(output.get("text") or "")
+        elif name:
+            produced[str(name)] = output
         # content.generate always publishes generated_text as a convenience.
         if step.metadata.get("tool") == "content.generate" and isinstance(output, dict):
             text = output.get("text")
@@ -471,6 +488,15 @@ class Executor:
             context.final_response = UNKNOWN_RESPONSE
 
 
+def _top_result_url(output: dict) -> str | None:
+    # The first result with a URL is the page a follow-up fetch should read.
+    results = output.get("results")
+    if isinstance(results, list):
+        for item in results:
+            if isinstance(item, dict) and item.get("url"):
+                return str(item["url"])
+    return None
+
 def _render_web_results(output: dict) -> str:
     # Render web search results as plain text for a downstream write step.
     # The result list is untrusted data: it is copied as text, never interpreted.
@@ -496,6 +522,14 @@ def _resolve_value(value: object, produced: dict) -> object:
     if isinstance(value, str):
         if value in produced:
             return produced[value]
+        # A "$name" reference consumes the output published by an earlier step.
+        # The bare name (without the $) is the key in the produced map, so a
+        # generic reference such as "$search_results" resolves here; this also
+        # covers the "$generated_text" convention used by content generation.
+        if value.startswith("$") and len(value) > 1:
+            name = value[1:]
+            if name in produced:
+                return produced[name]
         if value == GENERATED_TEXT_REF and "generated_text" in produced:
             return produced["generated_text"]
         return value

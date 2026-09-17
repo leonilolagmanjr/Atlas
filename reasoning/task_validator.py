@@ -102,6 +102,11 @@ class TaskValidator:
                 candidate = "generated_text"
             if candidate:
                 produced.add(str(candidate))
+            # A web search additionally exposes the top result URL so a
+            # follow-up web.fetch can read the page (mirrors the generated_text
+            # convention above).
+            if action.capability == "web.search":
+                produced.add("top_result_url")
 
         # A task that requires execution with no valid actions cannot proceed,
         # unless it is explicitly an informational task handled by retrieval.

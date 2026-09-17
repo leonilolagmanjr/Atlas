@@ -681,8 +681,16 @@ class SemanticTaskInterpreter:
             if path:
                 return [self._create_folder_action(path)]
 
-        # 2. File search / move / copy.
-        if has_move or has_copy or (has_search and self._is_file_request(text, entities)):
+        # 2. File search / move / copy. A bare move/copy verb only means a file
+        # operation when a file context exists; otherwise ("search the web for X
+        # and copy it in Notepad") the verb means "place the found text", and the
+        # web branch below handles it as a hybrid.
+        has_file_context = bool(
+            entities.get("file_type") or entities.get("folder") or entities.get("filename")
+            or entities.get("file_subject") or entities.get("file_intent")
+        )
+        file_move_or_copy = (has_move or has_copy) and has_file_context
+        if file_move_or_copy or (has_search and self._is_file_request(text, entities)):
             return self._file_actions(text, entities, move=has_move, copy=has_copy, search=has_search or not (has_move or has_copy))
 
         # 3. Web search dominates when a site/video is explicitly named as a search platform.
@@ -802,44 +810,56 @@ class SemanticTaskInterpreter:
             )
         return actions
     def _search_follow_up(self, text: str, entities: dict[str, Any]) -> list[TaskAction]:
-        # Post-search actions for a hybrid search-then-write task. A web result
-        # the user wants placed somewhere (an application or a file) is a two-part
-        # request: retrieve the evidence, then compose it into the destination.
-        # Only an explicit write/save verb plus a named destination produces the
-        # second action, so a plain search stays a plain search.
+        # Post-search actions for a hybrid search-then-place task. When the user
+        # asks for the *content* of something found on the web to be placed in an
+        # application or file ("get the bee movie script and copy it in Notepad"),
+        # Atlas must read the best result, not dump the links. So the plan fetches
+        # the top result and the write consumes the fetched text.
+        #
+        # Only an explicit placement verb (write/save/copy/put/...) plus a named
+        # destination produces these steps, so a plain search stays plain.
         lowered = text.casefold()
-        has_create = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _CREATE_VERBS)
-        if not has_create:
+        placement_verbs = _CREATE_VERBS + ("copy", "paste", "type", "put", "place", "add", "insert")
+        has_placement = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in placement_verbs)
+        if not has_placement:
             return []
         application = entities.get("application")
         filename = entities.get("filename")
+        if not (application or filename):
+            return []
+
+        fetch = TaskAction(
+            action_id="a2",
+            capability="web.fetch",
+            parameters={"url": "$top_result_url"},
+            description="Read the top web result.",
+            depends_on=["a1"],
+            produces="fetched_content",
+            expected_output="page text",
+        )
         if application:
-            return [
-                TaskAction(
-                    action_id="a2",
-                    capability="applications.write_text",
-                    parameters={"application": application, "text": "$search_results"},
-                    description=f"Write the found result into {application}.",
-                    depends_on=["a1"],
-                    expected_output="result present in the application",
-                    risk_level="medium_risk",
-                    requires_confirmation=True,
-                )
-            ]
-        if filename:
-            return [
-                TaskAction(
-                    action_id="a2",
-                    capability="filesystem.write",
-                    parameters={"path": filename, "text": "$search_results"},
-                    description=f"Save the found result as {filename}.",
-                    depends_on=["a1"],
-                    expected_output=f"{filename} created",
-                    risk_level="medium_risk",
-                    requires_confirmation=True,
-                )
-            ]
-        return []
+            write = TaskAction(
+                action_id="a3",
+                capability="applications.write_text",
+                parameters={"application": application, "text": "$fetched_content"},
+                description=f"Write the fetched content into {application}.",
+                depends_on=["a2"],
+                expected_output="content present in the application",
+                risk_level="medium_risk",
+                requires_confirmation=True,
+            )
+        else:
+            write = TaskAction(
+                action_id="a3",
+                capability="filesystem.write",
+                parameters={"path": filename, "text": "$fetched_content"},
+                description=f"Save the fetched content as {filename}.",
+                depends_on=["a2"],
+                expected_output=f"{filename} created",
+                risk_level="medium_risk",
+                requires_confirmation=True,
+            )
+        return [fetch, write]
 
     def _create_file_action(self, entities: dict[str, Any]) -> Optional[TaskAction]:
         # Build a filesystem.write action for a create-a-file request. No content

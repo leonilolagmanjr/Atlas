@@ -110,25 +110,127 @@ class CreateFileRegressionTests(unittest.TestCase):
 
 
 class HybridRegressionTests(unittest.TestCase):
-    def test_search_then_write_composes_a_write_action(self):
+    def test_search_then_write_fetches_the_page_and_writes_its_content(self):
         task, _, plan = _route(
             "Search the web for the latest Python version and write it into Notepad."
         )
         capabilities = [a.capability for a in task.actions]
-        self.assertEqual(capabilities, ["web.search", "applications.write_text"])
-        # The write consumes the search output, and the query excludes the clause.
+        # The plan reads the top result page and writes that page's content, not
+        # the list of links.
+        self.assertEqual(capabilities, ["web.search", "web.fetch", "applications.write_text"])
+        fetch = task.actions[1]
+        self.assertEqual(fetch.parameters["url"], "$top_result_url")
+        self.assertEqual(fetch.produces, "fetched_content")
         write = task.actions[-1]
-        self.assertEqual(write.parameters["text"], "$search_results")
+        self.assertEqual(write.parameters["text"], "$fetched_content")
         self.assertNotIn("write", task.actions[0].parameters["query"])
         self.assertTrue(plan.requires_action)
 
-    def test_plain_search_is_not_a_write(self):
-        task = _interpreter().interpret("Search YouTube for popular videos.")
-        self.assertEqual([a.capability for a in task.actions], ["web.search"])
+        def test_plain_search_is_not_a_write(self):
+            task = _interpreter().interpret("Search YouTube for popular videos.")
+            self.assertEqual([a.capability for a in task.actions], ["web.search"])
 
+        def test_copy_it_in_notepad_is_a_web_hybrid_not_a_file_copy(self):
+            # "copy" here means "place the found text", not a filesystem copy; the
+            # bare verb must not hijack the search into a file move/copy plan.
+            task = _interpreter().interpret(
+                "search the web for the bee movie script and copy it in notepad"
+            )
+            capabilities = [a.capability for a in task.actions]
+            self.assertEqual(
+                capabilities, ["web.search", "web.fetch", "applications.write_text"]
+            )
+            self.assertNotIn("filesystem.copy", capabilities)
+            for action in task.actions:
+                for value in action.parameters.values():
+                    self.assertNotEqual(value, "$largest_match")
+
+    class ReferenceResolutionTests(unittest.TestCase):
+        # A "$name" plan reference must resolve to the value an earlier step
+        # published; a literal "$name" reaching a tool is a broken handoff.
+
+        def test_generic_reference_resolves_from_produced_map(self):
+            from executor import _resolve_value
+            produced = {"search_results": "- Python 3.13 (https://python.org)"}
+            self.assertEqual(
+                _resolve_value("$search_results", produced),
+                "- Python 3.13 (https://python.org)",
+            )
+
+        def test_generated_text_reference_still_resolves(self):
+            from executor import _resolve_value
+            self.assertEqual(
+                _resolve_value("$generated_text", {"generated_text": "a poem"}), "a poem"
+            )
+
+        def test_unknown_reference_is_left_literal(self):
+            from executor import _resolve_value
+            self.assertEqual(_resolve_value("$missing", {}), "$missing")
+
+        def test_hybrid_plan_passes_resolved_text_to_the_writer(self):
+            from brain import Brain
+            from executor import Executor
+            from planner import Planner
+            from tools import ExecutionMode, PermissionEngine, ToolRegistry, ToolRouter
+            from tools.base import Tool, ToolMetadata, ToolResult
+            class FakeVectorStore:
+                def search(self, *_a, **_k):
+                    return []
+
+            class RecordingTool(Tool):
+                def __init__(self, name, output):
+                    self.metadata = ToolMetadata(name=name, description=name, category="test")
+                    self._output = output
+                    self.calls = []
+
+                def execute(self, parameters):
+                    self.calls.append(dict(parameters))
+                    return ToolResult(success=True, status="completed", output=self._output)
+
+            search = RecordingTool(
+                "web.search",
+                {"query": "python", "results": [{"title": "Python 3.13", "url": "https://python.org", "snippet": "x"}]},
+            )
+            fetcher = RecordingTool(
+                "web.fetch",
+                {"url": "https://python.org", "text": "Python 3.13 is the newest release."},
+            )
+            writer = RecordingTool("applications.write_text", {"pid": 1, "application": "notepad", "characters": 36})
+
+            registry = ToolRegistry()
+            registry.register(search)
+            registry.register(fetcher)
+            registry.register(writer)
+            router = ToolRouter(registry=registry, permission_engine=PermissionEngine(mode=ExecutionMode.AUTONOMOUS))
+            brain = Brain(
+                vector_store=FakeVectorStore(),
+                system_prompt="sys",
+                retrieval_template="{conversation_history}{context}{question}",
+                planner=Planner(registry=router, ask=lambda **_: "{}"),
+                executor=Executor(
+                    vector_store=FakeVectorStore(),
+                    system_prompt="sys",
+                    retrieval_template="{conversation_history}{context}{question}",
+                    tool_router=router,
+                ),
+                tool_router=router,
+                interpreter=SemanticTaskInterpreter(ask=lambda **_: "{}"),
+                llm_ask=lambda **_: "{}",
+            )
+            brain.process("search the web for the latest python version and write it into notepad")
+
+            self.assertEqual(len(search.calls), 1)
+            self.assertEqual(len(fetcher.calls), 1)
+            # The fetch read the URL resolved from the search, not a literal ref.
+            self.assertEqual(fetcher.calls[0]["url"], "https://python.org")
+            self.assertEqual(len(writer.calls), 1)
+            written = writer.calls[0]["text"]
+            # The write replaced the reference with the fetched page text, so the
+            # destination gets the content, not the links.
+            self.assertEqual(written, "Python 3.13 is the newest release.")
 
 class NegativeRoutingTests(unittest.TestCase):
-    """Semantic intent must dominate keyword matching (spec section 19)."""
+    # Semantic intent must dominate keyword matching (spec section 19).
 
     def test_poem_about_cars_is_not_a_video_search(self):
         task, signals, plan = _route("Create a poem in Notepad about cars.")
