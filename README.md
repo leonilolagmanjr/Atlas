@@ -77,6 +77,7 @@ The model proposes structure, not shell execution. Validation checks capability 
 | `reasoning/evidence_manager.py`, `evidence_models.py` | Evidence collection, provenance and sufficiency checks |
 | `reasoning/answer_generator.py`, `reasoning/self_introspection.py` | Answer modes and registry/config-derived self-description |
 | `reasoning/task_validator.py`, `reasoning/task_planner.py` | Task validation and dependency-ordered action planning |
+| `content_formatting.py`, `tools/format.py` | Content normalization, type detection, paragraph reconstruction, destination rendering, verification, and repair |
 | `executor.py`, `reasoning/verifier.py`, `reasoning/recovery.py` | Sequential execution, output publication, observations, verification and bounded recovery |
 | `planner.py`, `intent_classifier.py`, `reasoning/interpreter.py` | Retained deterministic/legacy planning and compatibility paths, not the primary Task IR boundary |
 | `knowledge_search.py` | Query expansion, staged retrieval, ranking and confidence decision |
@@ -142,6 +143,25 @@ This is what a hybrid such as "search the web for the bee movie script and copy 
 
 Fetched pages are reduced to their readable main content by `web_content.PageContentParser`: when a page marks a main region (`<main>`, `<article>`, `role=main`) only that region is kept, and otherwise navigation, headers, footers, sidebars, cookie/consent banners, adverts, related/comment/share widgets, scripts/styles, and all media (images, video, audio, iframes) including their alt text are dropped. This deterministic boilerplate removal is what stops a hybrid "get X and write it in Notepad" from pasting an entire page of chrome. It is a heuristic, not a full readability engine: unusual layouts can still keep some noise or drop content. Provider changes, bot challenges, incomplete snippets, and ranking limitations can yield missing or poor results.
 
+### Content formatting pipeline (`content.format`)
+
+Before retrieved or generated content reaches an application (Notepad, Word, code editor, Markdown file, terminal), it passes through the **content formatting pipeline** in `content_formatting.py` and the `content.format` tool. This stage ensures human-readable structure without summarizing or rewriting source content.
+
+Pipeline stages:
+
+1. **Normalization** (`ContentNormalizer`): Removes navigation/boilerplate artifacts, HTML entities, duplicate lines, and normalizes whitespace/line endings. Code indentation is auto-detected and preserved.
+2. **Content type detection** (`ContentTypeDetector`): Deterministic signals classify content as `script`, `transcript`, `lyrics`, `article`, `code`, `list`, `general_prose`, etc., from structural cues (speaker lines, timestamps, indentation, list markers, dialogue density).
+3. **Paragraph reconstruction** (`ParagraphReconstructor`): For prose, broken lines are rejoined into semantic paragraphs; for scripts/transcripts/lyrics/code, exact line structure is preserved.
+4. **Destination-aware rendering** (`DestinationRenderer`): Formats for Notepad (plain text with blank-line paragraph separation), Markdown (headings, fenced code), Word/WordPad (richer headings), code editors (exact content), terminal (compact).
+5. **Verification** (`FormattingVerifier`): Checks for empty output, collapsed walls of text, excessive blank lines, content truncation, code indentation damage, and duplicate content.
+6. **Automatic repair**: On verification failure, bounded repair attempts (default 2) re-normalize or reconstruct paragraphs, then re-verify.
+
+The pipeline is invoked automatically by the semantic task interpreter for:
+- Hybrid web→application tasks (e.g., "search for the Bee Movie script and copy it to Notepad")
+- Content generation tasks with a destination (e.g., "write a poem about cars in Notepad")
+
+This ensures the Bee Movie script in Notepad has readable dialogue blocks, not a single collapsed paragraph; lists stay numbered; code keeps indentation; transcripts preserve speaker/timestamp structure.
+
 Answers distinguish direct model knowledge from retrieved evidence, include source metadata/citations where available, and report missing evidence. Evidence sufficiency and output verification are heuristics, not independent proof that a factual answer is correct or current.
 
 ## Tools and execution
@@ -151,6 +171,7 @@ Answers distinguish direct model knowledge from retrieved evidence, include sour
 | Capability family | Current scope |
 | --- | --- |
 | `content.generate` | Local-model content generation for composed tasks |
+| `content.format` | Normalization, content-type detection, paragraph reconstruction, destination-aware rendering, verification, and bounded repair for human-readable output |
 | `filesystem.list/read/metadata/search/search_content` | Bounded local inspection and text/PDF lookup |
 | `filesystem.write/create_folder/move/copy` | Root-bounded mutations, permission-gated in default confirm mode |
 | `applications.list`, `applications.launch`, `applications.launch_named`, `applications.write_text` | Installed-app inspection, non-shell launch, and targeted Windows text entry |

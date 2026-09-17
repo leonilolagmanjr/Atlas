@@ -75,6 +75,7 @@ class TaskVerifier:
             "applications.launch_named": launch("applications.launch_named"),
             "applications.launch": launch("applications.launch"),
             "content.generate": self._verify_content,
+            "content.format": self._verify_format,
             "applications.write_text": self._verify_write_text,
             "filesystem.write": self._verify_path_written,
             "filesystem.create_folder": self._verify_folder,
@@ -94,6 +95,24 @@ class TaskVerifier:
             )
         return VerificationOutcome(
             "content.generate", False, "unverified", "The model returned no content."
+        )
+
+    @staticmethod
+    def _verify_format(output: Any) -> VerificationOutcome:
+        if isinstance(output, dict):
+            text = output.get("text")
+            metadata = output.get("metadata", {})
+            if isinstance(text, str) and text.strip():
+                content_type = metadata.get("content_type", "unknown")
+                verified = metadata.get("verification_passed", False)
+                return VerificationOutcome(
+                    "content.format",
+                    True,
+                    "verified" if verified else "unverified",
+                    f"Formatted {len(text)} characters as {content_type}."
+                )
+        return VerificationOutcome(
+            "content.format", False, "unverified", "No formatted text was returned."
         )
 
     @staticmethod

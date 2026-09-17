@@ -1049,10 +1049,26 @@ class SemanticTaskInterpreter:
             actions.append(
                 TaskAction(
                     action_id="a2",
-                    capability="applications.write_text",
-                    parameters={"application": application, "text": "$generated_text"},
-                    description=f"Write the content into {application}.",
+                    capability="content.format",
+                    parameters={
+                        "content": "$generated_text",
+                        "destination": application,
+                        "title": topic or "",
+                        "repair": True,
+                    },
+                    description=f"Format the generated content for {application}.",
                     depends_on=["a1"],
+                    produces="formatted_text",
+                    expected_output="formatted content ready for destination",
+                )
+            )
+            actions.append(
+                TaskAction(
+                    action_id="a3",
+                    capability="applications.write_text",
+                    parameters={"application": application, "text": "$formatted_text"},
+                    description=f"Write the formatted content into {application}.",
+                    depends_on=["a2"],
                     expected_output="content present in the application",
                     risk_level="medium_risk",
                     requires_confirmation=True,
@@ -1062,10 +1078,26 @@ class SemanticTaskInterpreter:
             actions.append(
                 TaskAction(
                     action_id="a2",
-                    capability="filesystem.write",
-                    parameters={"path": filename, "text": "$generated_text"},
-                    description=f"Save the content as {filename}.",
+                    capability="content.format",
+                    parameters={
+                        "content": "$generated_text",
+                        "destination": filename,
+                        "title": topic or "",
+                        "repair": True,
+                    },
+                    description=f"Format the generated content for {filename}.",
                     depends_on=["a1"],
+                    produces="formatted_text",
+                    expected_output="formatted content ready for destination",
+                )
+            )
+            actions.append(
+                TaskAction(
+                    action_id="a3",
+                    capability="filesystem.write",
+                    parameters={"path": filename, "text": "$formatted_text"},
+                    description=f"Save the formatted content as {filename}.",
+                    depends_on=["a2"],
                     expected_output=f"{filename} created",
                     risk_level="medium_risk",
                     requires_confirmation=True,
@@ -1114,29 +1146,44 @@ class SemanticTaskInterpreter:
             produces="web_content",
             expected_output="the requested content",
         )
+        # Format the retrieved content for the destination
+        format_action = TaskAction(
+            action_id="a2",
+            capability="content.format",
+            parameters={
+                "content": "$web_content",
+                "destination": application or filename,
+                "title": entities.get("topic") or "",
+                "repair": True,
+            },
+            description="Format the retrieved content for the destination.",
+            depends_on=["a1"],
+            produces="formatted_text",
+            expected_output="formatted content ready for destination",
+        )
         if application:
             write = TaskAction(
-                action_id="a2",
+                action_id="a3",
                 capability="applications.write_text",
-                parameters={"application": application, "text": "$web_content"},
-                description=f"Write the relevant content into {application}.",
-                depends_on=["a1"],
+                parameters={"application": application, "text": "$formatted_text"},
+                description=f"Write the formatted content into {application}.",
+                depends_on=["a2"],
                 expected_output="content present in the application",
                 risk_level="medium_risk",
                 requires_confirmation=True,
             )
         else:
             write = TaskAction(
-                action_id="a2",
+                action_id="a3",
                 capability="filesystem.write",
-                parameters={"path": filename, "text": "$web_content"},
-                description=f"Save the relevant content as {filename}.",
-                depends_on=["a1"],
+                parameters={"path": filename, "text": "$formatted_text"},
+                description=f"Save the formatted content as {filename}.",
+                depends_on=["a2"],
                 expected_output=f"{filename} created",
                 risk_level="medium_risk",
                 requires_confirmation=True,
             )
-        return [research, write]
+        return [research, format_action, write]
 
     def _create_file_action(self, entities: dict[str, Any]) -> Optional[TaskAction]:
         # Build a filesystem.write action for a create-a-file request. No content

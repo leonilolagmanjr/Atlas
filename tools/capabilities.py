@@ -23,6 +23,7 @@ PLANNABLE_CAPABILITIES: frozenset[str] = frozenset(
     {
         # Content and application control
         "content.generate",
+        "content.format",
         "applications.write_text",
         "applications.launch_named",
         "applications.launch",
@@ -207,6 +208,24 @@ _FALLBACK_CAPABILITIES: dict[str, Capability] = {
         requires_confirmation=False,
         verifiable=True,
         produces=("generated_text",),
+    ),
+    "content.format": Capability(
+        name="content.format",
+        description="Normalize, structure, and render raw content for a specific destination.",
+        category="content.formatting",
+        parameters={
+            "content": {"type": "string", "description": "Raw content to format"},
+            "destination": {"type": "string", "description": "Target application (notepad, word, markdown, code_editor, terminal)"},
+            "title": {"type": "string", "description": "Optional title for the content"},
+            "source": {"type": "string", "description": "Source identifier (URL, filename, etc.)"},
+            "url": {"type": "string", "description": "Source URL if from web"},
+            "repair": {"type": "boolean", "description": "Enable automatic formatting repair"},
+        },
+        required_parameters=("content",),
+        risk_level="read_only",
+        requires_confirmation=False,
+        verifiable=True,
+        produces=("formatted_text",),
     ),
     "applications.launch_named": Capability(
         name="applications.launch_named",

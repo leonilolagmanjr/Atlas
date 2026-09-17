@@ -436,6 +436,11 @@ class Executor:
             if isinstance(text, str):
                 produced[GENERATED_TEXT_REF] = text
                 produced.setdefault("generated_text", text)
+        # content.format publishes formatted_text
+        if step.metadata.get("tool") == "content.format" and isinstance(output, dict):
+            text = output.get("text")
+            if isinstance(text, str):
+                produced["formatted_text"] = text
         # filesystem.search may publish a single selected match (e.g. "the
         # largest PDF") for a downstream move/copy step to consume.
         if step.metadata.get("tool") == "filesystem.search":

@@ -22,6 +22,7 @@ from computer.processes import ProcessInspectTool, ProcessListTool
 from computer.system import SystemInfoTool
 from computer.text_entry import ApplicationTextEntryTool
 from tools.content import ContentGenerationTool
+from tools.format import ContentFormatTool
 from tools.knowledge import ToolKnowledgeStore, load_json
 from tools.registry import ToolRegistry
 from web import WebFetchTool, WebResearchTool, WebSearchTool
@@ -58,6 +59,7 @@ def register_read_only_tools(
         NamedApplicationLaunchTool(),
         ApplicationTextEntryTool(),
         ContentGenerationTool(ask=ask),
+        ContentFormatTool(),
         PowerShellTool(knowledge=knowledge),
         WebSearchTool(),
         WebFetchTool(),
