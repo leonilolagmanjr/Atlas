@@ -412,6 +412,9 @@ class Executor:
             # A fetch publishes its page text (not the raw {url, text} mapping)
             # so a downstream write receives usable content.
             produced[str(name)] = str(output.get("text") or "")
+        elif name and tool == "web.research" and isinstance(output, dict):
+            # Research publishes the ranked, isolated content as text.
+            produced[str(name)] = str(output.get("content") or "")
         elif name:
             produced[str(name)] = output
         # content.generate always publishes generated_text as a convenience.

@@ -83,7 +83,8 @@ The model proposes structure, not shell execution. Validation checks capability 
 | `document_loader.py`, `chunker.py`, `indexer.py`, `vector_store.py` | PDF loading, character chunks, file-hash indexing and ChromaDB access |
 | `llm.py`, `providers/` | Injectable model-call boundary; current facade constructs the Ollama provider |
 | `tools/` | Tool contracts, actual registry, capability descriptors, router, permissions, knowledge and discovery |
-| `computer/`, `web.py` | Windows/filesystem/PowerShell providers and read-only public search/fetch |
+| `computer/`, `web.py` | Windows/filesystem/PowerShell providers and read-only public search/fetch/research tools |
+| `web_content.py`, `web_research.py`, `web_task.py` | Main-content extraction, task-aware multi-attempt retrieval pipeline, and retrieval task/goal/content-type/scoring/validation models |
 | `memory/`, `task_store.py` | Conversation storage and durable API task snapshots |
 | `api.py`, `frontend/` | Local HTTP adapter and polling control room |
 | `config.py`, `logger.py`, `prompts/` | Runtime constants, logging and prompt templates |
@@ -104,7 +105,7 @@ Keep new capabilities behind existing tool contracts; do not put subprocess exec
 | Earlier conversation | Uses available conversation history, not an unimplemented long-term fact database |
 | Atlas capabilities/model/tools | Uses actual registered capability metadata and runtime configuration, rather than model claims about installed tools |
 | Action request | Preserves `Task.actions` and delegates execution to the permission-gated executor |
-| Hybrid request | Combines a source and an action: "search the web for X and write it into Notepad" retrieves evidence, renders it as text, and writes it after confirmation. Composition is limited to the existing action capabilities. |
+| Hybrid request | Combines a source and an action: "search the web for X and write it into Notepad" runs task-aware retrieval (goal + content-type inference → source ranking → extraction → validation → bounded retry) and writes the validated content after confirmation, not the search links and not a page about the subject. Composition is limited to the existing action capabilities. |
 | Ambiguous request | "open it", "find that file", "make it better" with no resolvable referent return a clarification question instead of guessing a source or action |
 
 Read-only research actions (`web.search`/`web.fetch` and non-mutating `filesystem.list/search/read/metadata/search_content`) are served by the reasoning engine, which synthesizes a cited answer. Tasks that mutate state or control applications—including hybrids—are delegated to the validator/planner/executor path. An ordered source plan is not an autonomous research/action graph; selecting web and computer sources does not implement “research and install any program”, and only existing validated Task actions can run.
@@ -125,7 +126,21 @@ PDF file tools reuse pypdf with input-size, page-count, output-size, and between
 
 ### Web and answer quality
 
-`web.search` uses public search providers with per-provider failure isolation and relevance filtering. YouTube requests can return watch links and native thumbnails. `web.fetch` reads bounded public HTML/plain text, treats it as untrusted evidence, and does not execute page scripts or save downloads. Provider changes, bot challenges, incomplete snippets, and ranking limitations can yield missing or poor results.
+`web.search` uses public search providers with per-provider failure isolation and relevance filtering. YouTube requests can return watch links and native thumbnails. `web.fetch` reads bounded public HTML/plain text, treats it as untrusted evidence, and does not execute page scripts or save downloads.
+
+### Task-aware retrieval (`web.research`)
+
+`web.research` is Atlas's **task-aware** retrieval path, used when content must be *retrieved and isolated* rather than merely listed. Chunk relevance alone is not enough: a Wikipedia page *about* a film can out-score the film's actual script. So retrieval runs the pipeline **REASON → PLAN → SEARCH → RANK SOURCES → EXTRACT → VALIDATE → ACT**, with a bounded **reformulate + retry** on validation failure.
+
+1. **`web_task.infer_retrieval_task`** turns the request into a `RetrievalTask`: a `goal` (`retrieve_document`, `find_information`, `find_page`, `find_review`, `find_media`, `find_reference`, …), the requested `content_type` (`movie_script`, `transcript`, `lyrics`, `article`, `review`, `video`, `reference`, `code`, …), whether the artifact *itself* is wanted versus information about it (`must_be_artifact`), and the destination. This is the interpreter's Task IR extended, not a parallel model.
+2. **Source ranking before chunk ranking.** `web_task.score_source` scores each candidate page on title/URL/snippet/body term match, detected-vs-requested content-type match, presence of the requested artifact (dialogue/script structure), source quality, and completeness, and penalises pages that merely describe the subject when the artifact was requested. Chunks are ranked only *within* the winning source.
+3. **Content-type detection** (`web_task.detect_source_type`) classifies a page as script/transcript/lyrics/article/review/reference/video/forum/product/code/document_host/… from host, title, structure, dialogue density, and card-chrome density. A document-store/listing landing page (Scribd/studylib/etc.) that *advertises* an uploaded document is typed `document_host` and rejected for artifact requests even when it ranks first and its title names the artifact, so it is never copied instead of the real content.
+4. **Task-aware validation** (`web_task.validate_content`) decides whether the extracted content satisfies the task and explains a rejection ("expected a movie_script but the source is reference"). A failed validation never reaches an action: `web.research` retries with a query **reformulated from the missing content type** (`reformulate_query`), bounded by `max_attempts`, and fails honestly when nothing qualifies.
+5. **LLM validation is narrow.** The local model may judge a *borderline* decision (a well-ranked source the deterministic rules rejected) via `web_task.llm_validate_content`, returning structured `{match, content_type_match, contains_target, completeness, action, reason}`. Routing, scoring, extraction, thresholds, retry limits, and execution all stay deterministic.
+
+This is what a hybrid such as "search the web for the bee movie script and copy it in Notepad" consumes: the destination receives the script content, not the search links and not a page about the film. Retrieval diagnostics (goal, candidates, source scores, detected types, validation, retry query, final selection) are logged for every attempt.
+
+Fetched pages are reduced to their readable main content by `web_content.PageContentParser`: when a page marks a main region (`<main>`, `<article>`, `role=main`) only that region is kept, and otherwise navigation, headers, footers, sidebars, cookie/consent banners, adverts, related/comment/share widgets, scripts/styles, and all media (images, video, audio, iframes) including their alt text are dropped. This deterministic boilerplate removal is what stops a hybrid "get X and write it in Notepad" from pasting an entire page of chrome. It is a heuristic, not a full readability engine: unusual layouts can still keep some noise or drop content. Provider changes, bot challenges, incomplete snippets, and ranking limitations can yield missing or poor results.
 
 Answers distinguish direct model knowledge from retrieved evidence, include source metadata/citations where available, and report missing evidence. Evidence sufficiency and output verification are heuristics, not independent proof that a factual answer is correct or current.
 
@@ -141,7 +156,7 @@ Answers distinguish direct model knowledge from retrieved evidence, include sour
 | `applications.list`, `applications.launch`, `applications.launch_named`, `applications.write_text` | Installed-app inspection, non-shell launch, and targeted Windows text entry |
 | `system.info`, `processes.list`, process inspection tools | Registered read-only machine/process information |
 | `powershell.execute` | Documented, validated read-only inspection, not arbitrary shell access |
-| `web.search`, `web.fetch` | Read-only public search/page evidence |
+| `web.search`, `web.fetch`, `web.research` | Read-only public search/page evidence and task-aware multi-page retrieval with source ranking, content-type detection, validation, and query reformulation |
 
 `tools/knowledge.py`, `tools/discovery.py`, and `tools/powershell_commands.json` provide searchable command knowledge and non-executing discovery. PowerShell planning uses documented inspection commands and structured output. Knowledge records are data, not authorization to execute a command. The lexical PowerShell validator is not an AST sandbox.
 
@@ -285,6 +300,8 @@ The suite uses `unittest` and covers these categories:
 - Bounded filesystem traversal/read/content search, exclusions, root escapes, PDF text handling, and move/copy contracts. Platform or symlink-privilege checks may skip where unavailable.
 - Permission decisions, pause/resume, recovery, task snapshots, queue behavior, application resolution and mocked Windows text-entry paths.
 - PowerShell validation/result interpretation, public URL and redirect checks, provider fallback, mocked web/YouTube responses, and Ollama timeout configuration.
+- Readable-main-content extraction: main-region preference and dropping of navigation/header/footer/cookie/ad/share chrome, scripts/styles, and media alt text.
+- Task-aware web retrieval: retrieval-goal and content-type inference, source ranking before chunk ranking (a page describing the subject scores below the subject's own document), content-type detection (including document-store/listing pages rejected as `document_host`), task-aware validation and rejection reasons, query reformulation, and a bounded retry loop — including the artifact-vs-information, reference-page, review, media, YouTube and Scribd-listing cases.
 - API contracts and bounded/sanitized reasoning telemetry, including restored records.
 
 Most contract tests use fakes/mocks; a passing suite does not prove live web freshness, model quality, broad Windows app compatibility, or independently verified computer effects. Some platform smoke paths require Windows/PowerShell. Keep full-suite runs serialized when using shared runtime files. No fixed passing-test total is maintained here; use the current command output and report skips/failures for the exact revision tested.

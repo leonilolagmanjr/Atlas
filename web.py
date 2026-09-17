@@ -19,6 +19,9 @@ from html.parser import HTMLParser
 from typing import Any
 
 from tools.base import PermissionLevel, RiskLevel, Tool, ToolMetadata, ToolResult
+from web_content import PageContentParser
+from web_research import research
+from web_task import infer_retrieval_task
 
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36"
@@ -138,6 +141,137 @@ class WebSearchTool(Tool):
             if len(results) >= limit:
                 break
         return results
+
+class WebResearchTool(Tool):
+    metadata = ToolMetadata(
+        name="web.research",
+        description=(
+            "Search the web, read several top pages, and return the most "
+            "relevant content for the request (not just result links)."
+        ),
+        category="internet.research",
+        input_schema={
+            "query": {"type": "string", "description": "what the content should be about"},
+            "max_results": {"type": "integer"},
+            "max_pages": {"type": "integer"},
+            "site": {"type": "string"},
+            "target": {"type": "string", "description": "the subject, e.g. Bee Movie"},
+            "content_type": {"type": "string", "description": "wanted content type, e.g. movie_script"},
+            "must_be_artifact": {"type": "boolean", "description": "true when the artifact itself is wanted, not info about it"},
+            "goal": {"type": "string", "description": "retrieval goal, e.g. retrieve_document"},
+        },
+        output_schema={
+            "content": {"type": "string"},
+            "sources": {"type": "array"},
+            "validated": {"type": "boolean"},
+        },
+        permission_level=PermissionLevel.READ_ONLY,
+        risk_level=RiskLevel.READ_ONLY,
+        required_parameters=("query",),
+        verifiable=True,
+    )
+
+    def __init__(self, *, max_results: int = 8, max_pages: int = 5, ask: object | None = None) -> None:
+        self._max_results = max(1, int(max_results))
+        self._max_pages = max(1, int(max_pages))
+        # The model is used only to judge *borderline* retrieval decisions; the
+        # pipeline is deterministic first and works without it.
+        self._ask = ask
+
+    def execute(self, parameters: dict[str, Any]) -> ToolResult:
+        try:
+            self.validate(parameters)
+            query = str(parameters["query"]).strip()
+            if not query:
+                return ToolResult.failure("Research query cannot be empty")
+            max_results = min(max(int(parameters.get("max_results", self._max_results)), 1), MAX_RESULTS)
+            max_pages = min(max(int(parameters.get("max_pages", self._max_pages)), 1), max_results)
+            site = str(parameters.get("site") or "").strip().casefold()
+
+            # Build the task-aware retrieval intent. An explicit content_type /
+            # must_be_artifact from the interpreter refines the deterministic
+            # inference from the query text.
+            entities: dict[str, Any] = {}
+            if parameters.get("target"):
+                entities["topic"] = str(parameters["target"])
+            if parameters.get("content_type"):
+                entities["content_type"] = str(parameters["content_type"])
+            if site:
+                entities["site"] = site
+            retrieval_task = infer_retrieval_task(
+                query,
+                entities=entities,
+                site=site or None,
+                must_be_artifact=(
+                    bool(parameters.get("must_be_artifact"))
+                    if parameters.get("must_be_artifact") is not None
+                    else None
+                ),
+                goal=str(parameters.get("goal")) if parameters.get("goal") else None,
+            )
+
+            def do_search(text: str, limit: int) -> dict[str, Any]:
+                youtube_query = site == "youtube" or _is_youtube_video_query(text)
+                # Reuse the search tool's provider/ranking logic instead of
+                # duplicating it; _collect_results is a staticmethod on
+                # WebSearchTool, not on this tool.
+                search_results = WebSearchTool._collect_results(
+                    text, youtube_query=youtube_query, limit=limit
+                )
+                return {"query": text, "results": [item.to_dict() for item in search_results]}
+
+            def do_fetch(url: str) -> dict[str, Any] | None:
+                try:
+                    return fetch_public_page(url)
+                except (OSError, ValueError, TimeoutError):
+                    return None
+
+            outcome = research(
+                query, search=do_search, fetch=do_fetch,
+                max_results=max_results, max_pages=max_pages,
+                task=retrieval_task, ask=self._ask,
+            )
+            if not outcome.content.strip():
+                return ToolResult.failure(
+                    "No relevant web content could be read for: " + query,
+                    recoverable=True,
+                )
+            # Task-aware validation gate: never hand content to an action when it
+            # does not satisfy the request (a page about the subject when the
+            # subject itself was wanted). Fail honestly so the caller can retry.
+            if not outcome.validated:
+                reason = str((outcome.validation or {}).get("reason") or "content did not match the request")
+                return ToolResult(
+                    success=False,
+                    status="failed",
+                    error=(
+                        "Could not obtain the requested content for '" + query + "': " + reason
+                    ),
+                    recoverable=True,
+                    metadata={"diagnostics": outcome.to_dict()},
+                )
+            return ToolResult(
+                success=True,
+                status="completed",
+                output={
+                    "query": query,
+                    "content": outcome.content,
+                    "sources": outcome.sources,
+                    "pages_read": outcome.pages_read,
+                    "results_seen": outcome.results_seen,
+                    "chunk_count": len(outcome.chunks),
+                    "validated": outcome.validated,
+                    "detected_type": outcome.detected_type,
+                    "attempts": outcome.attempts,
+                    "notes": outcome.notes,
+                    "candidate_scores": outcome.candidate_scores,
+                    "validation": outcome.validation,
+                },
+                metadata={"source": ", ".join(outcome.sources), "untrusted_content": True},
+            )
+        except (KeyError, TypeError, ValueError, OSError, TimeoutError) as exc:
+            return ToolResult.failure(str(exc), recoverable=True)
+
 
 class WebFetchTool(Tool):
     metadata = ToolMetadata(
@@ -330,12 +464,12 @@ def fetch_public_page(url: str, *, max_bytes: int = MAX_PAGE_BYTES, opener: Any 
         if content_type not in {"text/html", "text/plain", "application/xhtml+xml"}:
             raise ValueError(f"Unsupported web content type: {content_type}")
         body = response.read(max_bytes).decode("utf-8", errors="replace")
-    parser = _PageTextParser()
+    parser = PageContentParser()
     parser.feed(body)
     return {
         "url": final_url,
         "title": parser.title.strip(),
-        "text": re.sub(r"\s+", " ", parser.text.strip()),
+        "text": parser.text.strip(),
         "truncated": len(body.encode("utf-8")) >= max_bytes,
         "untrusted_content": True,
     }
@@ -515,32 +649,4 @@ def _decode_result_url(value: str) -> str:
     return html.unescape(value)
 
 
-class _PageTextParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.title = ""
-        self.text_parts: list[str] = []
-        self._in_title = False
-        self._ignored_depth = 0
 
-    @property
-    def text(self) -> str:
-        return " ".join(self.text_parts)
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag == "title":
-            self._in_title = True
-        if tag in {"script", "style", "noscript"}:
-            self._ignored_depth += 1
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag == "title":
-            self._in_title = False
-        if tag in {"script", "style", "noscript"} and self._ignored_depth:
-            self._ignored_depth -= 1
-
-    def handle_data(self, data: str) -> None:
-        if self._in_title:
-            self.title += data
-        elif not self._ignored_depth:
-            self.text_parts.append(data)

@@ -342,6 +342,7 @@ class ComputerToolTests(unittest.TestCase):
                 "powershell.execute",
                 "web.search",
                 "web.fetch",
+                "web.research",
             ),
         )
 

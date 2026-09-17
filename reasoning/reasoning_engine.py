@@ -29,7 +29,7 @@ from reasoning.source_selector import SourceSelector
 #: anything else (mutations, application control, content generation) is
 #: delegated to the deterministic execution pipeline.
 _RESEARCH_ONLY_ACTIONS = frozenset({
-    "web.search", "web.fetch",
+    "web.search", "web.fetch", "web.research",
     "filesystem.list", "filesystem.search", "filesystem.read",
     "filesystem.metadata", "filesystem.search_content",
 })
@@ -39,7 +39,8 @@ ToolRunner = Callable[[str, Mapping[str, Any]], Any]
 REASONING_DEADLINE_SECONDS = REASONING_TIMEOUT_SECONDS
 _READ_TOOLS = frozenset({
     "filesystem.list", "filesystem.search", "filesystem.read", "filesystem.metadata",
-    "filesystem.search_content", "web.search", "web.fetch", "system.info", "processes.list",
+    "filesystem.search_content", "web.search", "web.fetch", "web.research",
+    "system.info", "processes.list",
 })
 
 

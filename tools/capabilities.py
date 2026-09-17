@@ -39,6 +39,7 @@ PLANNABLE_CAPABILITIES: frozenset[str] = frozenset(
         # Internet
         "web.search",
         "web.fetch",
+        "web.research",
         # Local system inspection (read-only observation for reasoning)
         "system.info",
     }
@@ -264,6 +265,25 @@ _FALLBACK_CAPABILITIES: dict[str, Capability] = {
         risk_level="read_only",
         requires_confirmation=False,
         verifiable=True,
+    ),
+    "web.research": Capability(
+        name="web.research",
+        description=(
+            "Search the web, read several top pages, and return the most relevant "
+            "content for the request (not just result links)."
+        ),
+        category="internet.research",
+        parameters={
+            "query": {"type": "string", "description": "what the content should be about"},
+            "max_results": {"type": "integer"},
+            "max_pages": {"type": "integer"},
+            "site": {"type": "string"},
+        },
+        required_parameters=("query",),
+        risk_level="read_only",
+        requires_confirmation=False,
+        verifiable=True,
+        produces=("web_content",),
     ),
     "filesystem.search": Capability(
         name="filesystem.search",

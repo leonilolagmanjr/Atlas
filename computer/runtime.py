@@ -24,7 +24,7 @@ from computer.text_entry import ApplicationTextEntryTool
 from tools.content import ContentGenerationTool
 from tools.knowledge import ToolKnowledgeStore, load_json
 from tools.registry import ToolRegistry
-from web import WebFetchTool, WebSearchTool
+from web import WebFetchTool, WebResearchTool, WebSearchTool
 
 
 def register_read_only_tools(
@@ -61,5 +61,6 @@ def register_read_only_tools(
         PowerShellTool(knowledge=knowledge),
         WebSearchTool(),
         WebFetchTool(),
+        WebResearchTool(ask=ask),
     ]:
         registry.register(tool)

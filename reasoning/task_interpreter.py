@@ -700,6 +700,20 @@ class SemanticTaskInterpreter:
         wants_web = site in _WEB_HOSTS
         if wants_web:
             query = self._search_query(text, entities)
+            # "search the web for X and write it into Notepad" is a hybrid task:
+            # the content the user wants placed must be *read and isolated*, not
+            # just the links. web.research searches and reads several top pages
+            # itself, so the hybrid uses it as the primary step instead of a
+            # separate web.search.
+            follow_up = self._search_follow_up(text, entities, query=query, site=site)
+            if follow_up:
+                actions.extend(follow_up)
+                if has_open and entities.get("application"):
+                    actions.insert(
+                        0,
+                        self._launch_action(entities["application"], action_id="a0"),
+                    )
+                return actions
             actions.append(
                 TaskAction(
                     action_id="a1",
@@ -721,12 +735,6 @@ class SemanticTaskInterpreter:
                     0,
                     self._launch_action(entities["application"], action_id="a0"),
                 )
-            # "search the web for X and write it into Notepad" -> the search is a
-            # hybrid task: after retrieving the result, compose it into the
-            # destination the user named. The search is the evidence source; the
-            # follow-up action consumes what was found.
-            follow_up = self._search_follow_up(text, entities)
-            actions.extend(follow_up)
             return actions
         # 4. Content creation, optionally written into an application.
         # This triggers on create verbs OR when there's a content_type/topic with a destination.
@@ -809,12 +817,15 @@ class SemanticTaskInterpreter:
                 )
             )
         return actions
-    def _search_follow_up(self, text: str, entities: dict[str, Any]) -> list[TaskAction]:
+    def _search_follow_up(
+        self, text: str, entities: dict[str, Any], *, query: str = "", site: str | None = None
+    ) -> list[TaskAction]:
         # Post-search actions for a hybrid search-then-place task. When the user
         # asks for the *content* of something found on the web to be placed in an
-        # application or file ("get the bee movie script and copy it in Notepad"),
-        # Atlas must read the best result, not dump the links. So the plan fetches
-        # the top result and the write consumes the fetched text.
+        # application or file ("get the skyrim script and copy it in Notepad"),
+        # Atlas must read and isolate the content, not dump the links. So the
+        # plan researches the web (search + read several pages + rank) and the
+        # write consumes the best-matching content.
         #
         # Only an explicit placement verb (write/save/copy/put/...) plus a named
         # destination produces these steps, so a plain search stays plain.
@@ -828,38 +839,49 @@ class SemanticTaskInterpreter:
         if not (application or filename):
             return []
 
-        fetch = TaskAction(
-            action_id="a2",
-            capability="web.fetch",
-            parameters={"url": "$top_result_url"},
-            description="Read the top web result.",
-            depends_on=["a1"],
-            produces="fetched_content",
-            expected_output="page text",
+        # A placement request wants the content itself (the script/transcript
+        # article), not a page that merely discusses it, so the retrieval task
+        # is marked as an artifact request.
+        research = TaskAction(
+            action_id="a1",
+            capability="web.research",
+            parameters={
+                "query": query or self._search_query(text, entities),
+                "site": site,
+                "max_results": 8,
+                "max_pages": 5,
+                "target": entities.get("topic"),
+                "content_type": entities.get("content_type"),
+                "must_be_artifact": True,
+                "goal": "retrieve_document",
+            },
+            description="Retrieve the requested content and isolate it.",
+            produces="web_content",
+            expected_output="the requested content",
         )
         if application:
             write = TaskAction(
-                action_id="a3",
+                action_id="a2",
                 capability="applications.write_text",
-                parameters={"application": application, "text": "$fetched_content"},
-                description=f"Write the fetched content into {application}.",
-                depends_on=["a2"],
+                parameters={"application": application, "text": "$web_content"},
+                description=f"Write the relevant content into {application}.",
+                depends_on=["a1"],
                 expected_output="content present in the application",
                 risk_level="medium_risk",
                 requires_confirmation=True,
             )
         else:
             write = TaskAction(
-                action_id="a3",
+                action_id="a2",
                 capability="filesystem.write",
-                parameters={"path": filename, "text": "$fetched_content"},
-                description=f"Save the fetched content as {filename}.",
-                depends_on=["a2"],
+                parameters={"path": filename, "text": "$web_content"},
+                description=f"Save the relevant content as {filename}.",
+                depends_on=["a1"],
                 expected_output=f"{filename} created",
                 risk_level="medium_risk",
                 requires_confirmation=True,
             )
-        return [fetch, write]
+        return [research, write]
 
     def _create_file_action(self, entities: dict[str, Any]) -> Optional[TaskAction]:
         # Build a filesystem.write action for a create-a-file request. No content

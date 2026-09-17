@@ -110,40 +110,37 @@ class CreateFileRegressionTests(unittest.TestCase):
 
 
 class HybridRegressionTests(unittest.TestCase):
-    def test_search_then_write_fetches_the_page_and_writes_its_content(self):
+    def test_search_then_write_researches_and_writes_the_content(self):
         task, _, plan = _route(
             "Search the web for the latest Python version and write it into Notepad."
         )
         capabilities = [a.capability for a in task.actions]
-        # The plan reads the top result page and writes that page's content, not
-        # the list of links.
-        self.assertEqual(capabilities, ["web.search", "web.fetch", "applications.write_text"])
-        fetch = task.actions[1]
-        self.assertEqual(fetch.parameters["url"], "$top_result_url")
-        self.assertEqual(fetch.produces, "fetched_content")
+        # The plan researches the web (search + read pages + isolate the relevant
+        # content) and writes that content, not the list of links.
+        self.assertEqual(capabilities, ["web.research", "applications.write_text"])
+        research = task.actions[0]
+        self.assertEqual(research.produces, "web_content")
+        self.assertNotIn("write", research.parameters["query"])
         write = task.actions[-1]
-        self.assertEqual(write.parameters["text"], "$fetched_content")
-        self.assertNotIn("write", task.actions[0].parameters["query"])
+        self.assertEqual(write.parameters["text"], "$web_content")
         self.assertTrue(plan.requires_action)
 
-        def test_plain_search_is_not_a_write(self):
-            task = _interpreter().interpret("Search YouTube for popular videos.")
-            self.assertEqual([a.capability for a in task.actions], ["web.search"])
+    def test_plain_search_is_not_a_write(self):
+        task = _interpreter().interpret("Search YouTube for popular videos.")
+        self.assertEqual([a.capability for a in task.actions], ["web.search"])
 
-        def test_copy_it_in_notepad_is_a_web_hybrid_not_a_file_copy(self):
-            # "copy" here means "place the found text", not a filesystem copy; the
-            # bare verb must not hijack the search into a file move/copy plan.
-            task = _interpreter().interpret(
-                "search the web for the bee movie script and copy it in notepad"
-            )
-            capabilities = [a.capability for a in task.actions]
-            self.assertEqual(
-                capabilities, ["web.search", "web.fetch", "applications.write_text"]
-            )
-            self.assertNotIn("filesystem.copy", capabilities)
-            for action in task.actions:
-                for value in action.parameters.values():
-                    self.assertNotEqual(value, "$largest_match")
+    def test_copy_it_in_notepad_is_a_web_hybrid_not_a_file_copy(self):
+        # "copy" here means "place the found text", not a filesystem copy; the
+        # bare verb must not hijack the search into a file move/copy plan.
+        task = _interpreter().interpret(
+            "search the web for the bee movie script and copy it in notepad"
+        )
+        capabilities = [a.capability for a in task.actions]
+        self.assertEqual(capabilities, ["web.research", "applications.write_text"])
+        self.assertNotIn("filesystem.copy", capabilities)
+        for action in task.actions:
+            for value in action.parameters.values():
+                self.assertNotEqual(value, "$largest_match")
 
     class ReferenceResolutionTests(unittest.TestCase):
         # A "$name" plan reference must resolve to the value an earlier step
@@ -187,19 +184,18 @@ class HybridRegressionTests(unittest.TestCase):
                     self.calls.append(dict(parameters))
                     return ToolResult(success=True, status="completed", output=self._output)
 
-            search = RecordingTool(
-                "web.search",
-                {"query": "python", "results": [{"title": "Python 3.13", "url": "https://python.org", "snippet": "x"}]},
-            )
-            fetcher = RecordingTool(
-                "web.fetch",
-                {"url": "https://python.org", "text": "Python 3.13 is the newest release."},
+            researcher = RecordingTool(
+                "web.research",
+                {
+                    "query": "python version",
+                    "content": "Python 3.13 is the newest release.",
+                    "sources": ["https://python.org"],
+                },
             )
             writer = RecordingTool("applications.write_text", {"pid": 1, "application": "notepad", "characters": 36})
 
             registry = ToolRegistry()
-            registry.register(search)
-            registry.register(fetcher)
+            registry.register(researcher)
             registry.register(writer)
             router = ToolRouter(registry=registry, permission_engine=PermissionEngine(mode=ExecutionMode.AUTONOMOUS))
             brain = Brain(
@@ -219,14 +215,11 @@ class HybridRegressionTests(unittest.TestCase):
             )
             brain.process("search the web for the latest python version and write it into notepad")
 
-            self.assertEqual(len(search.calls), 1)
-            self.assertEqual(len(fetcher.calls), 1)
-            # The fetch read the URL resolved from the search, not a literal ref.
-            self.assertEqual(fetcher.calls[0]["url"], "https://python.org")
+            self.assertEqual(len(researcher.calls), 1)
             self.assertEqual(len(writer.calls), 1)
             written = writer.calls[0]["text"]
-            # The write replaced the reference with the fetched page text, so the
-            # destination gets the content, not the links.
+            # The write replaced the reference with the researched content, so the
+            # destination gets the isolated content, not the links.
             self.assertEqual(written, "Python 3.13 is the newest release.")
 
 class NegativeRoutingTests(unittest.TestCase):
