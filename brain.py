@@ -179,6 +179,30 @@ class Brain:
                         "reasoning_summary", ""
                     )
                     context.metadata["reasoning_answer"] = answer.to_dict()
+                    # Extract web sources from evidence for display in UI
+                    evidence = (answer.metadata or {}).get("evidence", {})
+                    items = evidence.get("items", []) if isinstance(evidence, dict) else []
+                    web_sources = []
+                    web_results = []
+                    seen = set()
+                    for item in items:
+                        if isinstance(item, dict):
+                            url = item.get("source_identifier", "")
+                            # Only include web sources with URLs, deduplicate
+                            if url and url.startswith("http") and url not in seen:
+                                seen.add(url)
+                                web_sources.append(url)
+                                # Also store full web result data for thumbnails
+                                metadata = item.get("metadata", {})
+                                web_results.append({
+                                    "title": metadata.get("title", "") or item.get("source_identifier", ""),
+                                    "url": url,
+                                    "snippet": (item.get("content", "") or "").split("\n")[0][:300],
+                                    "source": "YouTube" if "youtube.com" in url else "Web",
+                                    "thumbnail_url": metadata.get("thumbnail_url"),
+                                })
+                    context.web_sources = web_sources
+                    context.metadata["web_results"] = web_results
                     # Preserve the tool the reasoning engine actually ran so the
                     # execution snapshot stays observable on this early-answer path.
                     selected_tool = (answer.metadata or {}).get("selected_tool")

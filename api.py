@@ -151,6 +151,7 @@ class TaskRecord(BaseModel):
     errors: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     web_sources: list[str] = Field(default_factory=list)
+    web_results: list[dict[str, Any]] = Field(default_factory=list)
     reasoning: list[dict[str, Any]] = Field(default_factory=list)
     provenance: list[str] = Field(default_factory=list)
     citations: list[str] = Field(default_factory=list)
@@ -281,6 +282,7 @@ class AtlasService:
                 record.errors = list(context.errors) if context is not None else []
                 record.warnings = list(context.warnings) if context is not None else []
                 record.web_sources = list(context.web_sources) if context is not None else []
+                record.web_results = list(getattr(context, "metadata", {}).get("web_results", [])) if context is not None else []
                 self._capture_reasoning(record, context)
                 record.updated_at = time.time()
                 self._persist()
@@ -334,6 +336,7 @@ class AtlasService:
                 record.errors = list(context.errors) if context is not None else []
                 record.warnings = list(context.warnings) if context is not None else []
                 record.web_sources = list(context.web_sources) if context is not None else []
+                record.web_results = list(getattr(context, "metadata", {}).get("web_results", [])) if context is not None else []
                 self._capture_reasoning(record, context)
                 record.updated_at = time.time()
                 self._persist()

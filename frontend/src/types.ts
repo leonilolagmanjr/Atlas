@@ -58,6 +58,14 @@ export interface WebSearchResult {
   thumbnail_url?: string | null;
 }
 
+export interface WebResult {
+  title: string;
+  url: string;
+  snippet: string;
+  source: string;
+  thumbnail_url?: string | null;
+}
+
 export interface SystemInfo {
   system: {
     os: string;
@@ -131,6 +139,7 @@ export interface TaskRecord {
   errors: string[];
   warnings: string[];
   web_sources: string[];
+  web_results: WebResult[];
   reasoning?: ReasoningStep[];
   provenance?: string[];
   citations?: string[];

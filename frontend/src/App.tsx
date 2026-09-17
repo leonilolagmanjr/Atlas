@@ -390,7 +390,7 @@ function TaskPanel({ task, phase, resolving, onApprove, onDeny }: { task: TaskRe
       <ReasoningPanel task={task} />
       {task.response ? <div className="result-box"><span>Atlas result</span><p>{task.response}</p></div> : null}
       {task.tool_calls.length ? <div className="tool-results"><div className="plan-label">Tool output</div>{task.tool_calls.map((call, index) => <details key={`${call.tool ?? "tool"}-${index}`}><summary>{call.tool ?? "Tool"} <span>{call.status ?? "unknown"}</span></summary><pre>{formatToolOutput(call.output, call.status)}</pre></details>)}</div> : null}
-      <WebResults calls={task.tool_calls} />
+      <WebResults calls={task.tool_calls} webResults={task.web_results} />
       {task.web_sources.length ? <div className="source-list"><div className="plan-label">Sources</div>{task.web_sources.map((source) => <a key={source} href={source} target="_blank" rel="noreferrer">{source}</a>)}</div> : null}
       {task.errors.length ? <div className="failure-box"><CircleAlert size={15} /> {task.errors.join(" ")}</div> : null}
     </section>
@@ -419,15 +419,16 @@ function ReasoningPanel({ task }: { task: TaskRecord }) {
   );
 }
 
-function WebResults({ calls }: { calls: Array<{ tool?: string; output?: unknown }> }) {
-  const results = calls
+function WebResults({ calls, webResults }: { calls: Array<{ tool?: string; output?: unknown }>; webResults?: Array<{ title: string; url: string; snippet: string; source: string; thumbnail_url?: string }> }) {
+  const toolResults = calls
     .filter((call) => call.tool === "web.search")
     .flatMap((call) => {
       const output = call.output as { results?: WebSearchResult[] } | undefined;
       return Array.isArray(output?.results) ? output.results : [];
     });
-  if (!results.length) return null;
-  return <div className="web-results"><div className="plan-label">Web results</div><div className="web-result-grid">{results.map((result) => <a className="web-result-card" href={result.url} target="_blank" rel="noreferrer" key={result.url}><div className="web-thumb">{result.thumbnail_url ? <img src={result.thumbnail_url} alt="" loading="lazy" onError={(event) => { event.currentTarget.style.display = "none"; }} /> : <span>{result.source.slice(0, 1)}</span>}<span className="web-source">{result.source}</span></div><div className="web-result-copy"><strong>{result.title}</strong><p>{result.snippet || "Open source"}</p><small>{result.url}</small></div></a>)}</div></div>;
+  const allResults = [...toolResults, ...(webResults || [])];
+  if (!allResults.length) return null;
+  return <div className="web-results"><div className="plan-label">Web results</div><div className="web-result-grid">{allResults.map((result) => <a className="web-result-card" href={result.url} target="_blank" rel="noreferrer" key={result.url}><div className="web-thumb">{result.thumbnail_url ? <img src={result.thumbnail_url} alt="" loading="lazy" onError={(event) => { event.currentTarget.style.display = "none"; }} /> : <span>{result.source.slice(0, 1)}</span>}<span className="web-source">{result.source}</span></div><div className="web-result-copy"><strong>{result.title}</strong><p>{result.snippet || "Open source"}</p><small>{result.url}</small></div></a>)}</div></div>;
 }
 
 function formatToolOutput(output: unknown, status?: string) {
