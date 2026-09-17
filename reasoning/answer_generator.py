@@ -33,6 +33,7 @@ from reasoning.reasoning_models import (
     ResponseMode,
     SourceType,
 )
+from reasoning.synthesis import ContentSynthesizer, DocumentStructure, OutputFormatter, synthesize_and_format
 
 logger = logging.getLogger(__name__)
 
@@ -159,11 +160,18 @@ class AnswerGenerator:
         mode: ResponseMode,
         history: str = "",
         notes: Iterable[str] = (),
+        task: Any = None,
     ) -> Answer:
         """Answer from retrieved evidence, with a deterministic fallback."""
 
         provenance = evidence.retrieved_sources()
         citations = evidence.citation_list()
+        
+        # If we have a task with evidence_state and it's a web research task,
+        # use the structured synthesizer
+        if task is not None and hasattr(task, 'evidence_state') and task.evidence_state and mode == ResponseMode.WEB_RESEARCH:
+            return self._synthesized_answer(question, task, provenance, citations, history, notes)
+        
         rendered = evidence.render_for_prompt()
         prompt = self._evidence_prompt.format(evidence=rendered, question=question)
         if history.strip():
@@ -196,6 +204,77 @@ class AnswerGenerator:
             used_model=False,
             citations=citations,
         )
+
+    def _synthesized_answer(self, question: str, task: Any, provenance: list, citations: list, history: str = "", notes: Iterable[str] = ()) -> Answer:
+        """Generate answer using structured synthesis from evidence state."""
+        evidence_state = task.evidence_state
+        destination = task.entities.get("application") or task.entities.get("filename") or ""
+        
+        try:
+            synthesizer = ContentSynthesizer()
+            document = synthesizer.synthesize(evidence_state, task.goal, task.task_type)
+            
+            # Format for destination if specified
+            if destination:
+                formatter = OutputFormatter()
+                formatted_text = formatter.format_for_destination(document, destination)
+            else:
+                formatted_text = document.to_plain_text()
+            
+            # Add provenance info
+            if provenance:
+                formatted_text += "\n\n---\nSources:\n"
+                for src in provenance[:5]:
+                    formatted_text += f"- {src.value}\n"
+            
+            confidence = ConfidenceLevel.HIGH if evidence_state.confidence >= 0.7 else ConfidenceLevel.MEDIUM
+            
+            return Answer(
+                text=formatted_text,
+                mode=ResponseMode.WEB_RESEARCH,
+                provenance=provenance,
+                confidence_level=confidence,
+                used_model=False,  # Deterministic synthesis
+                citations=citations,
+            )
+        except Exception:
+            # Fall back to regular grounded answer
+            logger = logging.getLogger(__name__)
+            logger.exception("Synthesis failed, falling back to regular grounded answer")
+            
+            # Render evidence for regular grounded path
+            rendered = ""
+            if hasattr(evidence_state, 'sources'):
+                # Build a simple rendering from evidence state
+                for source in evidence_state.relevant_sources[:3]:
+                    rendered += f"[{source.source_type}] {source.title}: {source.content[:500]}\n\n"
+            
+            prompt = self._evidence_prompt.format(evidence=rendered, question=question)
+            if history.strip():
+                prompt = f"Conversation so far:\n{history}\n\n{prompt}"
+            for note in notes:
+                if note:
+                    prompt = f"{prompt}\n\n{note}"
+            
+            text = self._call(system_prompt=_EVIDENCE_SYSTEM, user_prompt=prompt)
+            if _usable(text):
+                return Answer(
+                    text=text.strip(),
+                    mode=ResponseMode.WEB_RESEARCH,
+                    provenance=provenance,
+                    confidence_level=ConfidenceLevel.MEDIUM,
+                    used_model=True,
+                    citations=citations,
+                )
+            
+            return Answer(
+                text=self._fallback_from_evidence(question, evidence_state, ResponseMode.WEB_RESEARCH),
+                mode=ResponseMode.WEB_RESEARCH,
+                provenance=provenance,
+                confidence_level=ConfidenceLevel.LOW,
+                used_model=False,
+                citations=citations,
+            )
 
     def _fallback_from_evidence(
         self,

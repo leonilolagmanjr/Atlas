@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -13,7 +14,7 @@ from config import (
     REASONING_TIMEOUT_SECONDS, WEB_RESEARCH_MAX_PAGES, WEB_RESEARCH_MAX_RESULTS,
 )
 from knowledge_search import retrieve
-from models_task import Task
+from models_task import Task, EvidenceState, EvidenceSource, RETRIEVAL_GOALS, CONTENT_TYPES
 from reasoning.answer_generator import Answer, AnswerGenerator
 from reasoning.evidence_manager import EvidenceManager
 from reasoning.query_router import QueryRouter, RoutingSignals
@@ -23,6 +24,7 @@ from reasoning.reasoning_models import (
 )
 from reasoning.self_introspection import SelfIntrospection
 from reasoning.source_selector import SourceSelector
+from web_task import infer_retrieval_task, reformulate_query, validate_content, detect_source_type, score_source, RetrievalTask
 #: Read-only research capabilities the reasoning engine performs itself while
 #: synthesizing a cited answer: web lookups and non-mutating file inspection.
 #: A task whose actions are all drawn from this set is served as research here;
@@ -172,7 +174,7 @@ class ReasoningEngine:
         elif evidence.sufficient_for(mode, content_required=bool(
             mode is ResponseMode.FILE_LOOKUP and signals.file_intent and signals.file_intent.wants_read
         )) and mode is not ResponseMode.DIRECT_ANSWER:
-            answer = self._answers.grounded(question, evidence, mode=mode, history=history)
+            answer = self._answers.grounded(question, evidence, mode=mode, history=history, task=task)
         elif any(source in decision.sources for source in (
             SourceType.FILES, SourceType.SYSTEM, SourceType.MEMORY, SourceType.CONVERSATION,
         )):
@@ -259,7 +261,21 @@ class ReasoningEngine:
                                            else getattr(hit, "source", "")) for hit in chunks],
                 )
             if source is SourceType.WEB:
-                return self._gather_web(question, evidence, task=task)
+                # Only use iterative retrieval for tasks that explicitly need artifact retrieval
+                # (web.research actions) or have must_be_artifact flag
+                needs_iterative = False
+                if task.actions:
+                    for action in task.actions:
+                        if action.capability == "web.research":
+                            needs_iterative = True
+                            break
+                        if action.capability == "web.search" and action.parameters.get("must_be_artifact"):
+                            needs_iterative = True
+                            break
+                if needs_iterative:
+                    return self._iterative_web_retrieval(question, task, evidence, signals)
+                else:
+                    return self._gather_web(question, evidence, task=task)
             if source is SourceType.FILES:
                 return self._gather_files(task, signals, evidence)
             if source is SourceType.SYSTEM:
@@ -342,6 +358,264 @@ class ReasoningEngine:
             if read is not None:
                 gained += evidence.add_file_output("filesystem.read", read)
         return gained
+
+    def _iterative_web_retrieval(self, question: str, task: Task, evidence: EvidenceManager, signals: RoutingSignals) -> int:
+        """Perform iterative web retrieval with query rewriting based on evidence evaluation."""
+        if task.evidence_state is None:
+            # Initialize evidence state if not present
+            task.evidence_state = EvidenceState(
+                target=task.entities.get("topic", question),
+                goal="find_information",
+                required_content_type=task.entities.get("content_type", "generic"),
+                must_be_artifact=self._determine_must_be_artifact(task),
+            )
+        
+        evidence_state = task.evidence_state
+        max_attempts = evidence_state.max_retrieval_attempts
+        gained_total = 0
+        
+        for attempt in range(max_attempts):
+            if not self._run_active():
+                break
+                
+            evidence_state.retrieval_attempts = attempt + 1
+            
+            # Generate query for this attempt
+            if attempt == 0:
+                # Use the interpreter's planned query or the original question
+                query = self._get_initial_query(task, question)
+            else:
+                # Reformulate query based on previous rejection
+                query = self._reformulate_query_for_attempt(evidence_state, attempt)
+            
+            evidence_state.last_query = query
+            
+            # Perform search and fetch
+            gained = self._perform_web_search_and_fetch(query, evidence, evidence_state, task)
+            gained_total += gained
+            
+            # Evaluate evidence
+            if evidence_state.sufficient_for_output:
+                logging.info(f"Web retrieval succeeded on attempt {attempt + 1}: sufficient evidence gathered")
+                task.execution_trace.append({
+                    "stage": "retrieval",
+                    "action": "iterative_web_retrieval",
+                    "result": "sufficient_evidence",
+                    "details": {"attempt": attempt + 1, "query": query, "sources_found": len(evidence_state.relevant_sources)}
+                })
+                break
+            
+            # If not sufficient and we have more attempts, continue loop
+            if attempt < max_attempts - 1:
+                logging.info(f"Web retrieval attempt {attempt + 1} insufficient, will retry with reformulated query")
+                task.execution_trace.append({
+                    "stage": "retrieval",
+                    "action": "iterative_web_retrieval",
+                    "result": "insufficient_evidence",
+                    "details": {"attempt": attempt + 1, "query": query, "confidence": evidence_state.confidence, "rejection_reason": evidence_state.last_rejection_reason}
+                })
+            else:
+                logging.warning(f"Web retrieval exhausted after {max_attempts} attempts")
+                task.execution_trace.append({
+                    "stage": "retrieval",
+                    "action": "iterative_web_retrieval",
+                    "result": "max_attempts_reached",
+                    "details": {"total_attempts": max_attempts, "final_confidence": evidence_state.confidence}
+                })
+        
+        return gained_total
+
+    def _run_active(self) -> bool:
+        run = _run.get()
+        return run is not None and run.active()
+
+    def _determine_must_be_artifact(self, task: Task) -> bool:
+        """Determine if the task requires the artifact itself vs information about it."""
+        text = task.original_prompt.casefold()
+        content_type = task.entities.get("content_type", "generic")
+        
+        # Explicit artifact phrases
+        artifact_phrases = ("full script", "complete script", "entire script", "the script",
+                           "full transcript", "complete transcript", "entire transcript", "the transcript",
+                           "full lyrics", "the lyrics", "full text", "complete text", "whole text",
+                           "the source code", "full code", "entire code", "the raw text")
+        if any(phrase in text for phrase in artifact_phrases):
+            return True
+        # Info phrases mean they DON'T want the artifact
+        info_phrases = ("information about", "info about", "information on", "learn about",
+                       "tell me about", "explain", "what is", "who is", "overview of",
+                       "background on", "facts about", "details about")
+        if any(phrase in text for phrase in info_phrases):
+            return False
+        # Question openers ask about the subject
+        if re.match(r'^(?:please\s+|can\s+you\s+|could\s+you\s+|would\s+you\s+|will\s+you\s+)*(?:what|who|when|where|why|how|which|whose|is|are|was|were|does|do|did)\b', text):
+            return False
+        # Document types without info phrases = artifact request
+        if content_type in {"movie_script", "transcript", "lyrics", "code", "documentation", "list"}:
+            return True
+        return False
+
+    def _get_initial_query(self, task: Task, question: str) -> str:
+        """Get the initial search query from task actions or use the question."""
+        for action in task.actions:
+            if action.capability in ("web.search", "web.research") and "query" in action.parameters:
+                return str(action.parameters["query"])
+        return question
+
+    def _reformulate_query_for_attempt(self, evidence_state: EvidenceState, attempt: int) -> str:
+        """Reformulate query based on what was missing in previous attempts."""
+        # Create a temporary RetrievalTask for reformulation
+        retrieval_task = RetrievalTask(
+            goal=evidence_state.goal,
+            target=evidence_state.target,
+            content_type=evidence_state.required_content_type,
+            must_be_artifact=evidence_state.must_be_artifact,
+        )
+        
+        reason = evidence_state.last_rejection_reason or "no suitable content"
+        return reformulate_query(retrieval_task, reason=reason, attempt=attempt)
+
+    def _perform_web_search_and_fetch(self, query: str, evidence: EvidenceManager, evidence_state: EvidenceState, task: Task) -> int:
+        """Perform web search and fetch, then evaluate and classify sources."""
+        parameters = {"query": query, "max_results": self._web_max_results}
+        search = self._execute("web.search", parameters)
+        if search is None:
+            return 0
+        
+        # Add search results to evidence manager (for answer generation)
+        gained = evidence.add_web_results(search)
+        
+        # Process each result page with task-aware evaluation
+        results = search.get("results", [])[:self._web_max_pages]
+        for item in results:
+            if not isinstance(item, Mapping) or not item.get("url"):
+                continue
+            page = self._execute("web.fetch", {"url": str(item["url"])})
+            if page is None:
+                continue
+            
+            # Classify the source
+            source_type = detect_source_type(page.get("url", ""), page.get("title", ""), page.get("text", ""))
+            
+            # Create EvidenceSource with classification
+            source = EvidenceSource(
+                source_id=f"src_{len(evidence_state.sources)}",
+                url=page.get("url", ""),
+                title=page.get("title", ""),
+                source_type=self._classify_source_type(source_type),
+                content_type=source_type,
+                content=page.get("text", ""),
+                relevance_score=0.0,  # Will be calculated
+                quality_score=self._calculate_quality_score(source_type, page.get("url", "")),
+                completeness=self._calculate_completeness(page.get("text", "")),
+                is_artifact=self._is_artifact_source(source_type, evidence_state),
+            )
+            
+            # Score relevance against task
+            source.relevance_score = self._calculate_relevance(source, evidence_state)
+            
+            # Add to evidence state
+            evidence_state.add_source(source)
+            
+            # Also add to evidence manager for answer generation
+            evidence.add_web_page(page)
+            gained += 1
+            
+            # Task-aware validation
+            validation = validate_content(
+                retrieval_task=RetrievalTask(
+                    goal=evidence_state.goal,
+                    target=evidence_state.target,
+                    content_type=evidence_state.required_content_type,
+                    must_be_artifact=evidence_state.must_be_artifact,
+                ),
+                content=source.content,
+                detected_type=source.content_type,
+                title=source.title,
+                url=source.url,
+            )
+            
+            if not validation.ok:
+                evidence_state.last_rejection_reason = validation.reason
+                logging.debug(f"Source {source.url} rejected: {validation.reason}")
+        
+        return gained
+
+    def _classify_source_type(self, detected_type: str) -> str:
+        """Map web_task detected type to source type class."""
+        mapping = {
+            "reference": "reference",
+            "review": "reference",
+            "news": "reference",
+            "article": "secondary",
+            "movie_script": "primary",
+            "transcript": "primary",
+            "lyrics": "primary",
+            "code": "primary",
+            "documentation": "primary",
+            "forum": "discussion",
+            "social": "social",
+            "product": "retail",
+            "video": "reference",
+            "document_host": "retail",
+            "listing": "search_result",
+            "generic": "secondary",
+        }
+        return mapping.get(detected_type, "unknown")
+
+    def _calculate_quality_score(self, detected_type: str, url: str) -> float:
+        """Calculate source quality score based on type and domain."""
+        host = url.split("/")[2] if "//" in url else ""
+        if detected_type in {"reference"}:
+            return 0.9
+        if detected_type in {"primary", "movie_script", "transcript", "lyrics", "code", "documentation"}:
+            return 0.85
+        if detected_type in {"article", "news", "review"}:
+            return 0.7
+        if detected_type in {"forum", "discussion"}:
+            return 0.5
+        if detected_type in {"product", "retail", "document_host", "listing"}:
+            return 0.3
+        if detected_type in {"social"}:
+            return 0.2
+        return 0.5
+
+    def _calculate_completeness(self, text: str) -> float:
+        """Calculate content completeness based on length and structure."""
+        length = len(text.strip())
+        if length >= 12000:
+            return 1.0
+        if length >= 4000:
+            return 0.7
+        if length >= 1200:
+            return 0.4
+        if length >= 400:
+            return 0.2
+        return 0.05 if length else 0.0
+
+    def _is_artifact_source(self, detected_type: str, evidence_state: EvidenceState) -> bool:
+        """Determine if this source IS the requested artifact."""
+        if not evidence_state.must_be_artifact:
+            return False
+        artifact_types = {"movie_script", "transcript", "lyrics", "code", "documentation", "list"}
+        return detected_type in artifact_types
+
+    def _calculate_relevance(self, source: EvidenceSource, evidence_state: EvidenceState) -> float:
+        """Calculate relevance score of a source to the task."""
+        target = evidence_state.target.casefold()
+        if not target:
+            return 0.5
+        
+        # Check title, URL, and content for target terms
+        target_terms = [t for t in target.split() if len(t) >= 3]
+        if not target_terms:
+            return 0.5
+        
+        title_match = sum(1 for t in target_terms if t in source.title.casefold()) / len(target_terms)
+        url_match = sum(1 for t in target_terms if t in source.url.casefold()) / len(target_terms)
+        content_match = sum(1 for t in target_terms if t in source.content.casefold()[:6000]) / len(target_terms)
+        
+        return (title_match * 0.3 + url_match * 0.1 + content_match * 0.6)
 
     def _execute(self, name: str, parameters: Mapping[str, Any]) -> Mapping[str, Any] | None:
         run = _run.get()

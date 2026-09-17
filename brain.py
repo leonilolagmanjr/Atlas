@@ -243,6 +243,9 @@ class Brain:
                 trace.record_response(context.final_response)
                 return self._complete(context, started_at, trace)
 
+            # Store task object in context for executor to access
+            context.metadata["task_object"] = task
+
             # 5. Deterministic execution (with verification + recovery inside).
             self._executor.execute(planner_decision.plan, context)
             if context.status == TaskStatus.WAITING_FOR_CONFIRMATION:

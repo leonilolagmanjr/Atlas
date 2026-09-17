@@ -56,6 +56,31 @@ REASONING_FLAGS = (
 REFERENCE_PREFIX = "$"
 
 
+def is_reference(value: Any) -> bool:
+    """Return True when ``value`` names an earlier action's produced output."""
+
+    return isinstance(value, str) and value.startswith(REFERENCE_PREFIX) and len(value) > 1
+
+
+#: Source type classification for retrieved content
+SOURCE_TYPE_CLASSES = frozenset({
+    "primary", "secondary", "reference", "retail", "discussion", "social", "search_result", "unknown"
+})
+
+#: Retrieval goal types
+RETRIEVAL_GOALS = frozenset({
+    "retrieve_document", "find_information", "find_page", "find_review",
+    "find_media", "find_reference", "create_content", "navigate", "perform_action"
+})
+
+#: Content type classification
+CONTENT_TYPES = frozenset({
+    "movie_script", "transcript", "lyrics", "article", "news", "review",
+    "documentation", "forum", "product", "video", "reference", "social",
+    "code", "list", "image", "document_host", "listing", "generic"
+})
+
+
 class RiskLevel(str, Enum):
     """Risk vocabulary for a task action."""
 
@@ -66,10 +91,154 @@ class RiskLevel(str, Enum):
     CRITICAL = "critical"
 
 
-def is_reference(value: Any) -> bool:
-    """Return True when ``value`` names an earlier action's produced output."""
+class TaskState(str, Enum):
+    """Lifecycle state of the task execution."""
 
-    return isinstance(value, str) and value.startswith(REFERENCE_PREFIX) and len(value) > 1
+    RECEIVED = "received"
+    UNDERSTANDING = "understanding"
+    PLANNING = "planning"
+    RETRIEVING = "retrieving"
+    EVALUATING = "evaluating"
+    SYNTHESIZING = "synthesizing"
+    EXECUTING = "executing"
+    VERIFYING = "verifying"
+    RECOVERING = "recovering"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+@dataclass
+class EvidenceSource:
+    """A single retrieved source with classification and relevance scoring."""
+
+    source_id: str
+    url: str = ""
+    title: str = ""
+    source_type: str = "unknown"  # primary, secondary, reference, retail, discussion, social, search_result
+    content_type: str = "generic"  # movie_script, transcript, article, review, etc.
+    content: str = ""
+    relevance_score: float = 0.0
+    quality_score: float = 0.0
+    completeness: float = 0.0
+    is_artifact: bool = False  # True if this IS the requested artifact (not just about it)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source_id": self.source_id,
+            "url": self.url,
+            "title": self.title,
+            "source_type": self.source_type,
+            "content_type": self.content_type,
+            "content_preview": self.content[:200] if self.content else "",
+            "relevance_score": round(self.relevance_score, 4),
+            "quality_score": round(self.quality_score, 4),
+            "completeness": round(self.completeness, 4),
+            "is_artifact": self.is_artifact,
+            "metadata": self.metadata,
+        }
+
+
+@dataclass
+class EvidenceState:
+    """Accumulated evidence for a retrieval task with quality evaluation."""
+
+    target: str = ""
+    goal: str = "find_information"
+    required_content_type: str = "generic"
+    must_be_artifact: bool = False
+    sources: list[EvidenceSource] = field(default_factory=list)
+    relevant_sources: list[EvidenceSource] = field(default_factory=list)
+    irrelevant_sources: list[EvidenceSource] = field(default_factory=list)
+    coverage: dict[str, float] = field(default_factory=dict)  # e.g., {"identity": 0.9, "overview": 0.7, "detail": 0.3}
+    confidence: float = 0.0
+    sufficient_for_output: bool = False
+    retrieval_attempts: int = 0
+    max_retrieval_attempts: int = 3
+    last_query: str = ""
+    last_rejection_reason: str = ""
+
+    def add_source(self, source: EvidenceSource) -> None:
+        self.sources.append(source)
+        if source.relevance_score >= 0.5 and source.quality_score >= 0.4:
+            self.relevant_sources.append(source)
+        else:
+            self.irrelevant_sources.append(source)
+        self._recalculate()
+
+    def _recalculate(self) -> None:
+        if not self.relevant_sources:
+            self.confidence = 0.0
+            self.sufficient_for_output = False
+            return
+
+        # Calculate coverage based on source types and content
+        total_relevance = sum(s.relevance_score for s in self.relevant_sources)
+        avg_relevance = total_relevance / len(self.relevant_sources) if self.relevant_sources else 0.0
+        avg_quality = sum(s.quality_score for s in self.relevant_sources) / len(self.relevant_sources)
+        avg_completeness = sum(s.completeness for s in self.relevant_sources) / len(self.relevant_sources)
+
+        has_artifact = any(s.is_artifact for s in self.relevant_sources)
+        artifact_bonus = 0.2 if (self.must_be_artifact and has_artifact) else 0.0
+
+        self.confidence = min(1.0, (avg_relevance * 0.4 + avg_quality * 0.3 + avg_completeness * 0.3) + artifact_bonus)
+
+        # Sufficient if we have high confidence and (artifact found or good coverage for info goals)
+        if self.must_be_artifact:
+            self.sufficient_for_output = has_artifact and self.confidence >= 0.6
+        else:
+            self.sufficient_for_output = self.confidence >= 0.65 and avg_completeness >= 0.4
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "target": self.target,
+            "goal": self.goal,
+            "required_content_type": self.required_content_type,
+            "must_be_artifact": self.must_be_artifact,
+            "total_sources": len(self.sources),
+            "relevant_sources": len(self.relevant_sources),
+            "irrelevant_sources": len(self.irrelevant_sources),
+            "coverage": self.coverage,
+            "confidence": round(self.confidence, 4),
+            "sufficient_for_output": self.sufficient_for_output,
+            "retrieval_attempts": self.retrieval_attempts,
+            "max_retrieval_attempts": self.max_retrieval_attempts,
+            "last_query": self.last_query,
+            "last_rejection_reason": self.last_rejection_reason,
+            "sources": [s.to_dict() for s in self.sources],
+        }
+
+
+@dataclass
+class CompletionCriteria:
+    """Explicit completion criteria for a task."""
+
+    criteria: list[dict[str, Any]] = field(default_factory=list)  # [{"name": "book_identified", "met": True, "description": "..."}]
+    all_met: bool = False
+
+    def add_criterion(self, name: str, description: str, met: bool = False) -> None:
+        self.criteria.append({"name": name, "description": description, "met": met})
+        self._recalculate()
+
+    def mark_met(self, name: str) -> None:
+        for c in self.criteria:
+            if c["name"] == name:
+                c["met"] = True
+                break
+        self._recalculate()
+
+    def _recalculate(self) -> None:
+        self.all_met = all(c["met"] for c in self.criteria) if self.criteria else False
+
+    def unmet_criteria(self) -> list[str]:
+        return [c["name"] for c in self.criteria if not c["met"]]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "criteria": self.criteria,
+            "all_met": self.all_met,
+            "unmet": self.unmet_criteria(),
+        }
 
 
 @dataclass
@@ -131,6 +300,26 @@ class Task:
     #: How the task was produced: "llm", "deterministic", or "hybrid".
     source: str = "deterministic"
     task_id: str = field(default_factory=lambda: str(uuid4()))
+
+    # --- Enhanced structured task representation ---
+    #: Current lifecycle state of the task
+    task_state: str = TaskState.RECEIVED.value
+    #: Evidence state for retrieval tasks
+    evidence_state: EvidenceState | None = None
+    #: Explicit completion criteria
+    completion_criteria: CompletionCriteria | None = None
+    #: Decomposed subtasks for complex requests
+    subtasks: list[dict[str, Any]] = field(default_factory=list)
+    #: Current subtask index being executed
+    current_subtask_index: int = 0
+    #: Synthesis output (structured content before delivery)
+    synthesis_output: dict[str, Any] | None = None
+    #: Formatted output ready for destination
+    formatted_output: str | None = None
+    #: Verification results for executed actions
+    verification_results: list[dict[str, Any]] = field(default_factory=list)
+    #: Execution trace for debugging
+    execution_trace: list[dict[str, Any]] = field(default_factory=list)
 
     # -- reasoning decision (written back onto the IR by the reasoning engine) ----
     #: question | self_query | memory_query | action | hybrid | clarification
@@ -211,6 +400,16 @@ class Task:
             "requires_model_knowledge": self.requires_model_knowledge,
             "current_information_required": self.current_information_required,
             "requires_verification": self.requires_verification,
+            # Enhanced fields
+            "task_state": self.task_state,
+            "evidence_state": self.evidence_state.to_dict() if self.evidence_state else None,
+            "completion_criteria": self.completion_criteria.to_dict() if self.completion_criteria else None,
+            "subtasks": self.subtasks,
+            "current_subtask_index": self.current_subtask_index,
+            "synthesis_output": self.synthesis_output,
+            "formatted_output": self.formatted_output,
+            "verification_results": self.verification_results,
+            "execution_trace": self.execution_trace,
         }
 
     def references(self) -> set[str]:

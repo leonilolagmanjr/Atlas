@@ -298,6 +298,7 @@ class ExecutionContext:
     selected_tool: Optional[str] = None
     confidence: Optional[float] = None
     execution_time: float = 0.0
+    execution_trace: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property

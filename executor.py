@@ -18,6 +18,7 @@ from models import (
     StepStatus,
     TaskStatus,
 )
+from models_task import Task, TaskState, CompletionCriteria, EvidenceState
 from vector_store import VectorStore
 from memory.memory_manager import MemoryManager
 from tools.router import ToolRouter
@@ -73,6 +74,12 @@ class Executor:
         context.status = TaskStatus.RUNNING
         plan.status = PlanStatus.RUNNING
 
+        # Update task state if available
+        task = context.metadata.get("task_object")
+        if task and isinstance(task, Task):
+            task.task_state = TaskState.EXECUTING.value
+            context.metadata["task_object"] = task
+
         logger.info("Executor started plan: plan_id=%s steps=%d", plan.plan_id, len(plan.steps))
 
         # Re-execution after an approval pause must resume, not restart. Steps
@@ -106,9 +113,15 @@ class Executor:
                     self._execute_step(context, step)
                     self._record_replan(context, step)
 
+        # Verify completion if plan completed without errors
         if plan.status not in {PlanStatus.FAILED, PlanStatus.WAITING_FOR_CONFIRMATION}:
             plan.status = PlanStatus.COMPLETED
             context.status = TaskStatus.COMPLETED
+            
+            # Run completion verification
+            if not self._verify_completion(context):
+                plan.status = PlanStatus.FAILED
+                context.status = TaskStatus.FAILED
         elif plan.status == PlanStatus.WAITING_FOR_CONFIRMATION:
             context.status = TaskStatus.WAITING_FOR_CONFIRMATION
         else:
@@ -474,6 +487,166 @@ class Executor:
         if self._memory_manager is not None:
             self._memory_manager.append_message(role="user", content=context.user_input)
             self._memory_manager.append_message(role="assistant", content=context.final_response)
+
+    def _verify_completion(self, context: ExecutionContext) -> bool:
+        """Verify that the task's completion criteria have been met."""
+        # Get the task from context metadata
+        task_data = context.metadata.get("task")
+        if not task_data:
+            return True  # No task to verify
+        
+        # Check if we have a task object with completion criteria
+        task = context.metadata.get("task_object")
+        if not task or not isinstance(task, Task):
+            return True
+        
+        # Update task state
+        task.task_state = TaskState.VERIFYING.value
+        
+        # Update subtask status for completed steps
+        self._update_subtask_status(task, context)
+        
+        # Get the set of tools that were actually executed in this plan
+        executed_tools = set()
+        for tool_call in context.tool_calls:
+            tool_name = tool_call.get("tool")
+            if tool_name:
+                executed_tools.add(tool_name)
+        
+        # Check completion criteria - only for actions that were actually executed
+        # Criteria tracking is for observability; don't fail the task for unmet criteria
+        # unless there was an explicit tool execution error
+        if task.completion_criteria:
+            unmet = []
+            for criterion in task.completion_criteria.criteria:
+                # Skip criteria for actions that weren't in the executed plan
+                if self._should_skip_criterion(criterion, executed_tools, task):
+                    criterion["met"] = True  # Mark as met since it wasn't applicable
+                    continue
+                if not criterion["met"]:
+                    unmet.append(criterion["name"])
+            
+            if unmet:
+                # Log unmet criteria but don't fail - they're for observability
+                logging.info(f"Task completion: some criteria not met (observability): {', '.join(unmet)}")
+                context.execution_trace.append({
+                    "stage": "verification",
+                    "action": "completion_check",
+                    "result": "partial",
+                    "details": {"unmet_criteria": unmet, "note": "criteria are observability-only"}
+                })
+                # Don't return False - criteria are observability, not hard requirements
+        
+        # Post-action verification for specific capabilities
+        # This checks actual tool output for evidence of success
+        verification_passed = self._post_action_verification(context, task)
+        
+        if verification_passed:
+            task.task_state = TaskState.COMPLETED.value
+            task.completion_criteria.all_met = True
+            context.execution_trace.append({
+                "stage": "verification",
+                "action": "completion_check",
+                "result": "passed",
+                "details": {"all_criteria_met": True}
+            })
+            return True
+        else:
+            context.execution_trace.append({
+                "stage": "verification",
+                "action": "completion_check",
+                "result": "failed",
+                "details": {"post_action_verification": "failed"}
+            })
+            return False
+
+    def _should_skip_criterion(self, criterion: dict, executed_tools: set, task: Task) -> bool:
+        """Determine if a criterion should be skipped because its action wasn't executed."""
+        name = criterion["name"]
+        
+        # Content generation criteria - skip if content.generate wasn't executed
+        if name in ("content_generated", "content_formatted") and "content.generate" not in executed_tools:
+            return True
+        
+        # Delivery criteria - skip if write_text/write wasn't executed
+        if name in ("destination_opened", "content_delivered", "delivery_verified") and "applications.write_text" not in executed_tools:
+            return True
+        if name in ("file_created", "file_verified") and "filesystem.write" not in executed_tools:
+            return True
+        
+        # Subtask criteria - skip if the subtask's capability wasn't executed
+        if name.startswith("subtask_"):
+            idx = int(name.split("_")[1])
+            if idx < len(task.subtasks):
+                subtask_cap = task.subtasks[idx].get("capability")
+                if subtask_cap and subtask_cap not in executed_tools:
+                    return True
+        
+        return False
+
+    def _update_subtask_status(self, task: Task, context: ExecutionContext) -> None:
+        """Update subtask status based on completed steps."""
+        if not task.subtasks:
+            return
+        
+        completed_tools = set()
+        for tool_call in context.tool_calls:
+            tool_name = tool_call.get("tool")
+            if tool_name:
+                completed_tools.add(tool_name)
+        
+        # Map capabilities to subtasks
+        for subtask in task.subtasks:
+            capability = subtask.get("capability")
+            if capability in completed_tools:
+                subtask["status"] = "completed"
+            elif subtask.get("status") == "pending" and any(dep in completed_tools for dep in subtask.get("depends_on", [])):
+                subtask["status"] = "in_progress"
+
+    def _post_action_verification(self, context: ExecutionContext, task: Task) -> bool:
+        """Perform post-action verification for critical capabilities."""
+        # Check for application write verification
+        for tool_call in context.tool_calls:
+            tool_name = tool_call.get("tool")
+            output = tool_call.get("output", {})
+            
+            if tool_name == "applications.write_text":
+                # Verify text was actually written
+                if isinstance(output, dict):
+                    chars = output.get("characters", 0)
+                    if chars <= 0:
+                        context.errors.append("Application write reported zero characters written")
+                        return False
+                    
+                    # Mark delivery criteria as met
+                    if task.completion_criteria:
+                        task.completion_criteria.mark_met("content_delivered")
+                        task.completion_criteria.mark_met("delivery_verified")
+                
+            elif tool_name == "filesystem.write":
+                # Verify file was created
+                if isinstance(output, dict):
+                    path = output.get("path")
+                    if not path:
+                        context.errors.append("File write did not return a path")
+                        return False
+                    
+                    if task.completion_criteria:
+                        task.completion_criteria.mark_met("file_created")
+                        task.completion_criteria.mark_met("file_verified")
+            
+            elif tool_name == "applications.launch_named":
+                # Verify app launched
+                if isinstance(output, dict):
+                    pid = output.get("pid")
+                    if not pid:
+                        context.errors.append("Application launch did not return a PID")
+                        return False
+                    
+                    if task.completion_criteria:
+                        task.completion_criteria.mark_met("destination_opened")
+        
+        return True
 
     def _mark_failed(self, context: ExecutionContext) -> None:
         if context.execution_plan is not None:

@@ -23,7 +23,10 @@ import re
 from typing import Any, Callable, Iterable, Optional
 
 from config import ENABLE_LLM_INTERPRETATION, INTERPRETER_CONFIDENCE_THRESHOLD
-from models_task import Task, TaskAction
+from models_task import (
+    Task, TaskAction, TaskState, EvidenceState, CompletionCriteria,
+    EvidenceSource, RETRIEVAL_GOALS, CONTENT_TYPES, SOURCE_TYPE_CLASSES
+)
 from reasoning.json_llm import safe_reasoning_call
 from tools.capabilities import CapabilityRegistry
 
@@ -415,7 +418,17 @@ class SemanticTaskInterpreter:
         constraints = self._extract_constraints(text, entities)
 
         needs_clarification = self._needs_clarification(text, entities, actions)
-        return Task(
+        
+        # Build semantic decomposition for complex tasks
+        subtasks = self._decompose_into_subtasks(text, entities, actions, goal)
+        
+        # Initialize evidence state for retrieval tasks
+        evidence_state = self._create_evidence_state(text, entities, goal) if self._needs_retrieval(actions) else None
+        
+        # Initialize completion criteria
+        completion_criteria = self._create_completion_criteria(text, entities, actions, goal, subtasks)
+        
+        task = Task(
             task_type=task_type,
             goal=goal,
             original_prompt=text,
@@ -430,7 +443,202 @@ class SemanticTaskInterpreter:
                 self._clarification_question(entities, actions) if needs_clarification else None
             ),
             source="deterministic",
+            task_state=TaskState.RECEIVED.value,
+            subtasks=subtasks,
+            evidence_state=evidence_state,
+            completion_criteria=completion_criteria,
         )
+        
+        # Add execution trace entry
+        task.execution_trace.append({
+            "stage": "interpretation",
+            "action": "deterministic_interpretation",
+            "result": "task_created",
+            "details": {"task_type": task_type, "goal": goal, "actions_count": len(actions), "subtasks_count": len(subtasks)}
+        })
+        
+        return task
+
+    def _needs_retrieval(self, actions: list[TaskAction]) -> bool:
+        """Check if any action requires web/file retrieval."""
+        retrieval_capabilities = {"web.search", "web.fetch", "web.research", 
+                                  "filesystem.search", "filesystem.read", 
+                                  "filesystem.search_content", "filesystem.list"}
+        return any(a.capability in retrieval_capabilities for a in actions)
+
+    def _create_evidence_state(self, text: str, entities: dict[str, Any], goal: str) -> EvidenceState:
+        """Create initial evidence state for retrieval tasks."""
+        target = entities.get("topic") or entities.get("content_type") or ""
+        content_type = entities.get("content_type", "generic")
+        must_be_artifact = self._must_be_artifact(text, content_type)
+        
+        # Determine retrieval goal based on task
+        retrieval_goal = "find_information"
+        if "script" in goal or "transcript" in goal or content_type in {"movie_script", "transcript", "lyrics", "code"}:
+            retrieval_goal = "retrieve_document"
+        elif "review" in goal:
+            retrieval_goal = "find_review"
+        elif "reference" in goal or "wiki" in goal:
+            retrieval_goal = "find_reference"
+        elif "media" in goal or content_type in {"video", "image"}:
+            retrieval_goal = "find_media"
+        
+        return EvidenceState(
+            target=target,
+            goal=retrieval_goal,
+            required_content_type=content_type,
+            must_be_artifact=must_be_artifact,
+        )
+
+    def _must_be_artifact(self, text: str, content_type: str) -> bool:
+        """Determine if the user wants the artifact itself vs information about it."""
+        lowered = text.casefold()
+        # Explicit artifact phrases
+        artifact_phrases = ("full script", "complete script", "entire script", "the script",
+                           "full transcript", "complete transcript", "entire transcript", "the transcript",
+                           "full lyrics", "the lyrics", "full text", "complete text", "whole text",
+                           "the source code", "full code", "entire code", "the raw text")
+        if any(phrase in lowered for phrase in artifact_phrases):
+            return True
+        # Info phrases mean they DON'T want the artifact
+        info_phrases = ("information about", "info about", "information on", "learn about",
+                       "tell me about", "explain", "what is", "who is", "overview of",
+                       "background on", "facts about", "details about")
+        if any(phrase in lowered for phrase in info_phrases):
+            return False
+        # Question openers ask about the subject
+        if re.match(r'^(?:please\s+|can\s+you\s+|could\s+you\s+|would\s+you\s+|will\s+you\s+)*(?:what|who|when|where|why|how|which|whose|is|are|was|were|does|do|did)\b', lowered):
+            return False
+        # Document types without info phrases = artifact request
+        if content_type in {"movie_script", "transcript", "lyrics", "code", "documentation", "list"}:
+            return True
+        return False
+
+    def _create_completion_criteria(self, text: str, entities: dict[str, Any], actions: list[TaskAction], goal: str, subtasks: list[dict]) -> CompletionCriteria:
+        """Create explicit completion criteria for the task."""
+        criteria = CompletionCriteria()
+        
+        # Base criteria for all tasks
+        criteria.add_criterion("task_understood", "User intent correctly interpreted", met=True)
+        
+        # Retrieval criteria
+        if self._needs_retrieval(actions):
+            criteria.add_criterion("correct_target_identified", f"Correct target identified: {entities.get('topic', 'unknown')}")
+            criteria.add_criterion("relevant_sources_retrieved", "Relevant source material retrieved")
+            criteria.add_criterion("evidence_sufficient", "Sufficient evidence collected for output")
+        
+        # Content generation criteria
+        if any(a.capability == "content.generate" for a in actions):
+            criteria.add_criterion("content_generated", "Content successfully generated")
+            criteria.add_criterion("content_formatted", "Content formatted for destination")
+        
+        # Delivery criteria
+        if any(a.capability == "applications.write_text" for a in actions):
+            app = entities.get("application", "the application")
+            criteria.add_criterion("destination_opened", f"{app} opened successfully")
+            criteria.add_criterion("content_delivered", f"Content written to {app}")
+            criteria.add_criterion("delivery_verified", "Delivery verified")
+        
+        if any(a.capability == "filesystem.write" for a in actions):
+            criteria.add_criterion("file_created", "Output file created")
+            criteria.add_criterion("file_verified", "File content verified")
+        
+        # Subtask criteria
+        for i, subtask in enumerate(subtasks):
+            criteria.add_criterion(f"subtask_{i}_completed", f"Subtask completed: {subtask.get('description', 'unknown')}")
+        
+        return criteria
+
+    def _decompose_into_subtasks(self, text: str, entities: dict[str, Any], actions: list[TaskAction], goal: str) -> list[dict[str, Any]]:
+        """Decompose complex request into explicit subtasks."""
+        subtasks = []
+        
+        # Analyze the request to identify distinct phases
+        has_retrieval = self._needs_retrieval(actions)
+        has_generation = any(a.capability == "content.generate" for a in actions)
+        has_delivery = any(a.capability in {"applications.write_text", "filesystem.write"} for a in actions)
+        
+        if has_retrieval:
+            target = entities.get("topic", "the requested content")
+            subtasks.append({
+                "id": "subtask_1",
+                "description": f"Identify and locate {target}",
+                "type": "retrieval",
+                "capability": "web.research" if any(a.capability.startswith("web.") for a in actions) else "filesystem.search",
+                "status": "pending",
+                "depends_on": [],
+            })
+            subtasks.append({
+                "id": "subtask_2",
+                "description": "Evaluate retrieved source relevance and quality",
+                "type": "evaluation",
+                "capability": "internal",
+                "status": "pending",
+                "depends_on": ["subtask_1"],
+            })
+            subtasks.append({
+                "id": "subtask_3",
+                "description": "Refine search if evidence insufficient",
+                "type": "retrieval_refinement",
+                "capability": "web.research" if any(a.capability.startswith("web.") for a in actions) else "filesystem.search",
+                "status": "pending",
+                "depends_on": ["subtask_2"],
+            })
+        
+        if has_generation:
+            subtask_id = f"subtask_{len(subtasks) + 1}"
+            subtasks.append({
+                "id": subtask_id,
+                "description": f"Generate {entities.get('content_type', 'content')} about {entities.get('topic', 'the topic')}",
+                "type": "generation",
+                "capability": "content.generate",
+                "status": "pending",
+                "depends_on": [subtasks[-1]["id"]] if subtasks else [],
+            })
+        
+        if has_delivery:
+            dest = entities.get("application") or entities.get("filename") or "destination"
+            subtask_id = f"subtask_{len(subtasks) + 1}"
+            subtasks.append({
+                "id": subtask_id,
+                "description": f"Open {dest}" if entities.get("application") else f"Create file {dest}",
+                "type": "delivery_prep",
+                "capability": "applications.launch_named" if entities.get("application") else "filesystem.write",
+                "status": "pending",
+                "depends_on": [subtasks[-1]["id"]] if subtasks else [],
+            })
+            subtask_id = f"subtask_{len(subtasks) + 1}"
+            subtasks.append({
+                "id": subtask_id,
+                "description": f"Write content to {dest}",
+                "type": "delivery",
+                "capability": "applications.write_text" if entities.get("application") else "filesystem.write",
+                "status": "pending",
+                "depends_on": [subtasks[-1]["id"]] if subtasks else [],
+            })
+            subtask_id = f"subtask_{len(subtasks) + 1}"
+            subtasks.append({
+                "id": subtask_id,
+                "description": f"Verify content in {dest}",
+                "type": "verification",
+                "capability": "internal",
+                "status": "pending",
+                "depends_on": [subtasks[-1]["id"]] if subtasks else [],
+            })
+        
+        # Simple tasks without retrieval/generation/delivery
+        if not subtasks and actions:
+            for i, action in enumerate(actions):
+                subtasks.append({
+                    "id": f"subtask_{i+1}",
+                    "description": action.description or action.capability,
+                    "type": "action",
+                    "capability": action.capability,
+                    "status": "pending",
+                    "depends_on": action.depends_on,
+                })
+        
+        return subtasks
 
     # -- entity extraction -------------------------------------------------------
 
