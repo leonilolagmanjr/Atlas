@@ -85,6 +85,43 @@ class TaskInferenceTests(unittest.TestCase):
         self.assertTrue(task.must_be_artifact)
         self.assertTrue(any("script" in query for query in task.queries))
 
+    def test_bare_artifact_phrase_is_an_artifact_request(self):
+        # No article, no retrieval verb, no info phrase: "bee movie script" is
+        # still a request for the script itself, not for a page about the film.
+        task = infer_retrieval_task("bee movie script")
+        self.assertTrue(task.must_be_artifact)
+        self.assertEqual(task.content_type, "movie_script")
+        self.assertEqual(task.desired_output, "full_text")
+
+    def test_hybrid_phrasing_targets_the_artifact_and_notepad(self):
+        task = infer_retrieval_task(
+            "search web for bee movie script and copy to notepad",
+            entities={"application": "notepad"},
+        )
+        self.assertTrue(task.must_be_artifact)
+        self.assertEqual(task.desired_output, "full_text")
+        self.assertEqual(task.destination, "notepad")
+
+    def test_interpreter_plan_content_noun_is_normalized_to_the_canonical_type(self):
+        # The task plan carries the interpreter's content noun ("script"); the
+        # retrieval layer is what maps it onto the canonical content type.
+        task = infer_retrieval_task(
+            "bee movie script",
+            entities={"content_type": "script"},
+            must_be_artifact=True,
+            goal="retrieve_document",
+        )
+        self.assertEqual(task.content_type, "movie_script")
+
+    def test_questions_about_the_artifact_are_not_artifact_requests(self):
+        # An interrogative asks *about* the subject, so a page that answers it is
+        # the right source; the artifact itself is not being requested.
+        for text in ("how long is the bee movie script", "who wrote the bee movie script"):
+            with self.subTest(text=text):
+                task = infer_retrieval_task(text)
+                self.assertFalse(task.must_be_artifact)
+                self.assertEqual(task.desired_output, "summary")
+
 
 class ContentTypeDetectionTests(unittest.TestCase):
     def test_wikipedia_detected_as_reference(self):
@@ -208,6 +245,27 @@ class ValidationTests(unittest.TestCase):
         result = validate_content(task, content="", detected_type="transcript")
         self.assertFalse(result.ok)
 
+    def test_synopsis_is_rejected_for_the_hybrid_artifact_request(self):
+        # Regression: "...bee movie script... and copy to notepad" accepted the
+        # film's Wikipedia page, so Notepad received a synopsis of the film
+        # instead of the script.
+        task = infer_retrieval_task("search web for bee movie script and copy to notepad")
+        synopsis = validate_content(
+            task, content=WIKI_PAGE["text"], detected_type="reference", title="Bee Movie - Wikipedia"
+        )
+        self.assertFalse(synopsis.ok)
+        script = validate_content(
+            task, content=SCRIPT_PAGE["text"], detected_type="transcript", title="Bee Movie Script"
+        )
+        self.assertTrue(script.ok)
+
+    def test_script_source_outranks_the_synopsis_for_a_bare_artifact_phrase(self):
+        task = infer_retrieval_task("bee movie script")
+        synopsis = score_source(task, url=WIKI_PAGE["url"], title=WIKI_PAGE["title"], text=WIKI_PAGE["text"])
+        script = score_source(task, url=SCRIPT_PAGE["url"], title=SCRIPT_PAGE["title"], text=SCRIPT_PAGE["text"])
+        self.assertFalse(synopsis.accepted)
+        self.assertTrue(script.accepted)
+        self.assertGreater(script.score, synopsis.score)
 
 class ReformulationTests(unittest.TestCase):
     def test_reformulation_targets_missing_content_type(self):

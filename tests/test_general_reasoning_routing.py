@@ -142,6 +142,24 @@ class HybridRegressionTests(unittest.TestCase):
             for value in action.parameters.values():
                 self.assertNotEqual(value, "$largest_match")
 
+    def test_copy_to_notepad_names_notepad_as_the_destination(self):
+        # "copy to Notepad" is the same hybrid as "copy it in Notepad": the
+        # destination preposition "to" follows a placement verb.
+        task = _interpreter().interpret(
+            "search the web for bee movie script and copy to notepad"
+        )
+        self.assertEqual(
+            [a.capability for a in task.actions],
+            ["web.research", "applications.write_text"],
+        )
+        self.assertEqual(task.entities["application"].casefold(), "notepad")
+        research = task.actions[0].parameters
+        self.assertTrue(research["must_be_artifact"])
+        self.assertEqual(research["goal"], "retrieve_document")
+        # The destination "to notepad" must not leak into the search query.
+        self.assertNotIn("notepad", research["query"].casefold())
+
+
     class ReferenceResolutionTests(unittest.TestCase):
         # A "$name" plan reference must resolve to the value an earlier step
         # published; a literal "$name" reaching a tool is a broken handoff.

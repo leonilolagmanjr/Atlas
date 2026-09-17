@@ -140,6 +140,58 @@ class SearchTaskTests(unittest.TestCase):
         self.assertIn("python", query.casefold())
 
 
+class WebArtifactHybridTests(unittest.TestCase):
+    """A web artifact request must plan a research step for the artifact itself."""
+
+    def test_bare_script_phrase_plans_artifact_research(self):
+        task = interpret("search web for bee movie script and copy to notepad")
+        self.assertEqual(capabilities_for(task), ["web.research", "applications.write_text"])
+        research = params_for(task, "web.research")
+        self.assertTrue(research["must_be_artifact"])
+        self.assertEqual(research["goal"], "retrieve_document")
+        # The plan carries the interpreter's content noun; the retrieval layer
+        # normalizes it to the canonical type (web_task -> "movie_script").
+        self.assertEqual(research["content_type"], "script")
+        self.assertEqual(params_for(task, "applications.write_text")["text"], "$web_content")
+
+    def test_question_about_the_script_is_not_an_artifact_research(self):
+        task = interpret("how long is the bee movie script")
+        self.assertNotIn("web.research", capabilities_for(task))
+
+
+class ReconcileBackfillTests(unittest.TestCase):
+    """The deterministic pass backfills the LLM's under-specified actions."""
+
+    def test_web_research_action_inherits_artifact_parameters(self):
+        interpreter = SemanticTaskInterpreter(enabled=False)
+        heuristic = interpreter.interpret("search the web for bee movie script and copy to notepad")
+        llm = Task(
+            task_type="computer_action",
+            goal="perform_action",
+            original_prompt="search the web for bee movie script and copy to notepad",
+            actions=[
+                TaskAction(
+                    action_id="a1", capability="web.research",
+                    parameters={"query": "bee movie script"},
+                ),
+                TaskAction(
+                    action_id="a2", capability="applications.write_text",
+                    parameters={"application": "notepad", "text": "$web_content"},
+                    depends_on=["a1"],
+                ),
+            ],
+        )
+        merged = interpreter._reconcile(llm, heuristic)
+        research = params_for(merged, "web.research")
+        self.assertTrue(research["must_be_artifact"])
+        self.assertEqual(research["goal"], "retrieve_document")
+        # Backfilled from the deterministic pass, which uses the interpreter's
+        # content noun ("script"); web_task normalizes it to "movie_script".
+        self.assertEqual(research["content_type"], "script")
+        # The model's write step is preserved and still consumable.
+        self.assertEqual(params_for(merged, "applications.write_text")["text"], "$web_content")
+
+
 class FileTaskTests(unittest.TestCase):
     def test_find_largest_pdf_and_move_to_documents(self):
         task = interpret("Find the largest PDF in Downloads and move it to my Documents folder.")

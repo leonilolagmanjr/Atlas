@@ -136,6 +136,19 @@ _IN_APP_RE = re.compile(
     r"(?:\s+(?:and\b|about\b|that\b|which\b)|$|[,.?!])",
     re.IGNORECASE,
 )
+#: A placement verb followed by a destination preposition ("copy to Notepad",
+#: "write it into Notepad", "paste this in Notepad"). "to" is only a
+#: destination marker *after* an explicit placement verb, so the match is
+#: anchored on the verb instead of adding "to" to the generic preposition list.
+_PLACE_TO_APP_RE = re.compile(
+    r"\b(?:copy|paste|write|save|put|place|add|insert|type|dump|drop)\s+"
+    r"(?:it\s+|this\s+|that\s+|everything\s+|"
+    r"the\s+(?:text|content|result|results|answer|script|code|list)\s+)?"
+    r"(?:to|into|onto)\s+"
+    r"([A-Za-z][A-Za-z0-9._+-]*(?: [A-Za-z][A-Za-z0-9._+-]*){0,3})"
+    r"(?:\s+(?:and\b|about\b|that\b|which\b)|$|[,.?!])",
+    re.IGNORECASE,
+)
 #: A destination like "in my Downloads folder" names a location, not an app.
 _LOCATION_WORDS = frozenset(
     {"folder", "directory", "file", "my", "the", "a", "an", "terms", "detail",
@@ -360,6 +373,31 @@ class SemanticTaskInterpreter:
         for constraint in heuristic.constraints:
             if constraint not in llm.constraints:
                 llm.constraints.append(constraint)
+        # Backfill action parameters from matching heuristic actions. When the
+        # LLM proposes a web.research action without the artifact parameters
+        # (must_be_artifact, goal, target, content_type), the deterministic
+        # pass—which parses the literal request text—is authoritative and
+        # backfills them so task-aware retrieval stays correct.
+        # Retrieval intent ("is the artifact itself wanted?") is read from the
+        # literal request text, so a deterministic value always wins there: a
+        # model guess of "information about the film" must not turn a script
+        # request into a page about the film. Every other parameter is only
+        # backfilled, leaving the model's own value in place.
+        authoritative = ("must_be_artifact", "content_type", "goal", "target")
+        for llm_action in llm.actions:
+            for heuristic_action in heuristic.actions:
+                if llm_action.capability == heuristic_action.capability:
+                    for key, value in heuristic_action.parameters.items():
+                        if key in authoritative and value is not None:
+                            llm_action.parameters[key] = value
+                        else:
+                            llm_action.parameters.setdefault(key, value)
+                    llm_action.depends_on = list(dict.fromkeys(
+                        llm_action.depends_on + heuristic_action.depends_on
+                    ))
+                    if not llm_action.requires_confirmation and heuristic_action.requires_confirmation:
+                        llm_action.requires_confirmation = heuristic_action.requires_confirmation
+                    break
         llm.confidence = max(llm.confidence, heuristic.confidence)
         llm.source = "hybrid" if heuristic.actions else "llm"
         # A destination the deterministic pass is certain about wins over a
@@ -416,6 +454,15 @@ class SemanticTaskInterpreter:
             in_match = _IN_APP_RE.search(text)
             if in_match:
                 candidate = in_match.group(1).strip()
+                if self._plausible_application(candidate):
+                    application = candidate
+        if application is None:
+            # A placement verb with "to"/"into" ("copy to Notepad") names the
+            # same kind of destination as "in Notepad"; _IN_APP_RE only covers
+            # the generic prepositions, so this case is matched verb-anchored.
+            to_match = _PLACE_TO_APP_RE.search(lowered)
+            if to_match:
+                candidate = to_match.group(1).strip()
                 if self._plausible_application(candidate):
                     application = candidate
         if application:

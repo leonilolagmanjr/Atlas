@@ -143,6 +143,15 @@ _INFO_PHRASES: tuple[str, ...] = (
     'background on', 'facts about', 'details about',
 )
 
+#: Interrogative openers that ask *about* a subject ("who wrote the bee movie
+#: script", "how long is the bee movie script") rather than requesting the
+#: artifact itself. Polite request frames (please/can you/could you) are
+#: stripped first because they introduce a request, not a question.
+_QUESTION_OPENERS = re.compile(
+    r'^(?:please\s+|can\s+you\s+|could\s+you\s+|would\s+you\s+|will\s+you\s+)*'
+    r'(?:what|who|when|where|why|how|which|whose|is|are|was|were|does|do|did)\b'
+)
+
 _WEB_HOSTS = ('the web', 'the internet', 'online', 'internet')
 
 #: Sources whose primary role is reference/encyclopedic.
@@ -345,11 +354,23 @@ def _wants_artifact(lowered: str, content_type: str) -> bool:
     if any(phrase in lowered for phrase in _INFO_PHRASES):
         # "tell me about the script" is information, not the artifact itself.
         return False
-    # "find/get the X script|transcript|lyrics|code" without an info phrase is a
+    if _QUESTION_OPENERS.match(lowered):
+        # "who wrote the bee movie script" / "how long is the bee movie script"
+        # ask a question *about* the subject, so a page that answers it is the
+        # right answer; the artifact itself is not being requested.
+        return False
+    # "find/get/the X script|transcript|lyrics|code" without an info phrase is a
     # request for the artifact.
     if content_type in DOCUMENT_TYPES:
+        ct_keyword = content_type.split('_')[-1]
+        # The content type was detected from the request text, so the keyword
+        # (e.g. "script") is already present. A bare mention like "bee movie
+        # script" — with no article, no retrieval verb, and no info phrase —
+        # is still a direct request for the artifact itself.
+        if re.search(r'(?<![a-z0-9])' + re.escape(ct_keyword) + r'(?![a-z0-9])', lowered):
+            return True
         article = 'the|a|an|my|this|that|full|complete|entire|whole'
-        if re.search(r'(?<![a-z0-9])(?:' + article + r')\s+[a-z ]*' + re.escape(content_type.split('_')[-1]), lowered):
+        if re.search(r'(?<![a-z0-9])(?:' + article + r')\s+[a-z ]*' + re.escape(ct_keyword), lowered):
             return True
         # Bare "bee movie script" as the object of a retrieval verb.
         if re.search(r'(?:find|get|fetch|grab|copy|retrieve|search for|look up|pull)\b', lowered):

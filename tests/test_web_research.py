@@ -22,6 +22,7 @@ from web_research import (  # noqa: E402
     research,
     score_chunk,
 )
+from reasoning.task_interpreter import SemanticTaskInterpreter  # noqa: E402
 
 
 class QueryTermTests(unittest.TestCase):
@@ -341,6 +342,29 @@ class TaskAwarePipelineTests(unittest.TestCase):
         self.assertGreaterEqual(result.output["attempts"], 2)
         self.assertGreaterEqual(len(seen), 2)
         self.assertTrue(any("script" in q for q in seen), seen)
+
+    def test_interpreter_plan_parameters_drive_the_real_tool(self):
+        # The plan produced for the user's request - not hand-written test
+        # values - must steer the real tool to the script, not the synopsis.
+        plan = SemanticTaskInterpreter(enabled=False).interpret(
+            "search web for bee movie script and copy to notepad"
+        )
+        research_params = {
+            action.capability: action.parameters for action in plan.actions
+        }["web.research"]
+        params = {
+            key: value
+            for key, value in research_params.items()
+            if key in {"target", "content_type", "must_be_artifact", "goal", "site"}
+            and value is not None
+        }
+        result = self._run(
+            research_params["query"], [BEE_WIKI, BEE_SCRIPT], params=params
+        )
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.output["sources"], [BEE_SCRIPT["url"]])
+        self.assertIn("jazz", result.output["content"].casefold())
+        self.assertNotIn("animated comedy film", result.output["content"].casefold())
 
 
 if __name__ == "__main__":
