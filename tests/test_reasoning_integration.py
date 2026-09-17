@@ -12,7 +12,7 @@ from models_task import Task, _boolean, _enum, REQUEST_TYPES
 from reasoning.answer_generator import Answer
 from reasoning.reasoning_models import ConfidenceLevel, ResponseMode
 from reasoning.task_interpreter import SemanticTaskInterpreter
-from tests.test_task_pipeline_e2e import FakeVectorStore, RecordingTool, build_brain
+from tests.test_task_pipeline_e2e import FakeVectorStore, RecordingTool, FormattingTool, ConfirmingFormatTool, build_brain
 
 
 class SemanticReasoningFieldsTests(unittest.TestCase):
@@ -108,8 +108,9 @@ class BrainReasoningIntegrationTests(unittest.TestCase):
 
     def test_delegated_actions_receive_reasoning_before_existing_pipeline(self):
         generator = RecordingTool("content.generate", {"text": "cars poem"})
+        formatter = FormattingTool({"text": "cars poem"})
         writer = RecordingTool("applications.write_text", {"pid": 1, "application": "Notepad", "characters": 9})
-        brain = build_brain(lambda **_: "{}", [generator, writer])
+        brain = build_brain(lambda **_: "{}", [generator, formatter, writer])
         brain.process("Create a poem in Notepad about cars.")
         task = brain.last_context.metadata["task"]
         self.assertIn("computer", task["sources"])

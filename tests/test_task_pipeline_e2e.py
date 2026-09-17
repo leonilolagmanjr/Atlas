@@ -35,6 +35,11 @@ class RecordingTool(Tool):
         return ToolResult(success=True, status="completed", output=self._output)
 
 
+class FormattingTool(RecordingTool):
+    def __init__(self, output: dict) -> None:
+        super().__init__("content.format", output)
+
+
 class ConfirmingTool(RecordingTool):
     def __init__(self, name: str, output: dict) -> None:
         from tools.base import PermissionLevel, RiskLevel
@@ -47,6 +52,19 @@ class ConfirmingTool(RecordingTool):
         )
         self._output = output
         self.calls = []
+
+
+class ConfirmingFormatTool(FormattingTool):
+    def __init__(self, output: dict) -> None:
+        from tools.base import PermissionLevel, RiskLevel
+        super().__init__(output)
+        self.metadata = ToolMetadata(
+            name="content.format",
+            description="content.format",
+            category="content.formatting",
+            permission_level=PermissionLevel.MEDIUM_RISK,
+            risk_level=RiskLevel.MEDIUM,
+        )
 
 
 def build_brain(ask, tools, *, mode: ExecutionMode = ExecutionMode.AUTONOMOUS) -> Brain:
@@ -74,9 +92,10 @@ def build_brain(ask, tools, *, mode: ExecutionMode = ExecutionMode.AUTONOMOUS) -
 class DeterministicPipelineTests(unittest.TestCase):
     def test_about_cars_reaches_generator_topic_and_writer(self):
         generator = RecordingTool("content.generate", {"text": "cars poem"})
+        formatter = FormattingTool({"text": "cars poem"})
         writer = RecordingTool("applications.write_text", {"pid": 1, "application": "Notepad", "characters": 9})
 
-        brain = build_brain(lambda **_: "{}", [generator, writer])
+        brain = build_brain(lambda **_: "{}", [generator, formatter, writer])
         brain.process("Create a poem in Notepad about cars.")
 
         ctx = brain.last_context
@@ -87,19 +106,21 @@ class DeterministicPipelineTests(unittest.TestCase):
 
     def test_plan_has_no_leaked_modifier_in_application(self):
         generator = RecordingTool("content.generate", {"text": "x"})
+        formatter = FormattingTool({"text": "x"})
         writer = RecordingTool("applications.write_text", {"pid": 1, "application": "Notepad", "characters": 1})
 
-        brain = build_brain(lambda **_: "{}", [generator, writer])
+        brain = build_brain(lambda **_: "{}", [generator, formatter, writer])
         brain.process("Create a poem in Notepad about cars.")
 
         tools = [s.metadata.get("tool") for s in brain.last_context.execution_plan.steps]
-        self.assertEqual(tools, ["content.generate", "applications.write_text"])
+        self.assertEqual(tools, ["content.generate", "content.format", "applications.write_text"])
 
     def test_multi_step_plan_still_pauses_for_confirmation(self):
         generator = RecordingTool("content.generate", {"text": "x"})
+        formatter = ConfirmingFormatTool({"text": "x"})
         writer = ConfirmingTool("applications.write_text", {"pid": 1, "application": "Notepad", "characters": 1})
 
-        brain = build_brain(lambda **_: "{}", [generator, writer], mode=ExecutionMode.CONFIRM)
+        brain = build_brain(lambda **_: "{}", [generator, formatter, writer], mode=ExecutionMode.CONFIRM)
         brain.process("Create a poem in Notepad about cars.")
         ctx = brain.last_context
         self.assertEqual(ctx.status, TaskStatus.WAITING_FOR_CONFIRMATION)
@@ -139,6 +160,7 @@ class LLMInterpretedPipelineTests(unittest.TestCase):
 
     def test_model_task_is_validated_and_executed(self):
         generator = RecordingTool("content.generate", {"text": "launch window body"})
+        formatter = FormattingTool({"text": "launch window body"})
         writer = RecordingTool("applications.write_text", {"pid": 1, "application": "Notepad", "characters": 3})
 
         def fake_ask(*, system_prompt, user_prompt):
@@ -152,12 +174,15 @@ class LLMInterpretedPipelineTests(unittest.TestCase):
                 '{"action_id":"a1","capability":"content.generate",'
                 '"parameters":{"content_type":"poem","topic":"the wind","style":"uplifting"},'
                 '"produces":"generated_text"},'
-                '{"action_id":"a2","capability":"applications.write_text",'
-                '"parameters":{"application":"Notepad","text":"$generated_text"},"depends_on":["a1"]}'
+                '{"action_id":"a2","capability":"content.format",'
+                '"parameters":{"content":"$generated_text","destination":"Notepad"},'
+                '"depends_on":["a1"],"produces":"formatted_text"},'
+                '{"action_id":"a3","capability":"applications.write_text",'
+                '"parameters":{"application":"Notepad","text":"$formatted_text"},"depends_on":["a2"]}'
                 ']}'
             )
 
-        brain = build_brain(fake_ask, [generator, writer])
+        brain = build_brain(fake_ask, [generator, formatter, writer])
         # A deliberately vague request stays below the deterministic confidence
         # threshold, so the model is consulted (Phase 15: use Qwen for genuine
         # ambiguity, not for mechanical steps).
@@ -186,6 +211,7 @@ class LLMInterpretedPipelineTests(unittest.TestCase):
 
     def test_malformed_model_output_falls_back_to_deterministic(self):
         generator = RecordingTool("content.generate", {"text": "body"})
+        formatter = FormattingTool({"text": "body"})
         writer = RecordingTool("applications.write_text", {"pid": 1, "application": "Notepad", "characters": 4})
 
         def fake_ask(*, system_prompt, user_prompt):
@@ -193,7 +219,7 @@ class LLMInterpretedPipelineTests(unittest.TestCase):
                 return "body"
             return "I cannot help with that."  # not JSON
 
-        brain = build_brain(fake_ask, [generator, writer])
+        brain = build_brain(fake_ask, [generator, formatter, writer])
         brain.process("Create a poem in Notepad about cars.")
 
         ctx = brain.last_context

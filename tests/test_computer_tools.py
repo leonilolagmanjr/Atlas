@@ -339,6 +339,7 @@ class ComputerToolTests(unittest.TestCase):
                 "applications.launch_named",
                 "applications.write_text",
                 "content.generate",
+                "content.format",
                 "powershell.execute",
                 "web.search",
                 "web.fetch",

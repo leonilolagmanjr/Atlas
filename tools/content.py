@@ -26,12 +26,13 @@ class ContentGenerationTool(Tool):
         ),
         category="content.generation",
         input_schema={
-            "content_type": {"type": "string", "description": "poem, story, essay, ..."},
+            "content_type": {"type": "string", "description": "poem, story, essay, summary, ..."},
             "topic": {"type": "string", "description": "subject the content is about"},
             "tone": {"type": "string", "description": "e.g. funny, serious"},
             "style": {"type": "string", "description": "e.g. futuristic, formal"},
             "length": {"type": "string", "description": "short or long"},
             "instructions": {"type": "string", "description": "extra free-form guidance"},
+            "input_content": {"type": "string", "description": "existing content to transform (for summarization, rewriting, etc.)"},
         },
         output_schema={"text": {"type": "string"}},
         permission_level=PermissionLevel.READ_ONLY,
@@ -53,9 +54,17 @@ class ContentGenerationTool(Tool):
         tone = str(parameters.get("tone") or "").strip()
         style = str(parameters.get("style") or "").strip()
         length = str(parameters.get("length") or "").strip()
+        instructions = str(parameters.get("instructions") or "").strip()
+        input_content = str(parameters.get("input_content") or "").strip()
 
         request = self._build_request(
-            content_type=content_type, topic=topic, tone=tone, style=style, length=length
+            content_type=content_type,
+            topic=topic,
+            tone=tone,
+            style=style,
+            length=length,
+            instructions=instructions,
+            input_content=input_content,
         )
         # content.generate must return prose, so a JSON-looking answer is not
         # expected; call the model directly for the free-text body instead.
@@ -89,7 +98,22 @@ class ContentGenerationTool(Tool):
         tone: str,
         style: str,
         length: str,
+        instructions: str = "",
+        input_content: str = "",
     ) -> str:
+        # Transformation mode: input_content provided -> transform it
+        if input_content:
+            parts = [f"Transform the following content into a {content_type}."]
+            if topic:
+                parts.append(f"Subject: {topic}.")
+            if instructions:
+                parts.append(f"Instructions: {instructions}.")
+            parts.append("Source content:")
+            parts.append(input_content)
+            parts.append("Return only the transformed content body.")
+            return "\n\n".join(parts)
+
+        # Creative generation mode: generate from scratch
         parts = [f"Write a {content_type}."]
         if topic:
             parts.append(f"Topic: {topic}.")
@@ -99,5 +123,7 @@ class ContentGenerationTool(Tool):
             parts.append(f"Style: {style}.")
         if length:
             parts.append(f"Length: {length}.")
+        if instructions:
+            parts.append(f"Additional guidance: {instructions}.")
         parts.append("Return only the content body.")
         return " ".join(parts)

@@ -35,6 +35,11 @@ class RecordingTool(Tool):
         return ToolResult(success=True, status="completed", output=self._output)
 
 
+class FormattingTool(RecordingTool):
+    def __init__(self, output: dict) -> None:
+        super().__init__("content.format", output)
+
+
 class ConfirmingTool(Tool):
     # A medium-risk tool that records calls and can require confirmation.
     def __init__(self, name: str, output: dict) -> None:
@@ -52,6 +57,19 @@ class ConfirmingTool(Tool):
     def execute(self, parameters):
         self.calls.append(dict(parameters))
         return ToolResult(success=True, status="written", output=self._output)
+
+
+class ConfirmingFormatTool(FormattingTool):
+    def __init__(self, output: dict) -> None:
+        super().__init__(output)
+        from tools.base import PermissionLevel, RiskLevel
+        self.metadata = ToolMetadata(
+            name="content.format",
+            description="content.format",
+            category="content.formatting",
+            permission_level=PermissionLevel.MEDIUM_RISK,
+            risk_level=RiskLevel.MEDIUM,
+        )
 
 
 def build_brain(ask, tools: list[Tool], *, mode: ExecutionMode = ExecutionMode.AUTONOMOUS) -> Brain:
@@ -82,6 +100,7 @@ def build_brain(ask, tools: list[Tool], *, mode: ExecutionMode = ExecutionMode.A
 class MultiStepExecutionTests(unittest.TestCase):
     def test_content_then_write_resolves_generated_text(self):
         generator = RecordingTool("content.generate", {"text": "cars poem body"})
+        formatter = FormattingTool({"text": "cars poem body"})
         writer = RecordingTool(
             "applications.write_text",
             {"pid": 1, "application": "Notepad", "characters": 14},
@@ -92,7 +111,7 @@ class MultiStepExecutionTests(unittest.TestCase):
                 return "cars poem body"
             return '{"intent":"write_content","action":"create","content_type":"poem","topic":"cars","destination":"Notepad","confidence":0.97}'
 
-        brain = build_brain(fake_ask, [generator, writer])
+        brain = build_brain(fake_ask, [generator, formatter, writer])
         out = brain.process("create a poem about cars in notepad")
         ctx = brain.last_context
 
@@ -105,7 +124,7 @@ class MultiStepExecutionTests(unittest.TestCase):
         self.assertIn("Notepad", out or "")
 
     def test_search_plan_runs_single_search_step(self):
-        search = RecordingTool("web.search", {"query": "mrbeast", "results": []})
+        search = RecordingTool("web.search", {"query": "mrbeast videos", "results": []})
 
         def fake_ask(*, system_prompt, user_prompt):
             return "{}"
@@ -116,11 +135,12 @@ class MultiStepExecutionTests(unittest.TestCase):
 
         self.assertEqual(ctx.selected_tool, "web.search")
         self.assertEqual(len(search.calls), 1)
-        self.assertEqual(search.calls[0]["query"], "mrbeast")
+        self.assertEqual(search.calls[0]["query"], "mrbeast videos")
         self.assertEqual(search.calls[0]["site"], "youtube")
 
     def test_approval_resumes_without_regenerating_content(self):
         generator = RecordingTool("content.generate", {"text": "original poem"})
+        formatter = ConfirmingFormatTool({"text": "original poem"})
         writer = ConfirmingTool(
             "applications.write_text",
             {"pid": 1, "application": "Notepad", "characters": 13},
@@ -131,7 +151,7 @@ class MultiStepExecutionTests(unittest.TestCase):
                 return "original poem"
             return '{"intent":"write_content","action":"create","content_type":"poem","topic":"wind","destination":"Notepad","confidence":0.97}'
 
-        brain = build_brain(fake_ask, [generator, writer], mode=ExecutionMode.CONFIRM)
+        brain = build_brain(fake_ask, [generator, formatter, writer], mode=ExecutionMode.CONFIRM)
         first = brain.process("write a poem about the wind in notepad")
         ctx = brain.last_context
         # The write step must pause for confirmation, not fail.

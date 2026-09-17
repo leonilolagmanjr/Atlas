@@ -50,7 +50,7 @@ class NotepadRegressionTests(unittest.TestCase):
 
         for task in (plain, topic):
             self.assertEqual(task.task_type, "content_creation")
-            self.assertEqual(capabilities_for(task), ["content.generate", "applications.write_text"])
+            self.assertEqual(capabilities_for(task), ["content.generate", "content.format", "applications.write_text"])
 
     def test_about_cars_becomes_the_topic_not_the_application(self):
         task = interpret("Create a poem in Notepad about cars.")
@@ -72,9 +72,10 @@ class NotepadRegressionTests(unittest.TestCase):
                 task = interpret(text)
                 self.assertNotIn("about", task.entities.get("application", "").casefold())
 
-    def test_write_step_consumes_generated_content_by_reference(self):
+    def test_write_step_consumes_formatted_content_by_reference(self):
         task = interpret("Create a poem in Notepad about cars.")
-        self.assertEqual(params_for(task, "applications.write_text")["text"], "$generated_text")
+        self.assertEqual(params_for(task, "applications.write_text")["text"], "$formatted_text")
+        self.assertEqual(params_for(task, "content.format")["content"], "$generated_text")
 
 
 class NaturalLanguageVariationTests(unittest.TestCase):
@@ -94,7 +95,7 @@ class NaturalLanguageVariationTests(unittest.TestCase):
                 task = interpret(text)
                 self.assertEqual(
                     sorted(capabilities_for(task)),
-                    ["applications.write_text", "content.generate"],
+                    ["applications.write_text", "content.format", "content.generate"],
                 )
                 self.assertEqual(task.entities.get("content_type"), "poem")
 
@@ -145,14 +146,14 @@ class WebArtifactHybridTests(unittest.TestCase):
 
     def test_bare_script_phrase_plans_artifact_research(self):
         task = interpret("search web for bee movie script and copy to notepad")
-        self.assertEqual(capabilities_for(task), ["web.research", "applications.write_text"])
+        self.assertEqual(capabilities_for(task), ["web.research", "content.format", "applications.write_text"])
         research = params_for(task, "web.research")
         self.assertTrue(research["must_be_artifact"])
         self.assertEqual(research["goal"], "retrieve_document")
         # The plan carries the interpreter's content noun; the retrieval layer
         # normalizes it to the canonical type (web_task -> "movie_script").
         self.assertEqual(research["content_type"], "script")
-        self.assertEqual(params_for(task, "applications.write_text")["text"], "$web_content")
+        self.assertEqual(params_for(task, "applications.write_text")["text"], "$formatted_text")
 
     def test_question_about_the_script_is_not_an_artifact_research(self):
         task = interpret("how long is the bee movie script")
@@ -364,8 +365,9 @@ class TaskPlanningTests(unittest.TestCase):
             task, user_question="x"
         )
         tools = [step.metadata["tool"] for step in decision.plan.steps]
-        self.assertEqual(tools, ["content.generate", "applications.write_text"])
-        self.assertEqual(decision.plan.steps[1].metadata["parameters"]["text"], "$generated_text")
+        self.assertEqual(tools, ["content.generate", "content.format", "applications.write_text"])
+        self.assertEqual(decision.plan.steps[2].metadata["parameters"]["text"], "$formatted_text")
+        self.assertEqual(decision.plan.steps[1].metadata["parameters"]["content"], "$generated_text")
         self.assertEqual(decision.plan.steps[0].metadata["produces"], "generated_text")
 
     def test_ordering_is_respected_when_actions_are_out_of_order(self):
@@ -375,8 +377,15 @@ class TaskPlanningTests(unittest.TestCase):
                 TaskAction(
                     action_id="write",
                     capability="applications.write_text",
-                    parameters={"application": "Notepad", "text": "$generated_text"},
+                    parameters={"application": "Notepad", "text": "$formatted_text"},
+                    depends_on=["format"],
+                ),
+                TaskAction(
+                    action_id="format",
+                    capability="content.format",
+                    parameters={"content": "$generated_text", "destination": "Notepad"},
                     depends_on=["gen"],
+                    produces="formatted_text",
                 ),
                 TaskAction(
                     action_id="gen",
@@ -389,7 +398,8 @@ class TaskPlanningTests(unittest.TestCase):
         decision = TaskPlanner(capabilities=CapabilityRegistry(None)).create_plan(task, user_question="x")
         tools = [step.metadata["tool"] for step in decision.plan.steps]
         self.assertEqual(tools[0], "content.generate")
-        self.assertEqual(tools[1], "applications.write_text")
+        self.assertEqual(tools[1], "content.format")
+        self.assertEqual(tools[2], "applications.write_text")
 
 
 class VerificationTests(unittest.TestCase):

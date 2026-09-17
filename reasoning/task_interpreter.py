@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 #: Verbs mapped to a canonical action, grouped by what the request targets.
 _OPEN_VERBS = ("open", "launch", "start", "run")
-_SEARCH_VERBS = ("search", "find", "look", "show", "get", "pull", "browse", "google")
+_SEARCH_VERBS = ("search", "find", "look", "show", "get", "pull", "browse", "google", "research")
 _CREATE_VERBS = ("create", "write", "make", "generate", "compose", "produce", "draft", "put")
 _MOVE_VERBS = ("move", "rename", "relocate")
 _COPY_VERBS = ("copy", "duplicate")
@@ -108,7 +108,12 @@ _DOCUMENT_NAME_TO_EXTENSION = {
 _POSSESSIVE_MARKERS = ("my ", "our ", "this ", "that ", "the ", "in downloads",
                        "from downloads", "on my desktop", "in documents")
 _QUESTION_WORDS = ("what", "who", "when", "where", "why", "how", "explain",
-                   "define", "compare", "summarize", "summarise", "describe")
+                    "define", "compare", "summarize", "summarise", "describe")
+#: Transformation verbs that indicate content should be transformed (summarized, condensed, etc.)
+#: before being placed in a destination. These are distinct from placement verbs.
+_TRANSFORM_VERBS = ("summarize", "summarise", "condense", "extract", "abstract", "digest")
+#: Transformation nouns that indicate the output should be a transformed version
+_TRANSFORM_NOUNS = ("summary", "summarisation", "explanation", "overview", "synopsis", "digest", "abstract")
 _PRONOUNS = {"it", "that", "this", "them", "those", "there", "the same", "one", "something"}
 
 # Site names that can be search platforms. These are NOT topics on their own.
@@ -177,12 +182,9 @@ _SEARCH_WEB_RE = re.compile(
 _YOUTUBE_RE = re.compile(r"\byoutube\b", re.IGNORECASE)
 _VIDEO_RE = re.compile(r"\bvideos?\b", re.IGNORECASE)
 
-# Explicit search verbs that indicate a search/retrieval intent.
-_SEARCH_VERBS = ("search", "find", "look", "show", "get", "pull", "browse", "google")
 # Create/generate verbs that indicate content creation.
 _CREATE_VERBS = ("create", "write", "make", "generate", "compose", "produce", "draft", "put")
 # Open/launch verbs for application control.
-_OPEN_VERBS = ("open", "launch", "start", "run")
 
 # "save it as cars.txt" / "save as cars.txt" / "named cars.txt"
 _SAVE_AS_RE = re.compile(
@@ -704,6 +706,11 @@ class SemanticTaskInterpreter:
             topic = topic_match.group(1).strip(" ,.")
             if topic:
                 entities["topic"] = topic
+        # For search requests without "about", extract the search target as the topic.
+        elif has_search_verb and not entities.get("topic"):
+            search_target = self._extract_search_target(text)
+            if search_target:
+                entities["topic"] = search_target
 
         # Search platform/site: ONLY when there's an explicit search verb.
         # A bare mention of "youtube" or "google" without a search verb is a TOPIC,
@@ -734,6 +741,20 @@ class SemanticTaskInterpreter:
                 # A bare "find/search" with only a pronoun ("find that file") has
                 # no target; leave it unresolved so the reasoning layer asks.
                 site = None
+        # If a site was detected and we have a topic, remove the site name from the topic
+        # (e.g., "search youtube for mrbeast videos" -> topic="mrbeast videos", site="youtube")
+        if site and entities.get("topic"):
+            site_words = set(site.replace(".", " ").split())
+            topic_words = entities["topic"].split()
+            # Remove leading site words from topic
+            while topic_words and topic_words[0].casefold() in site_words:
+                topic_words.pop(0)
+            # Also remove "for" if it's the first word after site removal
+            if topic_words and topic_words[0].casefold() == "for":
+                topic_words.pop(0)
+            entities["topic"] = " ".join(topic_words) if topic_words else ""
+            if not entities["topic"]:
+                entities.pop("topic", None)
         # If no search verb but we have a create verb + "about youtube", youtube is the TOPIC.
         # The topic is already captured by _ABOUT_RE above.
         if site:
@@ -856,7 +877,7 @@ class SemanticTaskInterpreter:
             return True
         lowered = text.casefold()
         match = re.search(
-            r"\b(?:search|find|look up|look for|google|browse|show|get)\b\s+(?:for\s+|me\s+|the\s+|a\s+|an\s+)?([a-z0-9][a-z0-9 '\-]{1,40})",
+            r"\b(?:search|find|look up|look for|google|browse|show|get|research)\b\s+(?:for\s+|me\s+|the\s+|a\s+|an\s+)?([a-z0-9][a-z0-9 '\-]{1,40})",
             lowered,
         )
         if not match:
@@ -869,6 +890,33 @@ class SemanticTaskInterpreter:
         if any(word in {"file", "files", "folder", "document", "documents"} for word in words):
             return False
         return True
+
+    def _extract_search_target(self, text: str) -> str | None:
+        """Extract the search target from a search request.
+        
+        Returns the noun phrase after the search verb, or None if not found.
+        Stops at clause boundaries like "and write", "in notepad", "and summarize", etc.
+        """
+        lowered = text.casefold()
+        # Cut the text at clause boundaries first (placement verbs, destination prepositions, transformation verbs)
+        body = re.split(
+            r"\b(?:and\s+)?(?:write|save|put|store|type|paste|copy|add|summarize|summarise|condense|extract|in|into|to|on)\b",
+            text, maxsplit=1, flags=re.IGNORECASE,
+        )[0]
+        match = re.search(
+            r"\b(?:search|find|look up|look for|google|browse|show|get|research)\b\s+(?:for\s+|me\s+|the\s+|a\s+|an\s+)?([a-z0-9][a-z0-9 '\-]{1,40})",
+            body.casefold(),
+        )
+        if not match:
+            return None
+        candidate = match.group(1).strip()
+        words = [word for word in candidate.split() if word]
+        if not words or words[0] in _PRONOUNS:
+            return None
+        # "that file" / "the document" name a local object, not a web query.
+        if any(word in {"file", "files", "folder", "document", "documents"} for word in words):
+            return None
+        return candidate
     def _personal_document_request(self, text: str) -> bool:
         """Return True when the request refers to one of the user's own files.
 
@@ -953,6 +1001,13 @@ class SemanticTaskInterpreter:
         # happens when there's a search verb). If there's no site, we don't
         # want web search.
         wants_web = site in _WEB_HOSTS
+        # Also treat as web search if there's a search verb + topic + destination
+        # (e.g., "research Python decorators and put in Notepad")
+        has_destination = entities.get("application") or entities.get("filename")
+        if has_search and topic and has_destination:
+            wants_web = True
+            if not site:
+                site = "the web"
         if wants_web:
             query = self._search_query(text, entities)
             # "search the web for X and write it into Notepad" is a hybrid task:
@@ -1114,18 +1169,42 @@ class SemanticTaskInterpreter:
         # plan researches the web (search + read several pages + rank) and the
         # write consumes the best-matching content.
         #
-        # Only an explicit placement verb (write/save/copy/put/...) plus a named
-        # destination produces these steps, so a plain search stays plain.
+        # Also handles search-then-transform tasks ("search X and summarize in Notepad")
+        # where a transformation verb indicates the retrieved content should be
+        # processed before writing.
+        #
+        # Only an explicit placement verb (write/save/copy/put/...) OR a
+        # transformation verb (summarize/condense/...) OR a transformation noun
+        # (explanation/summary/...) plus a named destination produces these steps,
+        # so a plain search stays plain. If there's a transformation but no
+        # destination, we still produce a research+generate pipeline for the
+        # reasoning engine to execute and return as an answer.
         lowered = text.casefold()
         placement_verbs = _CREATE_VERBS + ("copy", "paste", "type", "put", "place", "add", "insert")
         has_placement = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in placement_verbs)
-        if not has_placement:
+        has_transformation_verb = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _TRANSFORM_VERBS)
+        has_transformation_noun = any(re.search(rf"\b{noun}\b", lowered) for noun in _TRANSFORM_NOUNS)
+        has_transformation = has_transformation_verb or has_transformation_noun
+        if not (has_placement or has_transformation):
             return []
         application = entities.get("application")
         filename = entities.get("filename")
-        if not (application or filename):
-            return []
-
+        has_destination = application or filename
+        
+        # Determine the type of transformation for tailored instructions
+        transform_type = "summary"
+        if re.search(r"\bexplanation\b", lowered):
+            transform_type = "explanation"
+        elif re.search(r"\b(overview|synopsis)\b", lowered):
+            transform_type = "overview"
+        elif re.search(r"\bdigest\b", lowered):
+            transform_type = "digest"
+        
+        # Determine the retrieval goal based on whether this is a direct artifact
+        # request or a transformation request.
+        topic = entities.get("topic")
+        content_type = entities.get("content_type")
+        
         # A placement request wants the content itself (the script/transcript
         # article), not a page that merely discusses it, so the retrieval task
         # is marked as an artifact request.
@@ -1137,53 +1216,97 @@ class SemanticTaskInterpreter:
                 "site": site,
                 "max_results": 8,
                 "max_pages": 5,
-                "target": entities.get("topic"),
-                "content_type": entities.get("content_type"),
-                "must_be_artifact": True,
-                "goal": "retrieve_document",
+                "target": topic,
+                "content_type": content_type,
+                "must_be_artifact": has_placement,  # Only true for direct placement (copy script)
+                "goal": "retrieve_document" if has_placement else "find_information",
             },
-            description="Retrieve the requested content and isolate it.",
+            description="Retrieve the requested content and isolate it."
+            + ("" if has_placement else " for transformation."),
             produces="web_content",
             expected_output="the requested content",
         )
-        # Format the retrieved content for the destination
-        format_action = TaskAction(
-            action_id="a2",
-            capability="content.format",
-            parameters={
-                "content": "$web_content",
-                "destination": application or filename,
-                "title": entities.get("topic") or "",
-                "repair": True,
-            },
-            description="Format the retrieved content for the destination.",
-            depends_on=["a1"],
-            produces="formatted_text",
-            expected_output="formatted content ready for destination",
-        )
-        if application:
-            write = TaskAction(
-                action_id="a3",
-                capability="applications.write_text",
-                parameters={"application": application, "text": "$formatted_text"},
-                description=f"Write the formatted content into {application}.",
-                depends_on=["a2"],
-                expected_output="content present in the application",
-                risk_level="medium_risk",
-                requires_confirmation=True,
+        
+        actions = [research]
+        
+        # If transformation is requested, add a content.generate step to transform
+        # the retrieved content before formatting (or as final output if no destination).
+        if has_transformation:
+            transform_instructions = {
+                "summary": f"Summarize the following content about {topic or 'the topic'}. Focus on key points and main ideas.",
+                "explanation": f"Explain the following content about {topic or 'the topic'} clearly and comprehensively.",
+                "overview": f"Provide an overview of the following content about {topic or 'the topic'}.",
+                "digest": f"Create a concise digest of the following content about {topic or 'the topic'}.",
+            }.get(transform_type, f"Summarize the following content about {topic or 'the topic'}.")
+            
+            transform = TaskAction(
+                action_id="a2",
+                capability="content.generate",
+                parameters={
+                    "content_type": transform_type,
+                    "topic": topic or "",
+                    "instructions": transform_instructions,
+                    "input_content": "$web_content",
+                },
+                description=f"Generate {transform_type} of the retrieved content about {topic or 'the topic'}.",
+                depends_on=["a1"],
+                produces="generated_text",
+                expected_output=f"{transform_type} of the retrieved content",
             )
+            actions.append(transform)
+            format_input = "$generated_text"
+            format_depends_on = ["a2"]
         else:
-            write = TaskAction(
-                action_id="a3",
-                capability="filesystem.write",
-                parameters={"path": filename, "text": "$formatted_text"},
-                description=f"Save the formatted content as {filename}.",
-                depends_on=["a2"],
-                expected_output=f"{filename} created",
-                risk_level="medium_risk",
-                requires_confirmation=True,
+            format_input = "$web_content"
+            format_depends_on = ["a1"]
+        
+        # If there's a destination, format and write. Otherwise, the generated
+        # text (or web_content if no transformation) is the final output for the
+        # reasoning engine to return as an answer.
+        if has_destination:
+            # Format the (transformed or raw) content for the destination
+            format_action = TaskAction(
+                action_id="a3" if has_transformation else "a2",
+                capability="content.format",
+                parameters={
+                    "content": format_input,
+                    "destination": application or filename,
+                    "title": topic or "",
+                    "repair": True,
+                },
+                description="Format the content for the destination.",
+                depends_on=format_depends_on,
+                produces="formatted_text",
+                expected_output="formatted content ready for destination",
             )
-        return [research, format_action, write]
+            actions.append(format_action)
+            
+            write_id = "a4" if has_transformation else "a3"
+            write_depends_on = ["a3"] if has_transformation else ["a2"]
+            if application:
+                write = TaskAction(
+                    action_id=write_id,
+                    capability="applications.write_text",
+                    parameters={"application": application, "text": "$formatted_text"},
+                    description=f"Write the formatted content into {application}.",
+                    depends_on=write_depends_on,
+                    expected_output="content present in the application",
+                    risk_level="medium_risk",
+                    requires_confirmation=True,
+                )
+            else:
+                write = TaskAction(
+                    action_id=write_id,
+                    capability="filesystem.write",
+                    parameters={"path": filename, "text": "$formatted_text"},
+                    description=f"Save the formatted content as {filename}.",
+                    depends_on=write_depends_on,
+                    expected_output=f"{filename} created",
+                    risk_level="medium_risk",
+                    requires_confirmation=True,
+                )
+            actions.append(write)
+        return actions
 
     def _create_file_action(self, entities: dict[str, Any]) -> Optional[TaskAction]:
         # Build a filesystem.write action for a create-a-file request. No content

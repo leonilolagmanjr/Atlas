@@ -117,12 +117,12 @@ class HybridRegressionTests(unittest.TestCase):
         capabilities = [a.capability for a in task.actions]
         # The plan researches the web (search + read pages + isolate the relevant
         # content) and writes that content, not the list of links.
-        self.assertEqual(capabilities, ["web.research", "applications.write_text"])
+        self.assertEqual(capabilities, ["web.research", "content.format", "applications.write_text"])
         research = task.actions[0]
         self.assertEqual(research.produces, "web_content")
         self.assertNotIn("write", research.parameters["query"])
         write = task.actions[-1]
-        self.assertEqual(write.parameters["text"], "$web_content")
+        self.assertEqual(write.parameters["text"], "$formatted_text")
         self.assertTrue(plan.requires_action)
 
     def test_plain_search_is_not_a_write(self):
@@ -136,7 +136,7 @@ class HybridRegressionTests(unittest.TestCase):
             "search the web for the bee movie script and copy it in notepad"
         )
         capabilities = [a.capability for a in task.actions]
-        self.assertEqual(capabilities, ["web.research", "applications.write_text"])
+        self.assertEqual(capabilities, ["web.research", "content.format", "applications.write_text"])
         self.assertNotIn("filesystem.copy", capabilities)
         for action in task.actions:
             for value in action.parameters.values():
@@ -150,7 +150,7 @@ class HybridRegressionTests(unittest.TestCase):
         )
         self.assertEqual(
             [a.capability for a in task.actions],
-            ["web.research", "applications.write_text"],
+            ["web.research", "content.format", "applications.write_text"],
         )
         self.assertEqual(task.entities["application"].casefold(), "notepad")
         research = task.actions[0].parameters
@@ -246,7 +246,7 @@ class NegativeRoutingTests(unittest.TestCase):
     def test_poem_about_cars_is_not_a_video_search(self):
         task, signals, plan = _route("Create a poem in Notepad about cars.")
         capabilities = [a.capability for a in task.actions]
-        self.assertEqual(capabilities, ["content.generate", "applications.write_text"])
+        self.assertEqual(capabilities, ["content.generate", "content.format", "applications.write_text"])
         self.assertNotIn("web.search", capabilities)
         self.assertIn("computer", [s.value for s in plan.sources])
         self.assertEqual(task.entities.get("topic"), "cars")
