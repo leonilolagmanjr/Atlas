@@ -81,10 +81,17 @@ class EvidenceManager:
             title = str(item.get("title") or "").strip()
             url = str(item.get("url") or "").strip()
             snippet = str(item.get("snippet") or "").strip()
+            thumbnail_url = str(item.get("thumbnail_url") or "").strip()
             # A result is usable evidence when it carries any of a title,
             # snippet, or URL; a bare link is still a real web source.
             if not (title or snippet or url):
                 continue
+            metadata = {
+                "untrusted": True,
+                "provider": output.get("provider") or item.get("source") or "web",
+            }
+            if thumbnail_url:
+                metadata["thumbnail_url"] = thumbnail_url
             self.add(
                 EvidenceItem(
                     source_type=SourceType.WEB,
@@ -92,21 +99,25 @@ class EvidenceManager:
                     content=f"{title}\n{url}\n{snippet}".strip(),
                     relevance=0.5 if title else 0.3,
                     confidence=0.6,
-                    metadata={
-                        "untrusted": True,
-                        "provider": output.get("provider") or item.get("source") or "web",
-                    },
+                    metadata=metadata,
                 )
             )
             count += 1
         return count
 
-    def add_web_page(self, output: Mapping[str, Any]) -> int:
+    def add_web_page(self, output: Mapping[str, Any], thumbnail_url: str = "") -> int:
         """Record a fetched page body as untrusted evidence."""
 
         text = str(output.get("text") or "").strip()
         if not text:
             return 0
+        metadata = {
+            "untrusted": True,
+            "title": output.get("title"),
+            "truncated": bool(output.get("truncated")),
+        }
+        if thumbnail_url:
+            metadata["thumbnail_url"] = thumbnail_url
         self.add(
             EvidenceItem(
                 source_type=SourceType.WEB,
@@ -114,11 +125,7 @@ class EvidenceManager:
                 content=text,
                 relevance=0.7,
                 confidence=0.65,
-                metadata={
-                    "untrusted": True,
-                    "title": output.get("title"),
-                    "truncated": bool(output.get("truncated")),
-                },
+                metadata=metadata,
             )
         )
         return 1

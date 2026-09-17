@@ -118,6 +118,19 @@ class ReasoningEngine:
     def _handle(self, question: str, task: Task, prior_task: Task | None,
                 history: str, run: _Run) -> Answer | None:
         evidence = EvidenceManager()
+        # Use task's evidence_state if available, otherwise create one
+        evidence_state = getattr(task, 'evidence_state', None)
+        if evidence_state is None:
+            from models_task import EvidenceState
+            evidence_state = EvidenceState(
+                target=task.entities.get("topic") or "",
+                goal="find_information",
+                required_content_type=task.entities.get("content_type", "generic"),
+                must_be_artifact=False,
+            )
+        # Store on task for answer generator
+        task.evidence_state = evidence_state
+        
         signals = self._router.route(question, task=task, prior_task=prior_task,
                                      history=history, self_introspection=self._introspection)
         plan = self._selector.select(signals, task_type=task.task_type)
@@ -154,7 +167,7 @@ class ReasoningEngine:
                 continue
             run.trace.record(ReasoningStage.RETRIEVING, "consulting " + source.value)
             gained = self._gather(source, question=question, task=task, history=history,
-                                  evidence=evidence, signals=signals)
+                                  evidence=evidence, signals=signals, evidence_state=evidence_state)
             run.trace.record(ReasoningStage.EVALUATING,
                              "evidence collected" if gained else "source supplied no usable evidence",
                              source=source.value, count=gained)
@@ -244,7 +257,7 @@ class ReasoningEngine:
         return any(action.capability not in _RESEARCH_ONLY_ACTIONS for action in task.actions)
 
     def _gather(self, source: SourceType, *, question: str, task: Task, history: str,
-                evidence: EvidenceManager, signals: RoutingSignals) -> int:
+                evidence: EvidenceManager, signals: RoutingSignals, evidence_state: EvidenceState) -> int:
         try:
             if source is SourceType.KNOWLEDGE:
                 result = self._retrieve(question)
@@ -273,9 +286,9 @@ class ReasoningEngine:
                             needs_iterative = True
                             break
                 if needs_iterative:
-                    return self._iterative_web_retrieval(question, task, evidence, signals)
+                    return self._iterative_web_retrieval(question, task, evidence, signals, evidence_state)
                 else:
-                    return self._gather_web(question, evidence, task=task)
+                    return self._gather_web(question, evidence, task=task, evidence_state=evidence_state)
             if source is SourceType.FILES:
                 return self._gather_files(task, signals, evidence)
             if source is SourceType.SYSTEM:
@@ -287,7 +300,7 @@ class ReasoningEngine:
             logger.exception("Reasoning source %s failed", source.value)
         return 0
 
-    def _gather_web(self, question: str, evidence: EvidenceManager, *, task: Task | None = None) -> int:
+    def _gather_web(self, question: str, evidence: EvidenceManager, *, task: Task | None = None, evidence_state: EvidenceState | None = None) -> int:
         # Honour the interpreter's planned web.search parameters (site, cleaned
         # query, sort) when present: they carry more information than the raw
         # request text the engine would otherwise search for.
@@ -306,9 +319,37 @@ class ReasoningEngine:
         for item in search.get("results", [])[:self._web_max_pages]:
             if not isinstance(item, Mapping) or not item.get("url"):
                 continue
+            thumbnail_url = str(item.get("thumbnail_url") or "").strip()
             page = self._execute("web.fetch", {"url": str(item["url"])})
             if page is not None:
-                gained += evidence.add_web_page(page)
+                gained += evidence.add_web_page(page, thumbnail_url=thumbnail_url)
+                # Also add to evidence_state for synthesized answer
+                if evidence_state is not None:
+                    source_type = detect_source_type(page.get("url", ""), page.get("title", ""), page.get("text", ""))
+                    search_title = str(item.get("title") or "").strip()
+                    search_snippet = str(item.get("snippet") or "").strip()
+                    fetched_title = str(page.get("title") or "").strip()
+                    fetched_text = str(page.get("text") or "").strip()
+                    title = search_title if len(search_title) > len(fetched_title) else fetched_title
+                    content = fetched_text
+                    if search_snippet and search_snippet not in content:
+                        content = f"{search_snippet}\n\n{content}"
+                    
+                    from models_task import EvidenceSource
+                    source = EvidenceSource(
+                        source_id=f"src_{len(evidence_state.sources)}",
+                        url=page.get("url", ""),
+                        title=title,
+                        source_type=self._classify_source_type(source_type),
+                        content_type=source_type,
+                        content=content,
+                        relevance_score=0.0,
+                        quality_score=self._calculate_quality_score(source_type, page.get("url", "")),
+                        completeness=self._calculate_completeness(content),
+                        is_artifact=self._is_artifact_source(source_type, evidence_state),
+                    )
+                    source.relevance_score = self._calculate_relevance(source, evidence_state)
+                    evidence_state.add_source(source)
         return gained
 
     def _gather_files(self, task: Task, signals: RoutingSignals, evidence: EvidenceManager) -> int:
@@ -490,24 +531,39 @@ class ReasoningEngine:
         for item in results:
             if not isinstance(item, Mapping) or not item.get("url"):
                 continue
+            thumbnail_url = str(item.get("thumbnail_url") or "").strip()
             page = self._execute("web.fetch", {"url": str(item["url"])})
             if page is None:
                 continue
             
-            # Classify the source
+            # Classify the source using fetched page
             source_type = detect_source_type(page.get("url", ""), page.get("title", ""), page.get("text", ""))
+            
+            # Use search result title/snippet for better relevance (they have actual content)
+            # but fall back to fetched page if search result is sparse
+            search_title = str(item.get("title") or "").strip()
+            search_snippet = str(item.get("snippet") or "").strip()
+            fetched_title = str(page.get("title") or "").strip()
+            fetched_text = str(page.get("text") or "").strip()
+            
+            # Use search result title if meaningful, else fetched title
+            title = search_title if len(search_title) > len(fetched_title) else fetched_title
+            # Combine search snippet and fetched text for content
+            content = fetched_text
+            if search_snippet and search_snippet not in content:
+                content = f"{search_snippet}\n\n{content}"
             
             # Create EvidenceSource with classification
             source = EvidenceSource(
                 source_id=f"src_{len(evidence_state.sources)}",
                 url=page.get("url", ""),
-                title=page.get("title", ""),
+                title=title,
                 source_type=self._classify_source_type(source_type),
                 content_type=source_type,
-                content=page.get("text", ""),
+                content=content,
                 relevance_score=0.0,  # Will be calculated
                 quality_score=self._calculate_quality_score(source_type, page.get("url", "")),
-                completeness=self._calculate_completeness(page.get("text", "")),
+                completeness=self._calculate_completeness(content),
                 is_artifact=self._is_artifact_source(source_type, evidence_state),
             )
             
@@ -518,7 +574,7 @@ class ReasoningEngine:
             evidence_state.add_source(source)
             
             # Also add to evidence manager for answer generation
-            evidence.add_web_page(page)
+            evidence.add_web_page(page, thumbnail_url=thumbnail_url)
             gained += 1
             
             # Task-aware validation
@@ -606,8 +662,12 @@ class ReasoningEngine:
         if not target:
             return 0.5
         
+        # Filter out generic stopwords that don't indicate specific relevance
+        stopwords = {"videos", "video", "search", "find", "look", "show", "get", "results", "result", 
+                     "youtube", "google", "web", "internet", "online", "the", "for", "and", "or", "with"}
+        
         # Check title, URL, and content for target terms
-        target_terms = [t for t in target.split() if len(t) >= 3]
+        target_terms = [t for t in target.split() if len(t) >= 3 and t not in stopwords]
         if not target_terms:
             return 0.5
         
