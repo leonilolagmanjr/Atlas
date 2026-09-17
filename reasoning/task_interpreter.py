@@ -43,6 +43,9 @@ _DELETE_VERBS = ("delete", "remove", "erase")
 _WEB_HOSTS = ("youtube", "google", "the web", "the internet", "online")
 _SEARCH_PLATFORMS = frozenset({"youtube", "google", "the web", "the internet"})
 
+# Video-related terms that imply YouTube search when no explicit site is mentioned
+_VIDEO_SEARCH_TERMS = ("video", "videos", "latest video", "newest video", "video url", "video link")
+
 # Known application names to avoid misclassifying as topics.
 _KNOWN_APPLICATIONS = frozenset({
     "notepad", "wordpad", "calculator", "calc", "paint", "mspaint",
@@ -701,11 +704,13 @@ class SemanticTaskInterpreter:
             entities["content_type"] = content_type
 
         # Topic: "about X" is the strongest signal for content creation.
-        topic_match = _ABOUT_RE.search(text)
-        if topic_match:
-            topic = topic_match.group(1).strip(" ,.")
-            if topic:
-                entities["topic"] = topic
+        # Only apply this for create requests, not search requests.
+        if has_create_verb and not has_search_verb:
+            topic_match = _ABOUT_RE.search(text)
+            if topic_match:
+                topic = topic_match.group(1).strip(" ,.")
+                if topic:
+                    entities["topic"] = topic
         # For search requests without "about", extract the search target as the topic.
         elif has_search_verb and not entities.get("topic"):
             search_target = self._extract_search_target(text)
@@ -736,7 +741,13 @@ class SemanticTaskInterpreter:
             elif self._has_search_target(text, entities):
                 # Search verb present, no explicit site, but a concrete thing to
                 # look for -> default to the web.
-                site = "the web"
+                # But if the query mentions video-related terms, default to YouTube
+                # Check original text for video terms since topic/query may have them stripped
+                lowered_text = text.casefold()
+                if any(term in lowered_text for term in _VIDEO_SEARCH_TERMS):
+                    site = "youtube"
+                else:
+                    site = "the web"
             else:
                 # A bare "find/search" with only a pronoun ("find that file") has
                 # no target; leave it unresolved so the reasoning layer asks.

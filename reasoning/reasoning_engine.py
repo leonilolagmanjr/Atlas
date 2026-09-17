@@ -330,10 +330,28 @@ class ReasoningEngine:
                     search_snippet = str(item.get("snippet") or "").strip()
                     fetched_title = str(page.get("title") or "").strip()
                     fetched_text = str(page.get("text") or "").strip()
-                    title = search_title if len(search_title) > len(fetched_title) else fetched_title
-                    content = fetched_text
-                    if search_snippet and search_snippet not in content:
-                        content = f"{search_snippet}\n\n{content}"
+                    
+                    # For video content, the search result has the actual video info
+                    # The fetched page is just YouTube boilerplate. Use search data.
+                    is_video_source = source_type == "video"
+                    
+                    if is_video_source:
+                        # Use search result title (cleaner) and snippet (has view counts, etc.)
+                        title = search_title or fetched_title
+                        # Build content from search snippet + any meaningful fetched content
+                        content_parts = []
+                        if search_snippet:
+                            content_parts.append(search_snippet)
+                        # Only add fetched text if it's not just boilerplate
+                        if fetched_text and len(fetched_text) > 200 and "About Press Copyright" not in fetched_text[:200]:
+                            content_parts.append(fetched_text)
+                        content = "\n\n".join(content_parts) if content_parts else search_snippet
+                    else:
+                        # Non-video: use fetched content with search snippet as prefix
+                        title = search_title if len(search_title) > len(fetched_title) else fetched_title
+                        content = fetched_text
+                        if search_snippet and search_snippet not in content:
+                            content = f"{search_snippet}\n\n{content}"
                     
                     from models_task import EvidenceSource
                     source = EvidenceSource(
@@ -628,6 +646,8 @@ class ReasoningEngine:
             return 0.85
         if detected_type in {"article", "news", "review"}:
             return 0.7
+        if detected_type in {"video"}:
+            return 0.7
         if detected_type in {"forum", "discussion"}:
             return 0.5
         if detected_type in {"product", "retail", "document_host", "listing"}:
@@ -664,7 +684,8 @@ class ReasoningEngine:
         
         # Filter out generic stopwords that don't indicate specific relevance
         stopwords = {"videos", "video", "search", "find", "look", "show", "get", "results", "result", 
-                     "youtube", "google", "web", "internet", "online", "the", "for", "and", "or", "with"}
+                     "youtube", "google", "web", "internet", "online", "the", "for", "and", "or", "with",
+                     "about"}
         
         # Check title, URL, and content for target terms
         target_terms = [t for t in target.split() if len(t) >= 3 and t not in stopwords]

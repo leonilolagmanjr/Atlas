@@ -160,7 +160,7 @@ class EvidenceState:
 
     def add_source(self, source: EvidenceSource) -> None:
         self.sources.append(source)
-        if source.relevance_score >= 0.5 and source.quality_score >= 0.4:
+        if source.relevance_score >= 0.3 and source.quality_score >= 0.4:
             self.relevant_sources.append(source)
         else:
             self.irrelevant_sources.append(source)
