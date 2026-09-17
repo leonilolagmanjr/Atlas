@@ -111,14 +111,17 @@ class DeterministicPipelineTests(unittest.TestCase):
         self.assertEqual(len(writer.calls), 1)
         self.assertEqual(brain.last_context.status, TaskStatus.COMPLETED)
 
-    def test_informational_request_is_unverified_reachable_as_knowledge(self):
-        brain = build_brain(lambda **_: "{}", [])
-        # A knowledge question must not be planned as a tool action.
-        brain.process("What is quantum computing?")
+    def test_informational_request_is_answered_by_reasoning_engine(self):
+        brain = build_brain(lambda **_: "Quantum computing uses qubits.", [])
+        # A knowledge question is answered by the reasoning layer, never as a
+        # tool action, and never with "not in knowledge base".
+        out = brain.process("What is quantum computing?")
         ctx = brain.last_context
         self.assertEqual(ctx.metadata["task"]["task_type"], "informational")
-        tools = [s.metadata.get("tool") for s in ctx.execution_plan.steps if s.metadata.get("tool")]
-        self.assertEqual(tools, [])
+        self.assertEqual(ctx.status, TaskStatus.COMPLETED)
+        self.assertIsNone(ctx.execution_plan)
+        self.assertIn("qubits", out)
+        self.assertNotIn("knowledge base", out)
 
     def test_ambiguous_request_asks_without_executing(self):
         writer = RecordingTool("applications.write_text", {"pid": 1})
@@ -200,22 +203,32 @@ class LLMInterpretedPipelineTests(unittest.TestCase):
 
 
 class VerificationIntegrationTests(unittest.TestCase):
-    def test_verification_results_are_recorded(self):
+    def test_read_only_web_search_is_served_by_the_reasoning_engine(self):
+        # A pure web-search request is answered by the reasoning engine: it runs
+        # the planned web.search once and returns an attributed answer, rather
+        # than an unprocessed result dump from the executor.
         search = RecordingTool("web.search", {"query": "cars", "results": [{"url": "u"}]})
-        brain = build_brain(lambda **_: "{}", [search])
-        brain.process("Search the web for cars.")
+        brain = build_brain(lambda **_: "A grounded web answer.", [search])
+        out = brain.process("Search the web for cars.")
 
-        results = brain.last_context.verification_results
-        self.assertTrue(results)
-        self.assertTrue(results[-1]["verified"])
-        self.assertEqual(results[-1]["capability"], "web.search")
+        ctx = brain.last_context
+        self.assertEqual(len(search.calls), 1)
+        self.assertEqual(search.calls[0]["query"], "cars")
+        self.assertEqual(ctx.selected_tool, "web.search")
+        self.assertIn("web", ctx.metadata["reasoning_answer"]["provenance"])
+        self.assertTrue(out.strip())
 
-    def test_empty_search_is_recorded_as_unverified(self):
+    def test_empty_search_still_produces_an_honest_answer(self):
         search = RecordingTool("web.search", {"query": "cars", "results": []})
-        brain = build_brain(lambda **_: "{}", [search])
+        brain = build_brain(lambda **_: "A grounded web answer.", [search])
         brain.process("Search the web for cars.")
 
-        self.assertFalse(brain.last_context.verification_results[-1]["verified"])
+        ctx = brain.last_context
+        self.assertEqual(len(search.calls), 1)
+        # No usable results: the engine must not claim a grounded web answer.
+        self.assertNotEqual(
+            ctx.metadata["reasoning_answer"]["mode"], "web_research"
+        )
 
     def test_verifier_never_claims_unverifiable_success(self):
         outcome = TaskVerifier().verify("mystery.capability", {"ok": True}, True)

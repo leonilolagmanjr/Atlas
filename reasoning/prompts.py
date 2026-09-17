@@ -197,12 +197,30 @@ Rules:
   clarification_question. Represent the ambiguity; never invent facts.
 - Generic informational questions (explain, define, compare, summarize) need no
   actions: set task_type="informational" and execution_required=false.
+- Questions asking what an application is or how the user can use it are
+  informational, never permission to launch it. "What is Notepad?" and
+  "How do I open Notepad?" must have actions=[] and execution_required=false.
+- Interpret the information sources semantically: general knowledge uses model;
+  local indexed documents use knowledge; named user files use files; previous
+  conversation uses conversation/memory; Atlas capabilities use self; public
+  research uses web; local machine state uses system; mutations use computer.
+- sources names only information domains, never tools, commands, or paths.
+- request_type is question, self_query, memory_query, action, hybrid, or
+  clarification. A hybrid combines information/generation with an action.
+- Set current_information_required=true only for facts needing up-to-date
+  verification, not creative content or incidental words in its topic.
+- A poem in Notepad about cars uses model and computer, not web. Do not research
+  creative topics unless the user requests factual research.
+- Emit actual JSON booleans, never strings such as "false".
 - confidence is your own 0..1 certainty.
 
 JSON schema:
 {
   "task_type": "computer_action | informational | search | content_creation | conversation | multi_step | unknown",
   "goal": "short_snake_case_goal",
+  "request_type": "question | self_query | memory_query | action | hybrid | clarification",
+  "sources": ["self | conversation | memory | knowledge | model | files | web | computer | system"],
+  "current_information_required": false,
   "actions": [
     {
       "action_id": "a1",

@@ -387,12 +387,35 @@ function TaskPanel({ task, phase, resolving, onApprove, onDeny }: { task: TaskRe
       {running ? <div className="task-progress"><Loader2 size={15} className="spin" /> <span>{phase ?? "Atlas is working through the plan step by step..."}</span></div> : null}
       {waiting ? <div className="approval-box"><div><LockKeyhole size={18} /><div><strong>Atlas is ready to act</strong><span>This action changes your computer. Review the plan and approve it to continue.</span></div></div><div className="approval-actions"><button className="button-muted" onClick={onDeny} disabled={resolving}><X size={15} /> Deny</button><button className="button-primary" onClick={onApprove} disabled={resolving}>{resolving ? <><Loader2 size={15} className="spin" /> Working...</> : <><Check size={15} /> Approve action</>}</button></div></div> : null}
       {task.plan ? <div className="plan-list"><div className="plan-label">Execution plan</div>{task.plan.steps.map((step) => <div className="plan-step-group" key={step.id}><div className="plan-step"><span className={`step-icon ${step.status.toLowerCase()}`}><StepIcon status={step.status} /></span><span>{step.name}</span><small>{step.status.replaceAll("_", " ").toLowerCase()}</small></div>{typeof step.metadata.capability === "string" ? <div className="plan-detail"><strong>{step.metadata.capability}</strong>{Array.isArray(step.metadata.candidates) ? <span> Candidates: {step.metadata.candidates.join(", ")}</span> : null}{typeof step.metadata.command === "string" ? <code>{step.metadata.command}</code> : null}</div> : null}</div>)}</div> : null}
+      <ReasoningPanel task={task} />
       {task.response ? <div className="result-box"><span>Atlas result</span><p>{task.response}</p></div> : null}
       {task.tool_calls.length ? <div className="tool-results"><div className="plan-label">Tool output</div>{task.tool_calls.map((call, index) => <details key={`${call.tool ?? "tool"}-${index}`}><summary>{call.tool ?? "Tool"} <span>{call.status ?? "unknown"}</span></summary><pre>{formatToolOutput(call.output, call.status)}</pre></details>)}</div> : null}
       <WebResults calls={task.tool_calls} />
       {task.web_sources.length ? <div className="source-list"><div className="plan-label">Sources</div>{task.web_sources.map((source) => <a key={source} href={source} target="_blank" rel="noreferrer">{source}</a>)}</div> : null}
       {task.errors.length ? <div className="failure-box"><CircleAlert size={15} /> {task.errors.join(" ")}</div> : null}
     </section>
+  );
+}
+
+function ReasoningPanel({ task }: { task: TaskRecord }) {
+  const steps = task.reasoning ?? [];
+  const provenance = task.provenance ?? [];
+  const citations = task.citations ?? [];
+  if (!steps.length && !task.response_mode && !provenance.length && !citations.length && !task.evidence) return null;
+  return (
+    <div className="plan-list" aria-label="Reasoning activity">
+      <div className="plan-label">Reasoning activity</div>
+      {steps.map((step, index) => (
+        <div className="plan-step-group" key={`${step.stage}-${index}`}>
+          <div className="plan-step"><span className="step-icon"><BrainCircuit size={13} /></span><span>{step.stage.replaceAll("_", " ").toLowerCase()}</span><small>{step.iteration > 0 ? `Pass ${step.iteration}` : ""}</small></div>
+          {step.detail ? <div className="plan-detail">{step.detail}</div> : null}
+        </div>
+      ))}
+      {task.response_mode ? <div className="plan-detail"><strong>Response mode</strong> {task.response_mode.replaceAll("_", " ")}</div> : null}
+      {provenance.length ? <div className="plan-detail"><strong>Answer sources</strong> {provenance.join(", ")}</div> : null}
+      {task.evidence ? <div className="plan-detail"><strong>Evidence</strong> {task.evidence.count} item{task.evidence.count === 1 ? "" : "s"}{task.evidence.sources.length ? ` from ${task.evidence.sources.join(", ")}` : ""}</div> : null}
+      {citations.length ? <div className="source-list"><div className="plan-label">Citations</div>{citations.map((citation) => <div key={citation}>{/^https?:\/\//i.test(citation) ? <a href={citation} target="_blank" rel="noreferrer">{citation}</a> : <span>{citation}</span>}</div>)}</div> : null}
+    </div>
   );
 }
 

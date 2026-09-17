@@ -31,6 +31,7 @@ PLANNABLE_CAPABILITIES: frozenset[str] = frozenset(
         "filesystem.read",
         "filesystem.metadata",
         "filesystem.search",
+        "filesystem.search_content",
         "filesystem.write",
         "filesystem.create_folder",
         "filesystem.move",
@@ -38,6 +39,8 @@ PLANNABLE_CAPABILITIES: frozenset[str] = frozenset(
         # Internet
         "web.search",
         "web.fetch",
+        # Local system inspection (read-only observation for reasoning)
+        "system.info",
     }
 )
 
@@ -111,15 +114,19 @@ class CapabilityRegistry:
                 if not isinstance(metadata, ToolMetadata):
                     continue
                 capabilities[metadata.name] = capability_from_metadata(metadata)
-        for name in PLANNABLE_CAPABILITIES:
-            capabilities.setdefault(name, _fallback_capability(name))
+        else:
+            for name in PLANNABLE_CAPABILITIES:
+                capabilities[name] = _fallback_capability(name)
         self._capabilities = capabilities
     def get(self, name: str) -> Capability | None:
+        self._reload()
         return self._capabilities.get(str(name).strip())
 
     def exists(self, name: str) -> bool:
+        self._reload()
         return str(name).strip() in self._capabilities
     def plannable(self) -> list[Capability]:
+        self._reload()
         return [
             capability
             for name, capability in sorted(self._capabilities.items())
@@ -294,7 +301,7 @@ _FALLBACK_CAPABILITIES: dict[str, Capability] = {
     ),
     "filesystem.read": Capability(
         name="filesystem.read",
-        description="Read a UTF-8 text file under the allowed root.",
+        description="Read bounded UTF-8 text or PDF page text under the allowed root.",
         category="computer.filesystem",
         parameters={"path": {"type": "string"}, "max_bytes": {"type": "integer"}},
         required_parameters=("path",),
@@ -352,6 +359,36 @@ _FALLBACK_CAPABILITIES: dict[str, Capability] = {
         required_parameters=("source", "destination"),
         risk_level="medium_risk",
         requires_confirmation=True,
+        verifiable=True,
+    ),
+    "filesystem.search_content": Capability(
+        name="filesystem.search_content",
+        description=(
+            "Search the text contents of files below an allowed folder, returning "
+            "matching file paths with a short excerpt."
+        ),
+        category="computer.filesystem",
+        parameters={
+            "query": {"type": "string", "description": "text to look for"},
+            "path": {"type": "string", "description": "optional subfolder to search"},
+            "pattern": {"type": "string", "description": "optional filename glob"},
+            "max_results": {"type": "integer"},
+            "max_files": {"type": "integer"},
+            "max_bytes": {"type": "integer"},
+        },
+        required_parameters=("query",),
+        risk_level="read_only",
+        requires_confirmation=False,
+        verifiable=True,
+    ),
+    "system.info": Capability(
+        name="system.info",
+        description="Inspect read-only operating-system, CPU, memory, and disk state.",
+        category="computer.system",
+        parameters={"path": {"type": "string"}},
+        required_parameters=(),
+        risk_level="read_only",
+        requires_confirmation=False,
         verifiable=True,
     ),
 }

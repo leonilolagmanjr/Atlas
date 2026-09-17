@@ -42,6 +42,14 @@ TASK_TYPES: frozenset[str] = frozenset(
 
 #: Canonical risk levels mirroring tools.base.RiskLevel values.
 RISK_LEVELS: tuple[str, ...] = ("read_only", "low_risk", "medium_risk", "high_risk", "critical")
+REQUEST_TYPES = frozenset({"unknown", "question", "self_query", "memory_query", "action", "hybrid", "clarification"})
+SOURCE_TYPES = frozenset({"self", "conversation", "memory", "knowledge", "model", "files", "web", "computer", "system"})
+RESPONSE_MODES = frozenset({"unknown", "direct_answer", "grounded_answer", "web_research", "file_lookup", "system_diagnosis", "self_description", "memory_recall", "action_report", "limitation", "clarification"})
+REASONING_FLAGS = (
+    "requires_web", "requires_files", "requires_memory", "requires_knowledge",
+    "requires_computer", "requires_system", "requires_self_introspection",
+    "requires_model_knowledge", "current_information_required", "requires_verification",
+)
 
 #: A parameter reference such as ``$generated_text`` that consumes the output of
 #: an earlier action instead of a literal value.
@@ -124,6 +132,50 @@ class Task:
     source: str = "deterministic"
     task_id: str = field(default_factory=lambda: str(uuid4()))
 
+    # -- reasoning decision (written back onto the IR by the reasoning engine) ----
+    #: question | self_query | memory_query | action | hybrid | clarification
+    request_type: str = "unknown"
+    #: Ordered source names the reasoning engine selected (self, knowledge, web...).
+    sources: list[str] = field(default_factory=list)
+    #: How the response should be produced (direct_answer, web_research, ...).
+    response_mode: str = "unknown"
+    #: Human-readable explanation of the routing decision (inspectable).
+    reason: str = ""
+    requires_web: bool = False
+    requires_files: bool = False
+    requires_memory: bool = False
+    requires_knowledge: bool = False
+    requires_computer: bool = False
+    requires_system: bool = False
+    requires_self_introspection: bool = False
+    requires_model_knowledge: bool = False
+    #: True when the answer depends on information that changes over time.
+    current_information_required: bool = False
+    #: True when the executed result should be verified where practical.
+    requires_verification: bool = True
+
+    def apply_decision(self, decision: Any) -> "Task":
+        """Write a reasoning decision's fields back onto this task.
+
+        The reasoning decision extends the IR instead of competing with it, so
+        the planner and executor consume a single object. Attribute access is
+        used deliberately: ``models_task`` stays independent of the reasoning
+        package (no import cycle).
+        """
+
+        def value(name: str, default: Any) -> Any:
+            found = getattr(decision, name, default)
+            return found.value if hasattr(found, "value") else found
+
+        self.request_type = _enum(value("request_type", self.request_type), REQUEST_TYPES, self.request_type)
+        self.response_mode = _enum(value("response_mode", self.response_mode), RESPONSE_MODES, self.response_mode)
+        self.reason = _text(value("reason", self.reason)) or ""
+        self.sources = _sources(value("sources", self.sources))
+        for name in REASONING_FLAGS:
+            setattr(self, name, _boolean(value(name, getattr(self, name)), getattr(self, name)))
+        self.goal = str(value("goal", self.goal) or self.goal)
+        return self
+
     def with_actions(self, actions: list[TaskAction]) -> "Task":
         self.actions = actions
         return self
@@ -145,6 +197,20 @@ class Task:
             "needs_clarification": self.needs_clarification,
             "clarification_question": self.clarification_question,
             "source": self.source,
+            "request_type": self.request_type,
+            "sources": list(self.sources),
+            "response_mode": self.response_mode,
+            "reason": self.reason,
+            "requires_web": self.requires_web,
+            "requires_files": self.requires_files,
+            "requires_memory": self.requires_memory,
+            "requires_knowledge": self.requires_knowledge,
+            "requires_computer": self.requires_computer,
+            "requires_system": self.requires_system,
+            "requires_self_introspection": self.requires_self_introspection,
+            "requires_model_knowledge": self.requires_model_knowledge,
+            "current_information_required": self.current_information_required,
+            "requires_verification": self.requires_verification,
         }
 
     def references(self) -> set[str]:
@@ -186,11 +252,16 @@ class Task:
             context=_dict(data.get("context")),
             dependencies=_string_list(data.get("dependencies")),
             confidence=_confidence(data.get("confidence")),
-            requires_confirmation=bool(data.get("requires_confirmation")),
-            execution_required=bool(data.get("execution_required", True)),
-            needs_clarification=bool(data.get("needs_clarification")),
+            requires_confirmation=_boolean(data.get("requires_confirmation")),
+            execution_required=_boolean(data.get("execution_required"), True),
+            needs_clarification=_boolean(data.get("needs_clarification")),
             clarification_question=_text(data.get("clarification_question")),
             source=source,
+            request_type=_enum(data.get("request_type"), REQUEST_TYPES, "unknown"),
+            sources=_sources(data.get("sources")),
+            response_mode=_enum(data.get("response_mode"), RESPONSE_MODES, "unknown"),
+            reason=_text(data.get("reason")) or "",
+            **{name: _boolean(data.get(name), name == "requires_verification") for name in REASONING_FLAGS},
         )
 
 
@@ -214,7 +285,7 @@ def _action_from_mapping(raw: Any, *, index: int) -> TaskAction | None:
         produces=_text(raw.get("produces")),
         expected_output=_text(raw.get("expected_output")),
         risk_level=_enum(raw.get("risk_level"), set(RISK_LEVELS), RiskLevel.READ_ONLY.value),
-        requires_confirmation=bool(raw.get("requires_confirmation")),
+        requires_confirmation=_boolean(raw.get("requires_confirmation")),
     )
 
 
@@ -260,7 +331,18 @@ def _text(value: Any) -> str | None:
     return None
 
 
-def _enum(value: Any, allowed: set[str], default: str) -> str:
+def _boolean(value: Any, default: bool = False) -> bool:
+    return value if isinstance(value, bool) else default
+
+
+def _sources(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    sources = [_enum(item.value if isinstance(item, Enum) else item, SOURCE_TYPES, "") for item in value]
+    return list(dict.fromkeys(source for source in sources if source))
+
+
+def _enum(value: Any, allowed: set[str] | frozenset[str], default: str) -> str:
     text = _text(value)
     if text is None:
         return default

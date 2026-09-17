@@ -90,6 +90,28 @@ DEBUG_PIPELINE: bool = False
 # Keys redacted from diagnostic traces before they are logged.
 REDACT_KEYS: tuple[str, ...] = ("password", "token", "api_key", "secret")
 
+# ---- Reasoning engine ----
+# Master switch for the reasoning layer. When False, Atlas keeps the legacy
+# direct plan/execute path (knowledge-base only) for informational requests.
+ENABLE_REASONING_ENGINE: bool = True
+# Maximum reasoning iterations per request (one iteration per selected source).
+# Bounded so a request can never loop forever.
+MAX_REASONING_ITERATIONS: int = 3
+# Maximum read-only tool calls the reasoning loop may make per request.
+MAX_REASONING_TOOL_CALLS: int = 8
+# Maximum ordered sources selected for a single request.
+MAX_REASONING_SOURCES: int = 3
+# When the local knowledge base has no accepted evidence for an ordinary
+# question, Atlas answers from the model and/or the web instead of failing.
+ENABLE_GENERAL_QUESTION_FALLBACK: bool = True
+# Web research: how many result pages the reasoning layer reads per request.
+WEB_RESEARCH_MAX_PAGES: int = 2
+# Web research: how many search results to request per query.
+WEB_RESEARCH_MAX_RESULTS: int = 6
+# Bounded content search over allowed folders (filesystem.search_content).
+FILESYSTEM_CONTENT_MAX_FILES: int = 200
+FILESYSTEM_CONTENT_MAX_BYTES: int = 200_000
+
 # ---- Computer tools ----
 EXECUTION_MODE: str = "confirm"
 COMPUTER_ROOT: Path = PROJECT_ROOT

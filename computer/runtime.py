@@ -12,6 +12,7 @@ from computer.filesystem import (
     FilesystemMetadataTool,
     FilesystemMoveTool,
     FilesystemReadTool,
+    FilesystemSearchContentTool,
     FilesystemSearchTool,
     FilesystemWriteTool,
 )
@@ -39,6 +40,7 @@ def register_read_only_tools(
         FilesystemReadTool(root=root),
         FilesystemMetadataTool(root=root),
         FilesystemSearchTool(root=root),
+        FilesystemSearchContentTool(root=root),
         FilesystemWriteTool(root=root),
         FilesystemCreateFolderTool(root=root),
         FilesystemMoveTool(root=root),

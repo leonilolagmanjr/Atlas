@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from config import ENABLE_LLM_INTERPRETATION, INTERPRETER_CONFIDENCE_THRESHOLD
 from models_task import Task, TaskAction
@@ -85,6 +85,25 @@ _CONTENT_TYPE_SYNONYMS = {
     "tale": "story", "narrative": "story", "article": "essay", "tune": "song",
     "lyrics": "song", "memo": "note", "newsletter": "email",
 }
+#: Document/report nouns a user refers to as one of *their own* files. Combined
+#: with a possessive ("my resume") or a location ("in Downloads") these describe
+#: a local file lookup, not a web search, even when the verb is "find"/"search".
+_PERSONAL_DOCUMENT_NOUNS = (
+    "resume", "cv", "rapport", "report", "notes", "note", "document", "doc",
+    "spreadsheet", "presentation", "attachment", "invoice", "contract", "draft",
+    "thesis", "dissertation", "essay", "paper", "project", "config", "readme",
+    "spreadsheet", "log", "transcript", "receipt",
+)
+#: Best-effort extension for a personal document noun, used only to build a
+#: targeted search glob. Missing/unknown nouns fall back to a noun-based glob.
+_DOCUMENT_NAME_TO_EXTENSION = {
+    "resume": "pdf", "cv": "pdf", "report": "pdf", "spreadsheet": "xlsx",
+    "presentation": "pptx", "notes": "txt", "note": "txt", "transcript": "txt",
+    "receipt": "pdf", "invoice": "pdf", "log": "log",
+}
+#: Possessive / location framing that marks a noun as *the user's own* file.
+_POSSESSIVE_MARKERS = ("my ", "our ", "this ", "that ", "the ", "in downloads",
+                       "from downloads", "on my desktop", "in documents")
 _QUESTION_WORDS = ("what", "who", "when", "where", "why", "how", "explain",
                    "define", "compare", "summarize", "summarise", "describe")
 _PRONOUNS = {"it", "that", "this", "them", "those", "there", "the same", "one", "something"}
@@ -197,12 +216,69 @@ class SemanticTaskInterpreter:
         prompt = text.strip()
         heuristic = self._deterministic_task(prompt)
         if not self._enabled or self._ask is None or heuristic.confidence >= INTERPRETER_CONFIDENCE_THRESHOLD:
-            return self._with_context(heuristic, context)
+            return self._reasoning_fields(self._with_context(heuristic, context))
 
         llm_task = self._llm_task(prompt, heuristic=heuristic, history=history)
         if llm_task is None:
-            return self._with_context(heuristic, context)
-        return self._with_context(self._reconcile(llm_task, heuristic), context)
+            return self._reasoning_fields(self._with_context(heuristic, context))
+        return self._reasoning_fields(self._with_context(self._reconcile(llm_task, heuristic), context))
+
+    @staticmethod
+    def _instructional_question(text: str) -> bool:
+        return bool(re.match(
+            r"^(?:please\s+)?(?:what\s+(?:is|are)\b|how\s+(?:do\s+I|does|can\s+I|to)\b|"
+            r"why\b|define\b|explain\s+(?:how|what|why)\b|tell\s+me\s+how\b)",
+            text.strip(), re.IGNORECASE,
+        ))
+
+    def _reasoning_fields(self, task: Task) -> Task:
+        lowered = task.original_prompt.casefold()
+        capabilities = {action.capability for action in task.actions}
+        if capabilities:
+            sources = []
+            if "content.generate" in capabilities:
+                sources.append("model")
+            if any(cap.startswith("web.") for cap in capabilities):
+                sources.append("web")
+            if any(cap.startswith("filesystem.") for cap in capabilities):
+                sources.append("files")
+            if any(cap.startswith("system.") for cap in capabilities):
+                sources.append("system")
+            read_only = {"content.generate", "web.search", "web.fetch", "filesystem.search", "filesystem.read", "filesystem.list", "filesystem.metadata", "filesystem.search_content", "system.info"}
+            if capabilities - read_only:
+                sources.append("computer")
+            task.sources = list(dict.fromkeys(task.sources + sources))
+            task.request_type = "hybrid" if "computer" in sources and len(sources) > 1 else "action" if "computer" in sources or "content.generate" in capabilities else "question"
+        elif not task.sources:
+            if re.search(r"\b(?:you|your|atlas)\b", lowered) and re.search(r"\b(?:who|capabilities|tools|model|can you do|able to)\b", lowered):
+                task.sources = ["self"]
+            elif re.search(r"\b(?:earlier|previously|remember|we discussed|i (?:said|told|asked)|my name)\b", lowered):
+                task.sources = ["memory", "conversation"]
+            elif task.entities.get("filename") or task.entities.get("folder") or re.search(r"\b(?:my|this|that|our)\s+(?:file|document|folder|pdf|report)\b", lowered):
+                task.sources = ["files"]
+            elif re.search(r"\b(?:my|this|our)\s+(?:computer|pc|system|cpu|ram|disk)\b", lowered):
+                task.sources = ["system"]
+            elif task.entities.get("site") or re.search(r"\b(?:search|browse|look up)\b.*\b(?:web|internet|online)\b", lowered):
+                task.sources = ["web"]
+            elif re.search(r"\b(?:knowledge base|indexed documents|local knowledge)\b", lowered):
+                task.sources = ["knowledge"]
+            else:
+                task.sources = ["model"]
+        if task.needs_clarification:
+            task.request_type = "clarification"
+        elif task.request_type == "unknown":
+            task.request_type = "self_query" if "self" in task.sources else "memory_query" if "memory" in task.sources or "conversation" in task.sources else "question"
+        if not (capabilities & {"content.generate"}) and re.search(r"\b(?:latest|current|today|right now|recent|news|weather)\b", lowered):
+            task.current_information_required = True
+        for name, source in (
+            ("requires_web", "web"), ("requires_files", "files"),
+            ("requires_memory", "memory"), ("requires_knowledge", "knowledge"),
+            ("requires_computer", "computer"), ("requires_system", "system"),
+            ("requires_self_introspection", "self"), ("requires_model_knowledge", "model"),
+        ):
+            setattr(task, name, source in task.sources)
+        task.requires_memory = task.requires_memory or "conversation" in task.sources
+        return task
 
     def _with_context(self, task: Task, context: Task | None) -> Task:
         # Inherit a destination for a follow-up that does not name one.
@@ -265,7 +341,14 @@ class SemanticTaskInterpreter:
         normalization. Neither side may drop a modifier the other found.
         """
 
-        if not llm.actions and heuristic.actions:
+        if self._instructional_question(heuristic.original_prompt):
+            llm.actions = []
+            llm.task_type = "informational"
+            llm.execution_required = False
+            llm.requires_confirmation = False
+            llm.request_type = "question"
+            llm.sources = [source for source in llm.sources if source != "computer"]
+        elif not llm.actions and heuristic.actions:
             llm.actions = heuristic.actions
         if llm.task_type in {"unknown", ""}:
             llm.task_type = heuristic.task_type
@@ -318,7 +401,7 @@ class SemanticTaskInterpreter:
         entities: dict[str, Any] = {}
 
         # Detect explicit search intent first.
-        has_search_verb = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _SEARCH_VERBS)
+        has_search_verb = not self._instructional_question(text) and any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _SEARCH_VERBS)
         has_create_verb = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _CREATE_VERBS)
         has_open_verb = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _OPEN_VERBS)
 
@@ -372,6 +455,9 @@ class SemanticTaskInterpreter:
         # not a search target.
         site = None
         if has_search_verb:
+            # A personal document reference ("find my resume") is a local file
+            # lookup, not a web search, even though the verb is "find"/"search".
+            personal_document = self._personal_document_request(text)
             site_match = _SITE_RE.search(text)
             if site_match:
                 site = (site_match.group(1) or site_match.group(2) or "the web").casefold()
@@ -382,9 +468,17 @@ class SemanticTaskInterpreter:
                 site = "youtube"
             elif _SEARCH_WEB_RE.search(text):
                 site = "the web"
-            else:
-                # Search verb present but no explicit site -> default to the web.
+            elif personal_document:
+                # Leave site unset: the request is about the user's own files.
+                site = None
+            elif self._has_search_target(text, entities):
+                # Search verb present, no explicit site, but a concrete thing to
+                # look for -> default to the web.
                 site = "the web"
+            else:
+                # A bare "find/search" with only a pronoun ("find that file") has
+                # no target; leave it unresolved so the reasoning layer asks.
+                site = None
         # If no search verb but we have a create verb + "about youtube", youtube is the TOPIC.
         # The topic is already captured by _ABOUT_RE above.
         if site:
@@ -392,6 +486,19 @@ class SemanticTaskInterpreter:
             # Only default content_type to "video" for actual search requests.
             if site == "youtube" and content_type is None and not has_create_verb:
                 entities["content_type"] = "video"
+        if self._personal_document_request(text):
+            # Mark the request as a local-document lookup so downstream source
+            # selection reads it as files, not web/knowledge.
+            entities["file_intent"] = "lookup"
+            # The referenced document noun is the file subject ("resume" ->
+            # "*resume*"). A personal document noun is a *file*, not generic
+            # content to create, so it never defaults to a content type.
+            if content_type in _PERSONAL_DOCUMENT_NOUNS:
+                entities["file_subject"] = content_type
+                entities.pop("content_type", None)
+                extension = _DOCUMENT_NAME_TO_EXTENSION.get(content_type)
+                if extension:
+                    entities.setdefault("file_type", extension)
 
         # Sort/filter qualifiers (apply to both search and file operations).
         sort_match = _LARGEST_RE.search(lowered)
@@ -412,10 +519,12 @@ class SemanticTaskInterpreter:
                 entities["length"] = canonical
                 break
 
-        # File type and explicit filename.
+        # File type and explicit filename. "text" is normalized to the "txt"
+        # extension so a requested file type maps to a real suffix.
         file_type = _FILE_TYPE_RE.search(lowered)
         if file_type:
-            entities["file_type"] = file_type.group(1).casefold()
+            raw = file_type.group(1).casefold()
+            entities["file_type"] = {"text": "txt", "jpeg": "jpg"}.get(raw, raw)
         save_as = _SAVE_AS_RE.search(text)
         if save_as:
             filename = save_as.group(1).strip().strip("\"'")
@@ -448,7 +557,81 @@ class SemanticTaskInterpreter:
         if quantity:
             entities["quantity"] = int(quantity.group(1))
 
+        # Content query for a local-document content search: a quoted phrase or
+        # an explicit "for/about/containing X" clause. Only attached when the
+        # request is about files, so a general question is not mistaken for one.
+        if (entities.get("file_intent") == "lookup" or entities.get("file_type")
+                or any(word in text.casefold() for word in ("file", "files", "folder", "document", "documents"))):
+            content_query = self._content_query(text)
+            if content_query:
+                entities["content_query"] = content_query
         return entities
+    @staticmethod
+    def _content_query(text: str) -> str | None:
+        # A quoted phrase is the strongest content-query signal.
+        quoted = re.search(r"[\"'](.+?)[\"']", text, re.DOTALL)
+        if quoted:
+            return quoted.group(1).strip()
+        # "for/about/containing/mentions X" at the end of the request.
+        match = re.search(
+            r"\b(?:for|about|regarding|containing|mentions?|on)\s+([A-Za-z0-9 '\-]{3,40})[.?!]?$",
+            text.casefold(),
+        )
+        if match:
+            candidate = match.group(1).strip().strip("?.")
+            if candidate and not candidate.startswith(("the ", "my ", "a ", "me ")):
+                return candidate
+        return None
+
+    def _is_file_request(self, text: str, entities: dict[str, Any]) -> bool:
+        if entities.get("file_type"):
+            return True
+        lowered = text.casefold()
+        if self._personal_document_request(text):
+            return True
+        return any(word in lowered for word in ("file", "files", "pdf", "folder", "directory")) and bool(
+            entities.get("sort") or entities.get("folder")
+        )
+
+    def _has_search_target(self, text: str, entities: dict[str, Any]) -> bool:
+        # A search defaults to the web only when there is something concrete to
+        # look for: a captured topic, a content noun, or a non-pronoun noun after
+        # the search verb. "find that file" / "search it" have no target.
+        if entities.get("topic") or entities.get("content_type"):
+            return True
+        lowered = text.casefold()
+        match = re.search(
+            r"\b(?:search|find|look up|look for|google|browse|show|get)\b\s+(?:for\s+|me\s+|the\s+|a\s+|an\s+)?([a-z0-9][a-z0-9 '\-]{1,40})",
+            lowered,
+        )
+        if not match:
+            return False
+        candidate = match.group(1).strip()
+        words = [word for word in candidate.split() if word]
+        if not words or words[0] in _PRONOUNS:
+            return False
+        # "that file" / "the document" name a local object, not a web query.
+        if any(word in {"file", "files", "folder", "document", "documents"} for word in words):
+            return False
+        return True
+    def _personal_document_request(self, text: str) -> bool:
+        """Return True when the request refers to one of the user's own files.
+
+        Detection is structural, not a phrase table: a possessive (or an explicit
+        local-folder reference) attached to a document noun means the user is
+        talking about a local file. "find my resume" is a file lookup; "find
+        reviews" is a web search. An explicitly named web platform always wins,
+        so "find my resume on youtube" is not treated as a local file request.
+        """
+
+        lowered = text.casefold()
+        if _matches_any(lowered, _WEB_HOSTS):
+            return False
+        if any(host in lowered for host in ("the web", "the internet", "online")):
+            return False
+        if not any(re.search(rf"\b{noun}s?\b", lowered) for noun in _PERSONAL_DOCUMENT_NOUNS):
+            return False
+        return any(marker in lowered for marker in _POSSESSIVE_MARKERS)
 
     def _plausible_application(self, candidate: str) -> bool:
         lowered = candidate.casefold().strip()
@@ -475,6 +658,8 @@ class SemanticTaskInterpreter:
     def _build_actions(self, text: str, entities: dict[str, Any]) -> list[TaskAction]:
         lowered = text.casefold()
         actions: list[TaskAction] = []
+        if self._instructional_question(text):
+            return actions
 
         has_create = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _CREATE_VERBS)
         has_open = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _OPEN_VERBS)
@@ -528,12 +713,25 @@ class SemanticTaskInterpreter:
                     0,
                     self._launch_action(entities["application"], action_id="a0"),
                 )
+            # "search the web for X and write it into Notepad" -> the search is a
+            # hybrid task: after retrieving the result, compose it into the
+            # destination the user named. The search is the evidence source; the
+            # follow-up action consumes what was found.
+            follow_up = self._search_follow_up(text, entities)
+            actions.extend(follow_up)
             return actions
-
         # 4. Content creation, optionally written into an application.
         # This triggers on create verbs OR when there's a content_type/topic with a destination.
         if has_create and (content_type or topic or entities.get("application")):
             return self._content_actions(entities)
+
+        # 4b. Create a plain new file ("create a text file") with no named
+        # content or destination. The file is created with a simple, explicit
+        # note and a default name derived from the requested type.
+        if has_create and not has_delete and (entities.get("file_type") or "file" in lowered):
+            created = self._create_file_action(entities)
+            if created is not None:
+                return [created]
 
         # 5. Plain application launch.
         if has_open and entities.get("application"):
@@ -603,6 +801,70 @@ class SemanticTaskInterpreter:
                 )
             )
         return actions
+    def _search_follow_up(self, text: str, entities: dict[str, Any]) -> list[TaskAction]:
+        # Post-search actions for a hybrid search-then-write task. A web result
+        # the user wants placed somewhere (an application or a file) is a two-part
+        # request: retrieve the evidence, then compose it into the destination.
+        # Only an explicit write/save verb plus a named destination produces the
+        # second action, so a plain search stays a plain search.
+        lowered = text.casefold()
+        has_create = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _CREATE_VERBS)
+        if not has_create:
+            return []
+        application = entities.get("application")
+        filename = entities.get("filename")
+        if application:
+            return [
+                TaskAction(
+                    action_id="a2",
+                    capability="applications.write_text",
+                    parameters={"application": application, "text": "$search_results"},
+                    description=f"Write the found result into {application}.",
+                    depends_on=["a1"],
+                    expected_output="result present in the application",
+                    risk_level="medium_risk",
+                    requires_confirmation=True,
+                )
+            ]
+        if filename:
+            return [
+                TaskAction(
+                    action_id="a2",
+                    capability="filesystem.write",
+                    parameters={"path": filename, "text": "$search_results"},
+                    description=f"Save the found result as {filename}.",
+                    depends_on=["a1"],
+                    expected_output=f"{filename} created",
+                    risk_level="medium_risk",
+                    requires_confirmation=True,
+                )
+            ]
+        return []
+
+    def _create_file_action(self, entities: dict[str, Any]) -> Optional[TaskAction]:
+        # Build a filesystem.write action for a create-a-file request. No content
+        # was supplied and no name was given, so a default name is derived from the
+        # requested type and a short explicit note is written. The action is
+        # confirmation-gated like every other mutation.
+        filename = entities.get("filename")
+        extension = entities.get("file_type") or "txt"
+        if not filename:
+            filename = f"atlas_created_{extension}.{extension}"
+        elif "." not in filename:
+            filename = f"{filename}.{extension}"
+        topic = str(entities.get("topic") or "").strip()
+        text = f"Created by Atlas about {topic}.\n" if topic else "Created by Atlas.\n"
+        folder = entities.get("folder")
+        path = f"{folder}/{filename}" if folder else filename
+        return TaskAction(
+            action_id="a1",
+            capability="filesystem.write",
+            parameters={"path": path, "text": text, "overwrite": False},
+            description=f"Create the file {path}.",
+            expected_output=f"{path} created",
+            risk_level="medium_risk",
+            requires_confirmation=True,
+        )
 
     def _create_folder_action(self, path: str) -> TaskAction:
         return TaskAction(
@@ -627,8 +889,36 @@ class SemanticTaskInterpreter:
         actions: list[TaskAction] = []
         source_dir = entities.get("folder")
         file_type = entities.get("file_type")
-        pattern = f"*.{file_type}" if file_type else "*"
+        subject = entities.get("file_subject")
+        content_query = entities.get("content_query")
+        if subject:
+            pattern = "*" + str(subject).strip("*?") + "*"
+            if file_type and f".{file_type}" not in pattern.casefold():
+                pattern += f".{file_type}"
+        else:
+            pattern = f"*.{file_type}" if file_type else "*"
 
+        # A content query ("search my documents for 'climate change'") is a
+        # full-text search, a distinct contract from a filename lookup.
+        if content_query and not (move or copy):
+            actions.append(
+                TaskAction(
+                    action_id="a1",
+                    capability="filesystem.search_content",
+                    parameters={
+                        "query": str(content_query),
+                        "path": source_dir,
+                        "pattern": None if pattern == "*" else pattern,
+                        "max_results": 50,
+                    },
+                    description=f"Search file contents for '{content_query}'"
+                    + (f" in {source_dir}" if source_dir else "")
+                    + ".",
+                    produces="content_matches",
+                    expected_output="matching files with excerpts",
+                )
+            )
+            return actions
         sort = entities.get("sort")
         # When the request ranks results ("the largest PDF"), the search step
         # publishes the selected match under a name later steps can reference.
@@ -676,14 +966,6 @@ class SemanticTaskInterpreter:
             )
         return actions
 
-    def _is_file_request(self, text: str, entities: dict[str, Any]) -> bool:
-        if entities.get("file_type"):
-            return True
-        lowered = text.casefold()
-        return any(word in lowered for word in ("file", "files", "pdf", "folder", "directory")) and bool(
-            entities.get("sort") or entities.get("folder")
-        )
-
     def _folder_path(self, entities: dict[str, Any]) -> Optional[str]:
         name = entities.get("folder_name")
         folder = entities.get("folder")
@@ -697,19 +979,26 @@ class SemanticTaskInterpreter:
         query = entities.get("topic")
         if query:
             return query
+        # A hybrid request such as "search the web for X and write it into
+        # Notepad" is a search *for X*; the trailing write clause is not part
+        # of the query. Cut the text at the clause boundary first.
+        body = re.split(
+            r"\b(?:and\s+)?(?:write|save|put|store|type|paste|copy|add)\b",
+            text, maxsplit=1, flags=re.IGNORECASE,
+        )[0]
         # Fall back to stripping site/action/boilerplate words from the request.
         stop = {
             "search", "find", "look", "show", "me", "get", "for", "on", "in", "the",
             "youtube", "google", "web", "internet", "videos", "video", "please", "and",
             "open", "launch", "start", "browse", "some", "a", "an", "about",
             "latest", "newest", "recent", "popular", "trending", "top", "largest",
-            "biggest", "smallest", "oldest",
+            "biggest", "smallest", "oldest", "it", "into", "onto", "them", "that", "this",
         }
         # A named application that is merely the search host ("open Chrome and
         # search ...") must not leak into the query text.
         application = str(entities.get("application") or "").casefold()
         stop.update(token for token in re.findall(r"[a-z0-9]+", application))
-        tokens = [t for t in re.findall(r"[A-Za-z0-9]+", text.casefold()) if t not in stop]
+        tokens = [t for t in re.findall(r"[A-Za-z0-9]+", body.casefold()) if t not in stop]
         return " ".join(tokens).strip() or text.strip()
 
     # -- classification ----------------------------------------------------------
@@ -766,6 +1055,8 @@ class SemanticTaskInterpreter:
         actions: list[TaskAction],
     ) -> bool:
         lowered = text.casefold()
+        if self._instructional_question(text):
+            return False
         # An action verb that targets a pronoun ("open it", "write it there")
         # with no resolvable target is ambiguous.
         if re.search(r"\b(?:open|launch|start|write|put|type|save|move|copy)\s+(?:it|that|this|them|those|there)\b", lowered):
@@ -818,6 +1109,17 @@ class SemanticTaskInterpreter:
             return 0.7
         return 0.5
 
+
+def _matches_any(text: str, terms: Iterable[str]) -> bool:
+    """Return True when any term appears as a whole word or phrase in ``text``."""
+
+    for term in terms:
+        if " " in term:
+            if term in text:
+                return True
+        elif re.search(rf"\b{re.escape(term)}\b", text):
+            return True
+    return False
 
 def task_to_intent_shim(task: Task) -> dict[str, Any]:
     """Adapt a task into the flat mapping the legacy planner expects.

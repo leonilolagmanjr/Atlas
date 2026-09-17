@@ -1,4 +1,7 @@
 # Changelog
+
+> Historical record: entries below describe their original checkpoints. [README.md](README.md) is authoritative for the current architecture, installation, configuration, testing, limitations, and roadmap. Historical capability claims and test totals are not current guarantees.
+
 ## 2026-09-16 (documentation alignment)
 ### Changed
 - Aligned ARCHITECTURE.md with the implemented runtime: corrected the stale

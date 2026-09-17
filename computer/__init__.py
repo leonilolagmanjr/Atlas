@@ -6,6 +6,7 @@ from computer.filesystem import (
     FilesystemListTool,
     FilesystemMetadataTool,
     FilesystemReadTool,
+    FilesystemSearchContentTool,
     FilesystemSearchTool,
 )
 from computer.processes import ProcessInspectTool, ProcessListTool
@@ -20,6 +21,7 @@ __all__ = [
     "FilesystemMetadataTool",
     "FilesystemReadTool",
     "FilesystemSearchTool",
+    "FilesystemSearchContentTool",
     "ProcessInspectTool",
     "ProcessListTool",
     "register_read_only_tools",

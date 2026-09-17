@@ -107,6 +107,17 @@ export interface QueueSnapshot {
   pending: string[];
 }
 
+export interface ReasoningStep {
+  stage: "UNDERSTANDING" | "SOURCE_SELECTION" | "RETRIEVING" | "PLANNING" | "EXECUTING" | "VERIFYING" | "EVALUATING" | "ANSWERING";
+  detail: string;
+  iteration: number;
+}
+
+export interface EvidenceSummary {
+  count: number;
+  sources: string[];
+}
+
 export interface TaskRecord {
   id: string;
   request: string;
@@ -120,4 +131,9 @@ export interface TaskRecord {
   errors: string[];
   warnings: string[];
   web_sources: string[];
+  reasoning?: ReasoningStep[];
+  provenance?: string[];
+  citations?: string[];
+  response_mode?: string | null;
+  evidence?: EvidenceSummary | null;
 }

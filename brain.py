@@ -5,15 +5,32 @@ from __future__ import annotations
 import logging
 import time
 
-from config import DEBUG_PIPELINE, ENABLE_LLM_INTERPRETATION
+from functools import partial
+
+from config import (
+    DATABASE_FOLDER,
+    COLLECTION_NAME,
+    DEBUG_PIPELINE,
+    EMBEDDING_MODEL_NAME,
+    ENABLE_GENERAL_QUESTION_FALLBACK,
+    ENABLE_LLM_INTERPRETATION,
+    ENABLE_REASONING_ENGINE,
+    EXECUTION_MODE,
+    KNOWLEDGE_FOLDER,
+    OLLAMA_MODEL,
+)
 from executor import Executor, UNKNOWN_RESPONSE
+from knowledge_search import retrieve as retrieve_knowledge
 from llm import ask
 from models import ExecutionContext, PlanStatus, StructuredIntent, TaskStatus
 from models_task import Task
 from planner import Planner
 from reasoning.diagnostics import PipelineTrace
+from reasoning.answer_generator import AnswerGenerator
 from reasoning.interpreter import SemanticInterpreter, classify_category
+from reasoning.reasoning_engine import ReasoningEngine
 from reasoning.recovery import RecoveryManager
+from reasoning.self_introspection import SelfIntrospection
 from reasoning.task_interpreter import SemanticTaskInterpreter
 from reasoning.task_planner import TaskPlanner
 from reasoning.task_validator import TaskValidator
@@ -41,6 +58,7 @@ class Brain:
         interpreter: SemanticInterpreter | None = None,
         recovery: RecoveryManager | None = None,
         llm_ask: object | None = None,
+        reasoning_engine: ReasoningEngine | None = None,
     ) -> None:
         self._memory_manager = memory_manager
         self._ask = llm_ask or ask
@@ -76,6 +94,27 @@ class Brain:
             memory_manager=memory_manager,
             tool_router=tool_router,
             recovery=self._recovery,
+        )
+        self._self_introspection = SelfIntrospection(
+            self._capabilities,
+            model_name=OLLAMA_MODEL,
+            knowledge_folder=KNOWLEDGE_FOLDER,
+            database_folder=DATABASE_FOLDER,
+            collection_name=COLLECTION_NAME,
+            embedding_model=EMBEDDING_MODEL_NAME,
+            execution_mode=EXECUTION_MODE,
+        )
+        self._answer_generator = AnswerGenerator(ask=self._ask)
+        self._reasoning_engine = reasoning_engine or ReasoningEngine(
+            self_introspection=self._self_introspection,
+            answer_generator=self._answer_generator,
+            tool_runner=(
+                tool_router.execute
+                if tool_router is not None
+                else (lambda *_args, **_kwargs: None)
+            ),
+            capabilities=self._capabilities,
+            retrieve=partial(retrieve_knowledge, vector_store=vector_store),
         )
 
 
@@ -114,6 +153,47 @@ class Brain:
             context.intent_category = classify_category(structured, user_input)
             context.metadata["structured_intent"] = structured.to_dict()
             trace.record_intent(structured)
+            general_fallback_disabled = (
+                not ENABLE_GENERAL_QUESTION_FALLBACK
+                and task.request_type == "question"
+                and not task.actions
+                and set(task.sources) <= {"model", "knowledge"}
+                and not task.current_information_required
+            )
+            if ENABLE_REASONING_ENGINE and task_validation.valid and not general_fallback_disabled:
+                answer = self._reasoning_engine.handle_request(
+                    question=context.normalized_input or user_input,
+                    task=task,
+                    prior_task=self._active_task,
+                    history=history,
+                )
+                context.metadata["task"] = task.to_dict()
+                context.metadata["reasoning"] = task.context.get("reasoning", [])
+                context.metadata["reasoning_summary"] = task.context.get("reasoning_summary", "")
+                trace.record_task(task.to_dict())
+                if answer is not None:
+                    context.metadata["reasoning"] = (answer.metadata or {}).get(
+                        "reasoning", []
+                    )
+                    context.metadata["reasoning_summary"] = (answer.metadata or {}).get(
+                        "reasoning_summary", ""
+                    )
+                    context.metadata["reasoning_answer"] = answer.to_dict()
+                    # Preserve the tool the reasoning engine actually ran so the
+                    # execution snapshot stays observable on this early-answer path.
+                    selected_tool = (answer.metadata or {}).get("selected_tool")
+                    if selected_tool:
+                        context.selected_tool = selected_tool
+                    context.final_response = answer.text
+                    context.status = TaskStatus.UNCERTAIN if task.needs_clarification or task.response_mode == "clarification" else TaskStatus.COMPLETED
+                    if self._memory_manager is not None:
+                        self._memory_manager.append_message(role="user", content=context.user_input)
+                        if context.final_response:
+                            self._memory_manager.append_message(role="assistant", content=context.final_response)
+                    self._active_task = task
+                    self._active_intent = structured
+                    trace.record_response(context.final_response)
+                    return self._complete(context, started_at, trace)
 
             # Ambiguous / clarification: ask instead of hallucinating a target.
             if task_validation.needs_clarification or (
@@ -174,8 +254,12 @@ class Brain:
             trace.record_execution(context)
             return self._complete(context, started_at, trace)
 
-        except Exception:
+        except Exception as exc:
             logger.exception("Brain execution failed")
+            context.status = TaskStatus.FAILED
+            context.errors.append(f"Brain execution failed ({type(exc).__name__})")
+            if context.execution_plan is not None:
+                context.execution_plan.status = PlanStatus.FAILED
             context.final_response = UNKNOWN_RESPONSE
             return self._complete(context, started_at, trace)
 

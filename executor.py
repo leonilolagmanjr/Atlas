@@ -388,8 +388,15 @@ class Executor:
         # Expose a named output for later steps to reference.
         produced = context.metadata.setdefault("produced", {})
         name = step.metadata.get("produces")
+        tool = step.metadata.get("tool")
         if name:
-            produced[str(name)] = output
+            # A web search publishes a human-readable summary as the named
+            # output so a downstream write step (Notepad/file) receives usable
+            # text rather than a raw result mapping.
+            if tool == "web.search" and isinstance(output, dict):
+                produced[str(name)] = _render_web_results(output)
+            else:
+                produced[str(name)] = output
         # content.generate always publishes generated_text as a convenience.
         if step.metadata.get("tool") == "content.generate" and isinstance(output, dict):
             text = output.get("text")
@@ -463,6 +470,27 @@ class Executor:
         else:
             context.final_response = UNKNOWN_RESPONSE
 
+
+def _render_web_results(output: dict) -> str:
+    # Render web search results as plain text for a downstream write step.
+    # The result list is untrusted data: it is copied as text, never interpreted.
+    results = output.get("results")
+    if not isinstance(results, list) or not results:
+        query = str(output.get("query") or "the request")
+        return f"No web results were returned for '{query}'."
+    lines: list[str] = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        url = str(item.get("url") or "").strip()
+        snippet = str(item.get("snippet") or "").strip()
+        line = title or snippet
+        if url:
+            line = f"{line} ({url})" if line else url
+        if line:
+            lines.append("- " + line)
+    return "\n".join(lines) if lines else str(output)
 
 def _resolve_value(value: object, produced: dict) -> object:
     if isinstance(value, str):

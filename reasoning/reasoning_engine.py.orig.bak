@@ -1,0 +1,517 @@
+"""The Atlas Reasoning Engine: bounded, inspectable reasoning over sources.
+
+The engine answers one question per request:
+
+    "What does this request actually need, and where should Atlas get it?"
+
+It is the conductor of the new pipeline (understand -> reason -> decide ->
+retrieve/act -> observe -> evaluate -> answer). It does *not* execute
+computer-control actions itself: whenever the Task IR carries actions, the
+engine returns ``None`` and the request falls through to the deterministic
+Task pipeline (validator -> planner -> executor), which owns permissions,
+confirmation, execution, and verification.
+
+Loop bounds (config): ``MAX_REASONING_ITERATIONS``, ``MAX_REASONING_TOOL_CALLS``
+and ``MAX_REASONING_SOURCES`` keep the reasoning loop finite; every stage is
+recorded in a structured :class:`ReasoningTrace` exposed via the returned
+answer's metadata so logs and the UI can show what Atlas did without exposing
+private chain-of-thought.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from dataclasses import replace
+from typing import Any, Callable, Mapping
+
+from config import (
+    FILESYSTEM_CONTENT_MAX_BYTES,
+    FILESYSTEM_CONTENT_MAX_FILES,
+    MAX_REASONING_ITERATIONS,
+    MAX_REASONING_SOURCES,
+    MAX_REASONING_TOOL_CALLS,
+    WEB_RESEARCH_MAX_PAGES,
+    WEB_RESEARCH_MAX_RESULTS,
+)
+from knowledge_search import retrieve
+from models_task import Task
+from reasoning.answer_generator import Answer, AnswerGenerator
+from reasoning.evidence_manager import EvidenceManager
+from reasoning.query_router import QueryRouter, RoutingSignals
+from reasoning.reasoning_models import (
+    ConfidenceLevel,
+    ReasoningDecision,
+    ReasoningStage,
+    ReasoningTrace,
+    RequestType,
+    ResponseMode,
+    SourceType,
+)
+from reasoning.self_introspection import SelfIntrospection
+from reasoning.source_selector import SourceSelector
+
+logger = logging.getLogger(__name__)
+
+#: ToolRunner contract: (name, parameters) -> ToolResult (from tools.base).
+ToolRunner = Callable[[str, Mapping[str, Any]], Any]
+
+#: Hard outer wall-clock bound for one reasoning pass.
+REASONING_DEADLINE_SECONDS = 60.0
+
+
+class ReasoningEngine:
+    """Route a request, gather evidence from selected sources, and answer."""
+
+    def __init__(
+        self,
+        *,
+        self_introspection: SelfIntrospection,
+        answer_generator: AnswerGenerator,
+        tool_runner: ToolRunner,
+        capabilities: Any,
+        retrieve: Callable[..., Any] = retrieve,
+        max_iterations: int = MAX_REASONING_ITERATIONS,
+        max_tool_calls: int = MAX_REASONING_TOOL_CALLS,
+        max_sources: int = MAX_REASONING_SOURCES,
+        web_max_results: int = WEB_RESEARCH_MAX_RESULTS,
+        web_max_pages: int = WEB_RESEARCH_MAX_PAGES,
+        content_max_files: int = FILESYSTEM_CONTENT_MAX_FILES,
+        content_max_bytes: int = FILESYSTEM_CONTENT_MAX_BYTES,
+    ) -> None:
+        self._introspection = self_introspection
+        self._answers = answer_generator
+        self._run_tool = tool_runner
+        self._retrieve = retrieve
+        self._router = QueryRouter()
+        self._selector = SourceSelector(capabilities)
+        self._max_iterations = max(1, int(max_iterations))
+        self._max_tool_calls = max(1, int(max_tool_calls))
+        self._max_sources = max(1, int(max_sources))
+        self._web_max_results = max(1, int(web_max_results))
+        self._web_max_pages = max(0, int(web_max_pages))
+        self._content_max_files = max(1, int(content_max_files))
+        self._content_max_bytes = max(1, int(content_max_bytes))
+        self._signals: RoutingSignals | None = None
+
+    # -- public entry point --------------------------------------------------------
+
+    def handle_request(
+        self,
+        *,
+        question: str,
+        task: Task,
+        prior_task: Task | None = None,
+        history: str = "",
+    ) -> Answer | None:
+        """Reason over one request and return an Answer, or None to delegate.
+
+        ``None`` means the request belongs to the deterministic Task pipeline
+        (it carries actions, needs confirmation, or exceeded its bounds).
+        """
+
+        deadline = time.monotonic() + REASONING_DEADLINE_SECONDS
+        trace = ReasoningTrace()
+        evidence = EvidenceManager()
+        tool_calls = 0
+        decision: ReasoningDecision | None = None
+
+        for iteration in range(1, self._max_iterations + 1):
+            trace.iteration = iteration
+
+            # 1. UNDERSTANDING + SOURCE_SELECTION (deterministic, registry-aware).
+            signals = self._router.route(
+                question,
+                task=task,
+                prior_task=prior_task if iteration == 1 else task,
+                history=history,
+                self_introspection=self._introspection,
+            )
+            self._signals = signals
+            plan = self._selector.select(signals, task_type=task.task_type)
+            decision = self._decide(plan, signals, question)
+            trace.record(ReasoningStage.UNDERSTANDING, decision.reason, sources=[
+                source.value for source in decision.sources
+            ])
+            trace.record(
+                ReasoningStage.SOURCE_SELECTION,
+                decision.source_plan.reason,
+                requires_web=decision.requires_web,
+                requires_files=decision.requires_files,
+                requires_memory=decision.requires_memory,
+                requires_computer=decision.requires_computer,
+                current_information=decision.current_information_required,
+            )
+
+            # 2. Computer-control requests never belong to this loop.
+            if decision.requires_computer:
+                return None
+
+            # 3. Answer from the live capability registry when it says so.
+            if decision.response_mode is ResponseMode.SELF_DESCRIPTION:
+                kind = self._introspection.requested_kind(question)
+                answer = self._answers.self_description(self._introspection.answer(kind))
+                trace.record(ReasoningStage.ANSWERING, "self introspection (registry-derived)")
+                return self._finish(answer, decision, evidence, trace)
+
+            # 3b. No resolvable target: ask instead of guessing.
+            if decision.needs_clarification or (
+                decision.response_mode is ResponseMode.CLARIFICATION
+            ):
+                answer = self._answers.clarification(decision.clarification_question)
+                trace.record(ReasoningStage.ANSWERING, "clarification requested")
+                return self._finish(answer, decision, evidence, trace)
+
+            # 4. Gather evidence for every selected source, in plan order.
+            notes: list[str] = []
+            for source in decision.source_plan.sources[: self._max_sources]:
+                if time.monotonic() > deadline or tool_calls >= self._max_tool_calls:
+                    notes.append("stopped early: reasoning bounds reached")
+                    break
+                trace.record(ReasoningStage.RETRIEVING, f"consulting {source.value}", source=source.value)
+                gained = self._gather(
+                    source, question=question, task=task, history=history, evidence=evidence
+                )
+                tool_calls += 1
+                if gained == 0:
+                    notes.append(f"{source.value}: no evidence found")
+                trace.record(
+                    ReasoningStage.PLANNING,
+                    f"{source.value}: {'new evidence' if gained else 'no evidence'}",
+                )
+
+            # 5. Knowledge miss -> reason again (model or web), never "not in KB".
+            mode = decision.response_mode
+            fallback_direct = (
+                decision.requires_model_knowledge or SourceType.MODEL in decision.sources
+            )
+            if (
+                mode is ResponseMode.GROUNDED_ANSWER
+                and not evidence.sufficient_for(mode)
+                and iteration < self._max_iterations
+                and tool_calls < self._max_tool_calls
+            ):
+                if fallback_direct:
+                    trace.record(
+                        ReasoningStage.PLANNING,
+                        "knowledge miss; falling back to model knowledge",
+                    )
+                    mode = ResponseMode.DIRECT_ANSWER
+                elif self._web_escalation_allowed(decision):
+                    trace.record(
+                        ReasoningStage.PLANNING,
+                        "knowledge miss; escalating to web research",
+                    )
+                    decision = self._with_web_escalation(decision)
+                    continue
+
+            # 6. Answer generation with provenance and honest fallbacks.
+            trace.record(ReasoningStage.ANSWERING, mode.value)
+            answer = self._compose(mode, decision, evidence, question, history, notes)
+            return self._finish(answer, decision, evidence, trace)
+
+        # Bounds exhausted without an answering path.
+        if decision is None:
+            plan = self._selector.select(
+                self._router.route(question, task=task, history=history),
+                task_type=task.task_type,
+            )
+            decision = self._decide(plan, self._signals, question)
+        answer = self._answers.limitation(decision, notes=["reasoning bounds reached"])
+        return self._finish(answer, decision, evidence, trace)
+
+    # -- decision synthesis -----------------------------------------------------------
+
+    _MODE_BY_SOURCE: dict[SourceType, ResponseMode] = {
+        SourceType.SELF: ResponseMode.SELF_DESCRIPTION,
+        SourceType.CONVERSATION: ResponseMode.MEMORY_RECALL,
+        SourceType.MEMORY: ResponseMode.MEMORY_RECALL,
+        SourceType.WEB: ResponseMode.WEB_RESEARCH,
+        SourceType.FILES: ResponseMode.FILE_LOOKUP,
+        SourceType.SYSTEM: ResponseMode.SYSTEM_DIAGNOSIS,
+        SourceType.COMPUTER: ResponseMode.ACTION_REPORT,
+        SourceType.KNOWLEDGE: ResponseMode.GROUNDED_ANSWER,
+    }
+
+    def _decide(
+        self,
+        plan: Any,
+        signals: RoutingSignals | None,
+        question: str,
+    ) -> ReasoningDecision:
+        """Turn a SourcePlan + routing signals into a validated ReasoningDecision.
+
+        Deterministic: no LLM involvement. The plan names the sources; this maps
+        them onto the structured decision vocabulary the Task pipeline and the
+        answer generator both understand.
+        """
+
+        sources = tuple(plan.sources)
+        if not sources:
+            return ReasoningDecision(
+                goal=question,
+                request_type=RequestType.CLARIFICATION,
+                requires_clarification=True,
+                needs_clarification=True,
+                clarification_question=(
+                    "Could you clarify what you'd like Atlas to do? For example, "
+                    "name the file, application, or topic you mean."
+                ),
+                reason=plan.reason,
+                response_mode=ResponseMode.CLARIFICATION,
+                source_plan=plan,
+            )
+        mode = self._MODE_BY_SOURCE.get(sources[0], ResponseMode.DIRECT_ANSWER)
+        if sources == (SourceType.MODEL,):
+            mode = ResponseMode.DIRECT_ANSWER
+        return ReasoningDecision(
+            goal=question,
+            request_type=(
+                RequestType.SELF_QUERY
+                if SourceType.SELF in sources
+                else RequestType.MEMORY_QUERY
+                if SourceType.CONVERSATION in sources or SourceType.MEMORY in sources
+                else RequestType.QUESTION
+            ),
+            requires_web=SourceType.WEB in sources,
+            requires_files=SourceType.FILES in sources,
+            requires_memory=(
+                SourceType.MEMORY in sources or SourceType.CONVERSATION in sources
+            ),
+            requires_knowledge=SourceType.KNOWLEDGE in sources,
+            requires_computer=SourceType.COMPUTER in sources,
+            requires_system=SourceType.SYSTEM in sources,
+            requires_self_introspection=SourceType.SELF in sources,
+            requires_model_knowledge=SourceType.MODEL in sources,
+            current_information_required=bool(plan.current_information_required),
+            sources=sources,
+            reason=plan.reason,
+            response_mode=mode,
+            confidence_level=(
+                ConfidenceLevel.HIGH
+                if mode is ResponseMode.SELF_DESCRIPTION
+                else ConfidenceLevel.MEDIUM
+                if SourceType.MODEL in sources
+                else ConfidenceLevel.LOW
+            ),
+            source_plan=plan,
+        )
+
+    # -- evidence gathering ----------------------------------------------------------
+
+    def _gather(
+        self,
+        source: SourceType,
+        *,
+        question: str,
+        task: Task,
+        history: str,
+        evidence: EvidenceManager,
+    ) -> int:
+        """Collect evidence for one planned source; return items gained."""
+
+        try:
+            if source is SourceType.KNOWLEDGE:
+                result = self._retrieve(question)
+                return evidence.add_knowledge(
+                    context=result.context,
+                    best_distance=result.best_distance,
+                    sources=[hit.source for hit in (result.retrieved_chunks or [])],
+                )
+            if source is SourceType.WEB:
+                return self._gather_web(question, evidence)
+            if source is SourceType.FILES:
+                return self._gather_files(question, task, evidence)
+            if source is SourceType.SYSTEM:
+                output = self._execute("system.info", {})
+                if not output:
+                    return 0
+                return evidence.add_system_output("system.info", output)
+            if source in (SourceType.CONVERSATION, SourceType.MEMORY):
+                return evidence.add_conversation(history)
+            return 0
+        except Exception:  # noqa: BLE001 - a failing source must not abort the loop
+            logger.exception("Reasoning source %s failed", source.value)
+            return 0
+
+    def _gather_web(self, question: str, evidence: EvidenceManager) -> int:
+        """Web research: search first, then fetch the top pages when allowed."""
+
+        gained = 0
+        search = self._execute(
+            "web.search", {"query": question, "max_results": self._web_max_results}
+        )
+        if search:
+            gained += evidence.add_web_results(search)
+        if gained and self._web_max_pages:
+            pages = 0
+            for item in (search or {}).get("results", []):
+                if pages >= self._web_max_pages:
+                    break
+                url = str((item or {}).get("url") or "").strip()
+                if not url:
+                    continue
+                page = self._execute("web.fetch", {"url": url})
+                if page:
+                    pages += 1
+                    gained += evidence.add_web_page(page)
+        return gained
+
+    def _gather_files(self, question: str, task: Task, evidence: EvidenceManager) -> int:
+        """Targeted file retrieval: named paths first, then bounded search."""
+
+        gained = 0
+        target = ""
+        try:
+            target = str((task.entities or {}).get("filename") or "").strip()
+        except AttributeError:
+            target = ""
+        if target:
+            read = self._execute("filesystem.read", {"path": target})
+            if read:
+                gained += evidence.add_file_output("filesystem.read", read)
+        if gained == 0:
+            listing = self._execute("filesystem.search", {"query": target or question})
+            if listing:
+                gained += evidence.add_file_output("filesystem.search", listing)
+        if gained == 0:
+            content = self._execute(
+                "filesystem.search_content",
+                {
+                    "query": question,
+                    "max_files": self._content_max_files,
+                    "max_bytes": self._content_max_bytes,
+                },
+            )
+            if content:
+                gained += evidence.add_file_output("filesystem.search_content", content)
+        return gained
+
+    def _execute(self, name: str, parameters: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        """Run one read-only tool through the permission-checked router."""
+
+        try:
+            result = self._run_tool(name, parameters)
+        except Exception:  # noqa: BLE001 - tool failure is an observation, not a crash
+            logger.exception("Reasoning tool %s raised", name)
+            return None
+        if result is None or not getattr(result, "success", False):
+            return None
+        return getattr(result, "output", None) or {}
+
+    # -- answer composition ------------------------------------------------------------
+
+    def _compose(
+        self,
+        mode: ResponseMode,
+        decision: ReasoningDecision,
+        evidence: EvidenceManager,
+        question: str,
+        history: str,
+        notes: list[str],
+    ) -> Answer:
+        """Produce the final answer for the evaluated mode; never fabricate."""
+
+        if mode is ResponseMode.MEMORY_RECALL:
+            return self._answers.memory_recall(question, history)
+        if mode is ResponseMode.DIRECT_ANSWER:
+            return self._answers.direct(question, history=history)
+        if evidence.sufficient_for(mode):
+            return self._answers.grounded(question, evidence, mode=mode, history=history)
+        # The selected source yielded nothing usable: reason again, honestly.
+        user_specific = any(
+            getattr(decision, flag)
+            for flag in ("requires_files", "requires_memory", "requires_system")
+        )
+        model_fallback = (
+            decision.requires_model_knowledge or SourceType.MODEL in decision.sources
+        )
+        if model_fallback and decision.current_information_required:
+            # Time-sensitive question, live retrieval failed: the model may
+            # still know an older answer, but it must say so plainly.
+            answer = self._answers.direct(
+                question,
+                history=history,
+                fallback_note="; ".join(
+                    notes
+                    + [
+                        "live verification was unavailable, so state clearly "
+                        "that your answer may be out of date"
+                    ]
+                ),
+            )
+            if answer.mode is ResponseMode.DIRECT_ANSWER:
+                answer.confidence_level = ConfidenceLevel.LOW
+                answer.text = (
+                    "I could not verify this with a live search right now, so "
+                    "this may be out of date.\n\n" + answer.text
+                )
+            return answer
+        if model_fallback and not user_specific:
+            answer = self._answers.direct(
+                question, history=history, fallback_note="; ".join(notes)
+            )
+            if answer.mode is ResponseMode.DIRECT_ANSWER:
+                return answer
+        if user_specific:
+            return self._answers.limitation(
+                decision,
+                notes=notes
+                or [
+                    "this needs information from your machine that I could not read"
+                ],
+            )
+        return self._answers.limitation(decision, notes=notes)
+
+    def _web_escalation_allowed(self, decision: ReasoningDecision) -> bool:
+        """Escalate to web only when the decision permits external research."""
+
+        if decision.current_information_required:
+            return True
+        if self._signals is None:
+            return False
+        return bool(self._signals.explicit_web_request or self._signals.time_sensitive)
+
+    def _with_web_escalation(self, decision: ReasoningDecision) -> ReasoningDecision:
+        """Return a copy of the decision with WEB as the primary source."""
+
+        remaining = tuple(
+            source
+            for source in decision.source_plan.sources
+            if source is not SourceType.KNOWLEDGE
+        )
+        plan = replace(
+            decision.source_plan,
+            sources=(SourceType.WEB,) + remaining,
+            reason=decision.source_plan.reason + " -> escalated to web after knowledge miss",
+        )
+        return replace(
+            decision,
+            response_mode=ResponseMode.WEB_RESEARCH,
+            source_plan=plan,
+            reason=decision.reason + " -> escalated to web",
+        )
+
+    # -- completion ----------------------------------------------------------------------
+
+    def _finish(
+        self,
+        answer: Answer,
+        decision: ReasoningDecision,
+        evidence: EvidenceManager,
+        trace: ReasoningTrace,
+    ) -> Answer:
+        """Attach structured reasoning/evidence state for observability."""
+
+        trace.record(ReasoningStage.ANSWERING, f"answered via {answer.mode.value}")
+        answer.metadata = {
+            "reasoning": trace.to_list(),
+            "reasoning_summary": trace.summary(),
+            "decision": decision.to_dict(),
+            "evidence": evidence.to_dict(),
+            "confidence": decision.confidence_for(
+                has_evidence=bool(evidence.items),
+                evidence_from_retrieval=bool(evidence.retrieved_sources()),
+            ).value,
+        }
+        return answer

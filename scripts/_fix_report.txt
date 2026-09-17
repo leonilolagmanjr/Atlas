@@ -1,0 +1,352 @@
+== PYTEST (tb=line) ==
+================================== FAILURES ===================================
+E   AssertionError: <ResponseMode.LIMITATION: 'limitation'> != <ResponseMode.GROUNDED_ANSWER: 'grounded_answer'>
+C:\Users\leonilolagmanjr\AppData\Local\Python\pythoncore-3.14-64\Lib\unittest\case.py:918: AssertionError: <ResponseMode.LIMITATION: 'limitation'> != <ResponseMode.GROUNDED_ANSWER: 'grounded_answer'>
+E   AssertionError: <SourceType.FILES: 'files'> not found in []
+C:\Users\leonilolagmanjr\AppData\Local\Python\pythoncore-3.14-64\Lib\unittest\case.py:750: AssertionError: <SourceType.FILES: 'files'> not found in []
+E   AssertionError: Answer(text='Python is a general-purpose programming language.', mode=<ResponseMode.DIRECT_ANSWER: 'direct_answer'>, provenance=[<SourceType.MODEL: 'model'>], confidence_level=<ConfidenceLevel.MEDIUM: 'medium'>, used_mod
+ERROR    reasoning.reasoning_engine:reasoning_engine.py:334 Reasoning source knowledge failed
+C:\Users\leonilolagmanjr\AppData\Local\Python\pythoncore-3.14-64\Lib\unittest\case.py:750: AssertionError: Answer(text='Python is a general-purpose programming language.', mode=<ResponseMode.DIRECT_ANSWER: 'direct_answer'>, provenance=[<Sou
+E   AssertionError: <ResponseMode.DIRECT_ANSWER: 'direct_answer'> not found in {<ResponseMode.CLARIFICATION: 'clarification'>, <ResponseMode.LIMITATION: 'limitation'>}
+ERROR    reasoning.reasoning_engine:reasoning_engine.py:334 Reasoning source knowledge failed
+C:\Users\leonilolagmanjr\AppData\Local\Python\pythoncore-3.14-64\Lib\unittest\case.py:750: AssertionError: <ResponseMode.DIRECT_ANSWER: 'direct_answer'> not found in {<ResponseMode.CLARIFICATION: 'clarification'>, <ResponseMode.LIMITATION: 
+============================== warnings summary ===============================
+=========================== short test summary info ===========================
+FAILED tests/test_reasoning_behavior.py::GeneralKnowledgeTests::test_grounded_answer_uses_local_knowledge_when_relevant
+FAILED tests/test_reasoning_behavior.py::LocalFileTests::test_downloads_listing_uses_filesystem_tools
+FAILED tests/test_reasoning_behavior.py::ActionRoutingTests::test_open_notepad_delegates_to_task_pipeline
+FAILED tests/test_reasoning_behavior.py::ActionRoutingTests::test_poem_in_notepad_is_not_rerouted_to_web_search
+4 failed, 18 passed, 1 warning in 9.27s
+--- TEST test_grounded_answer_uses_local_knowledge_when_relevant:204 ---
+204:     def test_grounded_answer_uses_local_knowledge_when_relevant(self):
+205:         engine = build_engine(
+206:             FakeAsk("The deployment notes say Atlas runs on port 8000."),
+207:             RecordingToolRunner(),
+208:             make_retrieve(context="Atlas deployment uses FastAPI on port 8000.", sources=["deployment.md"], best_distance=0.25),
+209:         )
+210:         answer = self.engine_ask(engine, "What does the deployment document say about the port?")
+211:         self.assertIsNotNone(answer)
+212:         self.assertEqual(answer.mode, ResponseMode.GROUNDED_ANSWER)
+213:         self.assertIn(SourceType.KNOWLEDGE, answer.provenance)
+214: 
+215: 
+216: class CurrentInformationTests(unittest.TestCase):
+217:     def test_latest_python_version_uses_web(self):
+--- TEST test_downloads_listing_uses_filesystem_tools:255 ---
+255:     def test_downloads_listing_uses_filesystem_tools(self):
+256:         runner = RecordingToolRunner()
+257:         engine = build_engine(FakeAsk(), runner, make_retrieve())
+258:         question = "What files are in my Downloads folder?"
+259:         answer = engine.handle_request(question=question, task=task_for(question))
+260:         self.assertTrue(runner.fs_calls, f"expected filesystem tool calls, got {runner.calls}")
+261:         self.assertIsNotNone(answer)
+262:         self.assertIn(SourceType.FILES, answer.provenance)
+263: 
+264: 
+265: class ActionRoutingTests(unittest.TestCase):
+266:     def setUp(self):
+267:         self.ask = FakeAsk()
+268:         self.runner = RecordingToolRunner()
+--- TEST test_open_notepad_delegates_to_task_pipeline:271 ---
+271:     def test_open_notepad_delegates_to_task_pipeline(self):
+272:         answer = self.engine.handle_request(
+273:             question="Open Notepad.", task=task_for("Open Notepad.")
+274:         )
+275:         self.assertIsNone(answer)
+276:         self.assertEqual(self.runner.calls, [])
+277: 
+278:     def test_unresolvable_reference_does_not_invent_a_target(self):
+279:         answer = self.engine.handle_request(question="Open it.", task=task_for("Open it."))
+280:         self.assertEqual(self.runner.calls, [])
+281:         if answer is not None:
+282:             self.assertIn(answer.mode, {ResponseMode.CLARIFICATION, ResponseMode.LIMITATION})
+283: 
+284:     def test_poem_in_notepad_is_not_rerouted_to_web_search(self):
+--- TEST test_poem_in_notepad_is_not_rerouted_to_web_search:284 ---
+284:     def test_poem_in_notepad_is_not_rerouted_to_web_search(self):
+285:         question = "Create a poem in Notepad about cars"
+286:         answer = self.engine.handle_request(question=question, task=task_for(question))
+287:         self.assertEqual(self.runner.web_calls, [])
+288:         if answer is not None:
+289:             self.assertIn(answer.mode, {ResponseMode.CLARIFICATION, ResponseMode.LIMITATION})
+290: 
+291: 
+292: class QueryRouterTests(unittest.TestCase):
+293:     def test_time_sensitive_question_flags_web(self):
+294:         signals = QueryRouter().route(
+295:             "What is the latest Python version?", task=task_for("What is the latest Python version?")
+296:         )
+297:         self.assertTrue(signals.time_sensitive)
+--- reasoning/reasoning_engine.py:99 /def handle_request/ ---
+99:     def handle_request(
+100:         self,
+101:         *,
+102:         question: str,
+103:         task: Task,
+104:         prior_task: Task | None = None,
+105:         history: str = "",
+106:     ) -> Answer | None:
+107:         """Reason over one request and return an Answer, or None to delegate.
+108: 
+109:         ``None`` means the request belongs to the deterministic Task pipeline
+110:         (it carries actions, needs confirmation, or exceeded its bounds).
+111:         """
+112: 
+113:         deadline = time.monotonic() + REASONING_DEADLINE_SECONDS
+114:         trace = ReasoningTrace()
+115:         evidence = EvidenceManager()
+116:         tool_calls = 0
+117:         decision: ReasoningDecision | None = None
+118: 
+--- reasoning/reasoning_engine.py:390 /def _execute/ ---
+390:     def _execute(self, name: str, parameters: Mapping[str, Any]) -> Mapping[str, Any] | None:
+391:         """Run one read-only tool through the permission-checked router."""
+392: 
+393:         try:
+394:             result = self._run_tool(name, parameters)
+395:         except Exception:  # noqa: BLE001 - tool failure is an observation, not a crash
+396:             logger.exception("Reasoning tool %s raised", name)
+397:             return None
+398:         if result is None or not getattr(result, "success", False):
+399:             return None
+400:         return getattr(result, "output", None) or {}
+401: 
+402:     # -- answer composition ------------------------------------------------------------
+403: 
+404:     def _compose(
+405:         self,
+406:         mode: ResponseMode,
+407:         decision: ReasoningDecision,
+408:         evidence: EvidenceManager,
+409:         question: str,
+--- reasoning/reasoning_engine.py:302 /def _gather/ ---
+302:     def _gather(
+303:         self,
+304:         source: SourceType,
+305:         *,
+306:         question: str,
+307:         task: Task,
+308:         history: str,
+309:         evidence: EvidenceManager,
+310:     ) -> int:
+311:         """Collect evidence for one planned source; return items gained."""
+312: 
+313:         try:
+314:             if source is SourceType.KNOWLEDGE:
+315:                 result = self._retrieve(question)
+316:                 return evidence.add_knowledge(
+317:                     context=result.context,
+318:                     best_distance=result.best_distance,
+319:                     sources=[hit.source for hit in (result.retrieved_chunks or [])],
+320:                 )
+321:             if source is SourceType.WEB:
+--- reasoning/reasoning_engine.py:337 /def _gather/ ---
+337:     def _gather_web(self, question: str, evidence: EvidenceManager) -> int:
+338:         """Web research: search first, then fetch the top pages when allowed."""
+339: 
+340:         gained = 0
+341:         search = self._execute(
+342:             "web.search", {"query": question, "max_results": self._web_max_results}
+343:         )
+344:         if search:
+345:             gained += evidence.add_web_results(search)
+346:         if gained and self._web_max_pages:
+347:             pages = 0
+348:             for item in (search or {}).get("results", []):
+349:                 if pages >= self._web_max_pages:
+350:                     break
+351:                 url = str((item or {}).get("url") or "").strip()
+352:                 if not url:
+353:                     continue
+354:                 page = self._execute("web.fetch", {"url": url})
+355:                 if page:
+356:                     pages += 1
+--- reasoning/reasoning_engine.py:360 /def _gather/ ---
+360:     def _gather_files(self, question: str, task: Task, evidence: EvidenceManager) -> int:
+361:         """Targeted file retrieval: named paths first, then bounded search."""
+362: 
+363:         gained = 0
+364:         target = ""
+365:         try:
+366:             target = str((task.entities or {}).get("filename") or "").strip()
+367:         except AttributeError:
+368:             target = ""
+369:         if target:
+370:             read = self._execute("filesystem.read", {"path": target})
+371:             if read:
+372:                 gained += evidence.add_file_output("filesystem.read", read)
+373:         if gained == 0:
+374:             listing = self._execute("filesystem.search", {"query": target or question})
+375:             if listing:
+376:                 gained += evidence.add_file_output("filesystem.search", listing)
+377:         if gained == 0:
+378:             content = self._execute(
+379:                 "filesystem.search_content",
+--- reasoning/reasoning_engine.py:66 /def __init__/ ---
+66:     def __init__(
+67:         self,
+68:         *,
+69:         self_introspection: SelfIntrospection,
+70:         answer_generator: AnswerGenerator,
+71:         tool_runner: ToolRunner,
+72:         capabilities: Any,
+73:         retrieve: Callable[..., Any] = retrieve,
+74:         max_iterations: int = MAX_REASONING_ITERATIONS,
+75:         max_tool_calls: int = MAX_REASONING_TOOL_CALLS,
+76:         max_sources: int = MAX_REASONING_SOURCES,
+77:         web_max_results: int = WEB_RESEARCH_MAX_RESULTS,
+78:         web_max_pages: int = WEB_RESEARCH_MAX_PAGES,
+79:         content_max_files: int = FILESYSTEM_CONTENT_MAX_FILES,
+80:         content_max_bytes: int = FILESYSTEM_CONTENT_MAX_BYTES,
+81:     ) -> None:
+82:         self._introspection = self_introspection
+83:         self._answers = answer_generator
+84:         self._run_tool = tool_runner
+85:         self._retrieve = retrieve
+--- reasoning/query_router.py:177 /explicit_web_request/ ---
+177:     explicit_web_request: bool = False
+178:     system_reference: bool = False
+179:     file_intent: FileIntent | None = None
+180:     ambiguous_reference: bool = False
+181:     wants_creation: bool = False
+182:     wants_mutation: bool = False
+183:     has_actions: bool = False
+184:     features: tuple[str, ...] = field(default_factory=tuple)
+185: 
+186:     def to_dict(self) -> dict[str, Any]:
+187:         return {
+188:             "is_question": self.is_question,
+189:             "is_self_query": self.is_self_query,
+190:             "self_kind": self.self_kind,
+191:             "is_memory_query": self.is_memory_query,
+192:             "time_sensitive": self.time_sensitive,
+193:             "explicit_web_request": self.explicit_web_request,
+194:             "system_reference": self.system_reference,
+195:             "file_intent": self.file_intent.to_dict() if self.file_intent else None,
+196:             "ambiguous_reference": self.ambiguous_reference,
+--- reasoning/query_router.py:193 /explicit_web_request/ ---
+193:             "explicit_web_request": self.explicit_web_request,
+194:             "system_reference": self.system_reference,
+195:             "file_intent": self.file_intent.to_dict() if self.file_intent else None,
+196:             "ambiguous_reference": self.ambiguous_reference,
+197:             "wants_creation": self.wants_creation,
+198:             "wants_mutation": self.wants_mutation,
+199:             "has_actions": self.has_actions,
+200:             "features": list(self.features),
+201:         }
+202: 
+203: 
+204: class QueryRouter:
+205:     """Compute :class:`RoutingSignals` for a request.
+206: 
+207:     The router is deterministic. When the deterministic read is inconclusive and
+208:     the reasoning engine is allowed to use the model, the engine may ask the
+209:     model to confirm the *goal* (never to invent capabilities).
+210:     """
+211: 
+212:     def route(
+--- reasoning/query_router.py:240 /explicit_web_request/ ---
+240:         explicit_web_request = bool(site) or any(
+241:             action.capability.startswith("web.") for action in task.actions
+242:         )
+243:         if explicit_web_request:
+244:             features.append("explicit_web_request")
+245: 
+246:         is_self_query = False
+247:         self_kind: str | None = None
+248:         if self_introspection is not None:
+249:             is_self_query = self_introspection.is_self_query(text)
+250:             if is_self_query:
+251:                 self_kind = self_introspection.requested_kind(text)
+252:                 features.append("self_query")
+253: 
+254:         is_memory_query = _matches_terms(lowered, _MEMORY_TERMS) and not has_actions
+255:         if is_memory_query:
+256:             features.append("memory_query")
+257: 
+258:         file_intent = self._file_intent(lowered, task, features)
+259:         system_reference = (
+--- reasoning/query_router.py:243 /explicit_web_request/ ---
+243:         if explicit_web_request:
+244:             features.append("explicit_web_request")
+245: 
+246:         is_self_query = False
+247:         self_kind: str | None = None
+248:         if self_introspection is not None:
+249:             is_self_query = self_introspection.is_self_query(text)
+250:             if is_self_query:
+251:                 self_kind = self_introspection.requested_kind(text)
+252:                 features.append("self_query")
+253: 
+254:         is_memory_query = _matches_terms(lowered, _MEMORY_TERMS) and not has_actions
+255:         if is_memory_query:
+256:             features.append("memory_query")
+257: 
+258:         file_intent = self._file_intent(lowered, task, features)
+259:         system_reference = (
+260:             _is_local_system_question(lowered)
+261:             and not explicit_web_request
+262:             and not (file_intent and file_intent.wants_list)
+--- reasoning/query_router.py:244 /explicit_web_request/ ---
+244:             features.append("explicit_web_request")
+245: 
+246:         is_self_query = False
+247:         self_kind: str | None = None
+248:         if self_introspection is not None:
+249:             is_self_query = self_introspection.is_self_query(text)
+250:             if is_self_query:
+251:                 self_kind = self_introspection.requested_kind(text)
+252:                 features.append("self_query")
+253: 
+254:         is_memory_query = _matches_terms(lowered, _MEMORY_TERMS) and not has_actions
+255:         if is_memory_query:
+256:             features.append("memory_query")
+257: 
+258:         file_intent = self._file_intent(lowered, task, features)
+259:         system_reference = (
+260:             _is_local_system_question(lowered)
+261:             and not explicit_web_request
+262:             and not (file_intent and file_intent.wants_list)
+263:         )
+--- reasoning/query_router.py:261 /explicit_web_request/ ---
+261:             and not explicit_web_request
+262:             and not (file_intent and file_intent.wants_list)
+263:         )
+264:         if system_reference:
+265:             features.append("system_reference")
+266: 
+267:         wants_creation = any(term in lowered for term in _CREATION_TERMS)
+268:         if wants_creation:
+269:             features.append("creation_content")
+270: 
+271:         wants_mutation = _wants_mutation(task) or _has_mutation_verb(lowered)
+272:         if wants_mutation:
+273:             features.append("mutation")
+274: 
+275:         ambiguous_reference = _has_unresolved_reference(
+276:             lowered,
+277:             tokens,
+278:             prior_task=prior_task,
+279:             task=task,
+280:             history=history,
+--- reasoning/query_router.py:292 /explicit_web_request/ ---
+292:             explicit_web_request=_matches_terms(lowered, _WEB_REQUEST_TERMS),
+293:             system_reference=system_reference,
+294:             file_intent=file_intent,
+295:             ambiguous_reference=ambiguous_reference,
+296:             wants_creation=wants_creation,
+297:             wants_mutation=wants_mutation,
+298:             has_actions=has_actions,
+299:             features=tuple(features),
+300:         )
+301: 
+302:     # -- file intent --------------------------------------------------------------
+303: 
+304:     def _file_intent(self, lowered: str, task: Task, features: list[str]) -> FileIntent | None:
+305:         entities = task.entities
+306:         file_terminology = _matches_terms(lowered, _FILE_TERMS)
+307:         folder = entities.get("folder")
+308:         filename = entities.get("filename")
+309:         file_type = entities.get("file_type")
+310: 
+311:         if not (file_terminology or folder or filename or file_type):

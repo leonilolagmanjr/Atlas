@@ -110,23 +110,19 @@ class WebSearchTool(Tool):
         # occasionally serve stale or unrelated pages, so results are filtered
         # for token overlap with the query before being returned.
         if youtube_query:
-            results = search_youtube(search_query, limit=limit)
+            results = _search_provider(search_youtube, search_query, limit=limit)
             results = [result for result in results if _is_youtube_video_url(result.url)]
             if results:
                 return results[:limit]
-            fallback = search_bing_rss(f"site:youtube.com/watch {search_query}", limit=limit * 2)
+            fallback = _search_provider(search_bing_rss, f"site:youtube.com/watch {search_query}", limit=limit * 2)
             return [result for result in fallback if _is_youtube_video_url(result.url)][:limit]
 
         # Gather from every backend and keep the most relevant results.
         # Backends differ in trustworthiness per query type, so scoring beats a
         # fixed fallback order: a stale Bing hit cannot crowd out a good one.
         collected: list[tuple[int, WebResult]] = []
-        for provider_results in (
-            search_duckduckgo(search_query, limit=limit),
-            search_bing_rss(search_query, limit=limit),
-            search_wikipedia(search_query, limit=limit),
-        ):
-            for result in provider_results:
+        for provider in (search_duckduckgo, search_bing_rss, search_wikipedia):
+            for result in _search_provider(provider, search_query, limit=limit):
                 score = _relevance_score(result, search_query)
                 if score > 0:
                     collected.append((score, result))
@@ -171,13 +167,31 @@ class WebFetchTool(Tool):
             return ToolResult.failure(str(exc), recoverable=True)
 
 
-def search_duckduckgo(query: str, *, limit: int = 5, opener: Any = urllib.request.urlopen) -> list[WebResult]:
+def _search_provider(provider: Any, query: str, *, limit: int) -> list[WebResult]:
+    try:
+        return list(provider(query, limit=limit))
+    except Exception:
+        return []
+
+
+class _PublicRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        validate_public_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _open_public(request: urllib.request.Request, *, timeout: float):
+    validate_public_url(request.full_url)
+    return urllib.request.build_opener(_PublicRedirectHandler()).open(request, timeout=timeout)
+
+
+def search_duckduckgo(query: str, *, limit: int = 5, opener: Any = None) -> list[WebResult]:
     url = "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": query})
     request = urllib.request.Request(
         url,
         headers={"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"},
     )
-    with opener(request, timeout=10) as response:
+    with (opener or _open_public)(request, timeout=10) as response:
         body = response.read(MAX_SEARCH_BYTES).decode("utf-8", errors="replace")
     # DuckDuckGo sometimes serves an anti-bot challenge page instead of results.
     # Treat that as "no results" so the caller can fall back cleanly.
@@ -188,13 +202,13 @@ def search_duckduckgo(query: str, *, limit: int = 5, opener: Any = urllib.reques
     return parser.results[:limit]
 
 
-def search_youtube(query: str, *, limit: int = 5, opener: Any = urllib.request.urlopen) -> list[WebResult]:
+def search_youtube(query: str, *, limit: int = 5, opener: Any = None) -> list[WebResult]:
     url = "https://www.youtube.com/results?" + urllib.parse.urlencode({"search_query": query})
     request = urllib.request.Request(
         url,
         headers={"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"},
     )
-    with opener(request, timeout=15) as response:
+    with (opener or _open_public)(request, timeout=15) as response:
         # YouTube embeds a large JSON blob; a small read cap truncates it and
         # breaks parsing, which previously produced zero results.
         body = response.read(MAX_SEARCH_BYTES).decode("utf-8", errors="replace")
@@ -254,13 +268,13 @@ def _renderer_text(value: Any) -> str:
     return ""
 
 
-def search_bing_rss(query: str, *, limit: int = 5, opener: Any = urllib.request.urlopen) -> list[WebResult]:
+def search_bing_rss(query: str, *, limit: int = 5, opener: Any = None) -> list[WebResult]:
     url = "https://www.bing.com/search?" + urllib.parse.urlencode({"format": "rss", "q": query})
     request = urllib.request.Request(
         url,
         headers={"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"},
     )
-    with opener(request, timeout=10) as response:
+    with (opener or _open_public)(request, timeout=10) as response:
         body = response.read(MAX_SEARCH_BYTES)
     try:
         root = ET.fromstring(body)
@@ -278,7 +292,7 @@ def search_bing_rss(query: str, *, limit: int = 5, opener: Any = urllib.request.
             break
     return results
 
-def search_wikipedia(query: str, *, limit: int = 5, opener: Any = urllib.request.urlopen) -> list[WebResult]:
+def search_wikipedia(query: str, *, limit: int = 5, opener: Any = None) -> list[WebResult]:
     # Search Wikipedia's public API as a reliable general-knowledge backend.
     # This does not depend on scraping an ad-driven search page, so it remains
     # useful when the HTML search endpoints are rate-limited or blocked.
@@ -287,7 +301,7 @@ def search_wikipedia(query: str, *, limit: int = 5, opener: Any = urllib.request
     )
     url = "https://en.wikipedia.org/w/api.php?" + params
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with opener(request, timeout=10) as response:
+    with (opener or _open_public)(request, timeout=10) as response:
         body = response.read(MAX_PAGE_BYTES).decode("utf-8", errors="replace")
     try:
         payload = json.loads(body)
@@ -305,14 +319,17 @@ def search_wikipedia(query: str, *, limit: int = 5, opener: Any = urllib.request
     return results
 
 
-def fetch_public_page(url: str, *, max_bytes: int = MAX_PAGE_BYTES, opener: Any = urllib.request.urlopen) -> dict[str, Any]:
+def fetch_public_page(url: str, *, max_bytes: int = MAX_PAGE_BYTES, opener: Any = None) -> dict[str, Any]:
+    validate_public_url(url)
+    max_bytes = min(max(int(max_bytes), 1), MAX_PAGE_BYTES)
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with opener(request, timeout=10) as response:
+    with (opener or _open_public)(request, timeout=10) as response:
+        final_url = response.geturl()
+        validate_public_url(final_url)
         content_type = response.headers.get_content_type()
         if content_type not in {"text/html", "text/plain", "application/xhtml+xml"}:
             raise ValueError(f"Unsupported web content type: {content_type}")
         body = response.read(max_bytes).decode("utf-8", errors="replace")
-        final_url = response.geturl()
     parser = _PageTextParser()
     parser.feed(body)
     return {
@@ -324,24 +341,46 @@ def fetch_public_page(url: str, *, max_bytes: int = MAX_PAGE_BYTES, opener: Any 
     }
 
 
+def _resolve_public_addresses(hostname: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    try:
+        infos = socket.getaddrinfo(hostname, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise ValueError("Could not resolve public web host") from exc
+    addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    for info in infos:
+        try:
+            addresses.append(ipaddress.ip_address(info[4][0]))
+        except ValueError as exc:
+            raise ValueError("Could not resolve public web host") from exc
+    if not addresses:
+        raise ValueError("Could not resolve public web host")
+    return addresses
+
+
 def validate_public_url(url: str) -> None:
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("Only public HTTP(S) URLs are allowed")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("URL credentials are not allowed")
+    if parsed.port is not None and parsed.port < 1:
+        raise ValueError("Invalid web port")
     hostname = parsed.hostname.casefold().rstrip(".")
+    if "%" in hostname:
+        raise ValueError("Scoped web hosts are not allowed")
     blocked_names = {"localhost", "localhost.localdomain", "metadata.google.internal"}
     if hostname in blocked_names or hostname.endswith(".local"):
         raise ValueError("Local and metadata hosts are not allowed")
     try:
         address = ipaddress.ip_address(hostname)
+        addresses = [address]
     except ValueError:
-        try:
-            resolved = socket.gethostbyname(hostname)
-            address = ipaddress.ip_address(resolved)
-        except OSError as exc:
-            raise ValueError("Could not resolve public web host") from exc
-    if address.is_private or address.is_loopback or address.is_link_local or address.is_reserved:
-        raise ValueError("Private and local network targets are not allowed")
+        addresses = _resolve_public_addresses(hostname)
+    for address in addresses:
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+        if not address.is_global or address.is_multicast or address.is_reserved:
+            raise ValueError("Private and local network targets are not allowed")
 
 
 def thumbnail_for_url(url: str) -> str | None:

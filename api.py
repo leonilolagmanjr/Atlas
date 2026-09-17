@@ -11,12 +11,14 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import PureWindowsPath
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from brain import Brain
 from computer.applications import InstalledApplicationsTool
@@ -27,6 +29,7 @@ from indexer import index_knowledge_base
 from llm import ask
 from memory.memory_manager import MemoryManager
 from models import TaskStatus
+from reasoning.reasoning_models import ReasoningStage, ResponseMode, SourceType
 from task_store import TaskStore
 from tools import ExecutionMode, PermissionEngine, ToolRegistry, ToolRouter
 from tools.discovery import ToolDiscovery
@@ -38,6 +41,101 @@ logger = logging.getLogger(__name__)
 
 class TaskRequest(BaseModel):
     request: str = Field(min_length=1, max_length=4000)
+
+
+def _bounded_text(value: Any, limit: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    return " ".join("".join(character for character in value[:limit] if character.isprintable() or character.isspace()).split())
+
+
+def _source_names(value: Any) -> list[str]:
+    allowed = {source.value for source in SourceType}
+    if not isinstance(value, (list, tuple)):
+        return []
+    return list(dict.fromkeys(item for item in value[:32] if isinstance(item, str) and item in allowed))
+
+
+def _safe_citation(value: Any) -> str:
+    if not isinstance(value, str) or len(value) > 2048 or any(not character.isprintable() for character in value):
+        return ""
+    value = value.strip()
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme in {"https", "http"}:
+            if not parsed.hostname:
+                return ""
+            hostname = parsed.hostname
+            if ":" in hostname:
+                hostname = f"[{hostname}]"
+            port = f":{parsed.port}" if parsed.port else ""
+            return urlunsplit((parsed.scheme, hostname + port, parsed.path, "", ""))[:512]
+        if parsed.scheme and not PureWindowsPath(value).drive:
+            return ""
+    except ValueError:
+        return ""
+    return _bounded_text(PureWindowsPath(value).name, 160)
+
+
+def _sanitize_observability(value: dict[str, Any]) -> dict[str, Any]:
+    stages = {stage.value for stage in ReasoningStage}
+    reasoning = []
+    raw_steps = value.get("reasoning")
+    if isinstance(raw_steps, (list, tuple)):
+        for step in raw_steps[:64]:
+            if not isinstance(step, dict) or not isinstance(step.get("stage"), str) or step["stage"] not in stages:
+                continue
+            iteration = step.get("iteration", 0)
+            reasoning.append({
+                "stage": step["stage"],
+                "detail": _bounded_text(step.get("detail"), 240),
+                "iteration": min(max(iteration, 0), 100) if type(iteration) is int else 0,
+            })
+    citations = value.get("citations")
+    safe_citations = []
+    if isinstance(citations, (list, tuple)):
+        for citation in citations[:16]:
+            safe = _safe_citation(citation)
+            if safe and safe not in safe_citations:
+                safe_citations.append(safe)
+    mode = value.get("response_mode")
+    evidence = value.get("evidence")
+    safe_evidence = None
+    if isinstance(evidence, dict):
+        count = evidence.get("count", 0)
+        safe_evidence = {
+            "count": min(max(count, 0), 1000000) if type(count) is int else 0,
+            "sources": _source_names(evidence.get("sources")),
+        }
+    return {
+        "reasoning": reasoning,
+        "provenance": _source_names(value.get("provenance")),
+        "citations": safe_citations,
+        "response_mode": mode if isinstance(mode, str) and mode in {item.value for item in ResponseMode} else None,
+        "evidence": safe_evidence,
+    }
+
+
+def _reasoning_snapshot(context: Any) -> dict[str, Any]:
+    metadata = getattr(context, "metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    task = metadata.get("task")
+    task = task if isinstance(task, dict) else {}
+    task_context = task.get("context")
+    task_context = task_context if isinstance(task_context, dict) else {}
+    answer = metadata.get("reasoning_answer")
+    answer = answer if isinstance(answer, dict) else {}
+    answer_metadata = answer.get("metadata")
+    answer_metadata = answer_metadata if isinstance(answer_metadata, dict) else {}
+    answer_evidence = answer_metadata.get("evidence")
+    answer_evidence = answer_evidence if isinstance(answer_evidence, dict) else {}
+    return _sanitize_observability({
+        "reasoning": metadata.get("reasoning") or task_context.get("reasoning") or answer_metadata.get("reasoning"),
+        "provenance": answer.get("provenance") or task_context.get("provenance"),
+        "citations": answer.get("citations") or task_context.get("citations"),
+        "response_mode": answer.get("mode") or task.get("response_mode") or task_context.get("response_mode"),
+        "evidence": answer_evidence or task_context.get("evidence"),
+    })
 
 
 class TaskRecord(BaseModel):
@@ -53,6 +151,18 @@ class TaskRecord(BaseModel):
     errors: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     web_sources: list[str] = Field(default_factory=list)
+    reasoning: list[dict[str, Any]] = Field(default_factory=list)
+    provenance: list[str] = Field(default_factory=list)
+    citations: list[str] = Field(default_factory=list)
+    response_mode: str | None = None
+    evidence: dict[str, Any] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def sanitize_observability(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {**value, **_sanitize_observability(value)}
+        return value
 
 
 @dataclass
@@ -171,6 +281,7 @@ class AtlasService:
                 record.errors = list(context.errors) if context is not None else []
                 record.warnings = list(context.warnings) if context is not None else []
                 record.web_sources = list(context.web_sources) if context is not None else []
+                self._capture_reasoning(record, context)
                 record.updated_at = time.time()
                 self._persist()
         except Exception as exc:
@@ -223,6 +334,7 @@ class AtlasService:
                 record.errors = list(context.errors) if context is not None else []
                 record.warnings = list(context.warnings) if context is not None else []
                 record.web_sources = list(context.web_sources) if context is not None else []
+                self._capture_reasoning(record, context)
                 record.updated_at = time.time()
                 self._persist()
             return record
@@ -240,6 +352,21 @@ class AtlasService:
         if record is None:
             raise HTTPException(status_code=404, detail="Task not found")
         return record
+
+    def _capture_reasoning(self, record: TaskRecord, context: Any) -> None:
+        if context is None or context.task_id != record.task_id:
+            return
+        snapshot = _reasoning_snapshot(context)
+        for key, value in snapshot.items():
+            setattr(record, key, value)
+        if record.reasoning:
+            logger.info(
+                "API reasoning snapshot: stages=%s mode=%s provenance=%s evidence_count=%s",
+                ",".join(step["stage"] for step in record.reasoning),
+                record.response_mode,
+                ",".join(record.provenance),
+                record.evidence["count"] if record.evidence else 0,
+            )
 
     def _persist(self) -> None:
         self._task_store.save(self._tasks)
