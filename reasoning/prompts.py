@@ -121,6 +121,7 @@ Rules:
 - If the failure is permanent (missing app, denied permission), say so.
 - Only change arguments that plausibly caused the failure.
 - Reuse the same capability unless the failure clearly requires another.
+- Use observations and expected outcome to understand what actually happened.
 
 JSON schema:
 {
@@ -138,16 +139,22 @@ def recovery_user_prompt(
     failed_arguments: str,
     error: str,
     attempt: int,
+    observations: str | None = None,
+    expected_outcome: str | None = None,
 ) -> str:
-    return (
-        "STRUCTURED INTENT:\n"
-        f"{intent_json}\n\n"
-        f"FAILED CAPABILITY: {failed_capability}\n"
-        f"ATTEMPTED ARGUMENTS: {failed_arguments}\n"
-        f"ERROR: {error}\n"
-        f"ATTEMPT NUMBER: {attempt}\n\n"
-        "Return the recovery decision as JSON."
-    )
+    parts = [
+        "STRUCTURED INTENT:\n" + intent_json,
+        f"FAILED CAPABILITY: {failed_capability}",
+        f"ATTEMPTED ARGUMENTS: {failed_arguments}",
+        f"ERROR: {error}",
+        f"ATTEMPT NUMBER: {attempt}",
+    ]
+    if expected_outcome:
+        parts.append(f"EXPECTED OUTCOME: {expected_outcome}")
+    if observations:
+        parts.append(f"OBSERVATIONS (what actually happened):\n{observations}")
+    parts.append("\nReturn the recovery decision as JSON.")
+    return "\n\n".join(parts)
 
 
 CONTENT_SYSTEM = """You are Atlas's content generator.

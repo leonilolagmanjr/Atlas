@@ -62,6 +62,8 @@ class TaskPlanner:
             }
             if action.produces:
                 metadata["produces"] = action.produces
+            if action.expected_outcome:
+                metadata["expected_outcome"] = action.expected_outcome
             if capability is not None:
                 metadata["risk_level"] = capability.risk_level
             steps.append(

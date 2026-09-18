@@ -270,6 +270,15 @@ class Brain:
             # Store task object in context for executor to access
             context.metadata["task_object"] = task
 
+            # Initialize working state for observation tracking
+            from models import WorkingState
+            context.working_state = WorkingState(
+                task_id=context.task_id,
+                objective=task.goal,
+                current_plan=context.normalized_input or user_input,
+                pending_steps=[step.id for step in planner_decision.plan.steps] if planner_decision.plan else [],
+            )
+
             # 5. Deterministic execution (with verification + recovery inside).
             self._executor.execute(planner_decision.plan, context)
             if context.status == TaskStatus.WAITING_FOR_CONFIRMATION:

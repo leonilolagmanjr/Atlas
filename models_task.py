@@ -259,6 +259,7 @@ class TaskAction:
     #: e.g. ``generated_text`` consumed as ``$generated_text``.
     produces: str | None = None
     expected_output: str | None = None
+    expected_outcome: dict[str, Any] | None = None
     risk_level: str = RiskLevel.READ_ONLY.value
     requires_confirmation: bool = False
 
@@ -271,6 +272,7 @@ class TaskAction:
             "depends_on": list(self.depends_on),
             "produces": self.produces,
             "expected_output": self.expected_output,
+            "expected_outcome": self.expected_outcome,
             "risk_level": self.risk_level,
             "requires_confirmation": self.requires_confirmation,
         }
@@ -483,6 +485,7 @@ def _action_from_mapping(raw: Any, *, index: int) -> TaskAction | None:
         depends_on=_string_list(raw.get("depends_on")),
         produces=_text(raw.get("produces")),
         expected_output=_text(raw.get("expected_output")),
+        expected_outcome=raw.get("expected_outcome") if isinstance(raw.get("expected_outcome"), dict) else None,
         risk_level=_enum(raw.get("risk_level"), set(RISK_LEVELS), RiskLevel.READ_ONLY.value),
         requires_confirmation=_boolean(raw.get("requires_confirmation")),
     )

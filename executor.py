@@ -17,6 +17,10 @@ from models import (
     RetrievalResult,
     StepStatus,
     TaskStatus,
+    Observation,
+    ObservationSource,
+    ObservationType,
+    WorkingState,
 )
 from models_task import Task, TaskState, CompletionCriteria, EvidenceState
 from vector_store import VectorStore
@@ -183,6 +187,19 @@ class Executor:
             step.metadata["error"] = repr(exc)
             step.metadata["execution_time"] = time.perf_counter() - started_at
             self._mark_failed(context)
+            # Create failure observation for exception
+            tool_name = str(step.metadata.get("tool", step.action))
+            action_id = step.metadata.get("action_id") or step.id
+            observation = self._create_observation(
+                tool_name=tool_name,
+                output=None,
+                success=False,
+                step_id=step.id,
+                action_id=action_id,
+                error=str(exc),
+            )
+            context.observations.append(observation.to_dict())
+            self._update_working_state(context, observation)
             logger.exception("Executor failed step: plan_id=%s step_id=%s action=%s", plan_id, step.id, step.action)
 
     def _invoke_tool(self, context: ExecutionContext, step: ExecutionStep) -> None:
@@ -247,15 +264,67 @@ class Executor:
                 )
             else:
                 context.final_response = "This action requires your confirmation before Atlas can continue."
+            # Create observation for confirmation required
+            action_id = step.metadata.get("action_id") or step.id
+            observation = self._create_observation(
+                tool_name=tool_name,
+                output=result.output,
+                success=False,
+                step_id=step.id,
+                action_id=action_id,
+                error="Confirmation required",
+            )
+            context.observations.append(observation.to_dict())
+            self._update_working_state(context, observation)
             return
         if not result.success:
             context.errors.append(result.error or f"Tool failed: {tool_name}")
+            # Create failure observation before raising
+            action_id = step.metadata.get("action_id") or step.id
+            observation = self._create_observation(
+                tool_name=tool_name,
+                output=result.output,
+                success=False,
+                step_id=step.id,
+                action_id=action_id,
+                error=result.error,
+            )
+            context.observations.append(observation.to_dict())
+            self._update_working_state(context, observation)
             raise RuntimeError(result.error or f"Tool failed: {tool_name}")
 
         context.metadata.setdefault("tool_results", []).append(result.output)
         self._capture_produced_output(step, result.output, context)
         # Observation/verification: record honest evidence for this action.
         self._record_verification(context, tool_name, result.output)
+        
+        # Create structured observation and update working state
+        action_id = step.metadata.get("action_id") or step.id
+        observation = self._create_observation(
+            tool_name=tool_name,
+            output=result.output,
+            success=result.success,
+            step_id=step.id,
+            action_id=action_id,
+            error=result.error,
+        )
+        context.observations.append(observation.to_dict())
+        self._update_working_state(context, observation)
+        
+        # Compare expected vs observed if expected_outcome is specified
+        expected_outcome = step.metadata.get("expected_outcome")
+        if expected_outcome:
+            matches, detail = self._compare_expected_vs_observed(expected_outcome, observation)
+            if not matches:
+                context.warnings.append(f"Expected state mismatch: {detail}")
+                # Record verification failure
+                context.verification_results.append({
+                    "capability": tool_name,
+                    "verified": False,
+                    "status": "failed",
+                    "detail": f"Expected state mismatch: {detail}",
+                })
+        
         if tool_name == "web.search" and isinstance(result.output, dict):
             context.web_sources.extend(
                 str(item.get("url"))
@@ -481,6 +550,189 @@ class Executor:
         )
         context.verification_results.append(outcome.to_dict())
 
+    def _create_observation(
+        self,
+        tool_name: str,
+        output: object,
+        success: bool,
+        step_id: str,
+        action_id: str | None = None,
+        error: str | None = None,
+    ) -> Observation:
+        """Create a structured observation from a tool execution result."""
+        # Determine observation status and summary
+        if error:
+            status = "failure"
+            summary = f"{tool_name} failed: {error}"
+        elif success:
+            status = "success"
+            summary = f"{tool_name} completed successfully"
+        else:
+            status = "failure"
+            summary = f"{tool_name} failed"
+
+        # Extract artifacts and environment details based on tool type
+        artifacts = []
+        environment = {}
+        details = {}
+
+        if isinstance(output, dict):
+            # Common artifact fields
+            if "path" in output:
+                artifacts.append(str(output["path"]))
+                details["path"] = output["path"]
+            if "pid" in output:
+                details["pid"] = output["pid"]
+                environment["pid"] = output["pid"]
+            if "executable" in output:
+                details["executable"] = output["executable"]
+            if "application" in output:
+                details["application"] = output["application"]
+                environment["application"] = output["application"]
+            if "url" in output:
+                details["url"] = output["url"]
+                environment["url"] = output["url"]
+            if "title" in output:
+                details["page_title"] = output["title"]
+                environment["page_title"] = output["title"]
+            if "characters" in output:
+                details["characters_written"] = output["characters"]
+            if "bytes" in output:
+                details["bytes_written"] = output["bytes"]
+            if "content" in output and isinstance(output["content"], str):
+                details["content_length"] = len(output["content"])
+            if "text" in output and isinstance(output["text"], str):
+                details["text_length"] = len(output["text"])
+            if "matches" in output:
+                details["matches_found"] = len(output["matches"]) if isinstance(output["matches"], list) else 0
+            if "results" in output:
+                details["results_count"] = len(output["results"]) if isinstance(output["results"], list) else 0
+
+            # Copy other relevant fields to details
+            for key in ("status", "created", "destination", "source", "truncated", "expanded_queries", "chunks", "best_distance"):
+                if key in output:
+                    details[key] = output[key]
+
+        # Determine observation source based on tool category
+        source = ObservationSource.TOOL_RESULT
+        if tool_name.startswith("applications."):
+            source = ObservationSource.APPLICATION_STATE
+        elif tool_name.startswith("web."):
+            source = ObservationSource.BROWSER_STATE
+        elif tool_name.startswith("filesystem."):
+            source = ObservationSource.FILESYSTEM_STATE
+        elif tool_name.startswith("system.") or tool_name.startswith("processes.") or tool_name.startswith("powershell."):
+            source = ObservationSource.SYSTEM_STATE
+
+        return Observation(
+            source=source,
+            type=ObservationType.ACTION_RESULT if success else ObservationType.ERROR,
+            status=status,
+            summary=summary,
+            details=details,
+            artifacts=artifacts,
+            environment=environment,
+            step_id=step_id,
+            action_id=action_id,
+            tool_name=tool_name,
+        )
+
+    def _update_working_state(self, context: ExecutionContext, observation: Observation) -> None:
+        """Update the working state with a new observation."""
+        if context.working_state is None:
+            task = context.metadata.get("task_object")
+            objective = ""
+            if task and isinstance(task, Task):
+                objective = task.goal
+            context.working_state = WorkingState(
+                task_id=context.task_id,
+                objective=objective,
+                current_plan=context.execution_plan.user_question if context.execution_plan else "",
+            )
+        
+        context.working_state.add_observation(observation)
+        
+        # Update step tracking
+        if observation.step_id:
+            context.working_state.update_step(observation.step_id, observation.status)
+        
+        # Update application state for relevant observations
+        if observation.tool_name:
+            if observation.tool_name.startswith("applications.launch") or observation.tool_name == "applications.write_text":
+                app = observation.details.get("application") or observation.environment.get("application")
+                if app:
+                    context.working_state.set_application_state(
+                        application=app,
+                        window=observation.details.get("executable", ""),
+                    )
+            elif observation.tool_name.startswith("web."):
+                url = observation.details.get("url") or observation.environment.get("url")
+                title = observation.details.get("page_title") or observation.environment.get("page_title")
+                if url:
+                    context.working_state.set_application_state(
+                        application="Browser",
+                        window=title or "Browser",
+                        url=url,
+                        page_title=title or "",
+                    )
+            elif observation.tool_name.startswith("filesystem."):
+                # Filesystem operations don't change application state
+                pass
+
+    def _compare_expected_vs_observed(
+        self,
+        expected: dict[str, Any] | None,
+        observation: Observation,
+    ) -> tuple[bool, str]:
+        """Compare expected outcome with observed result.
+        
+        Returns:
+            (matches: bool, detail: str)
+        """
+        if not expected:
+            return True, "No expected outcome specified"
+        
+        mismatches = []
+        
+        # Check application state
+        if "application" in expected:
+            expected_app = expected["application"]
+            observed_app = observation.details.get("application") or observation.environment.get("application")
+            if observed_app and expected_app.lower() not in observed_app.lower():
+                mismatches.append(f"application: expected '{expected_app}', got '{observed_app}'")
+        
+        # Check for URL
+        if "url" in expected:
+            expected_url = expected["url"]
+            observed_url = observation.details.get("url") or observation.environment.get("url")
+            if observed_url and expected_url not in observed_url:
+                mismatches.append(f"url: expected '{expected_url}', got '{observed_url}'")
+        
+        # Check for file path
+        if "path" in expected:
+            expected_path = expected["path"]
+            observed_path = observation.details.get("path")
+            if observed_path and expected_path not in observed_path:
+                mismatches.append(f"path: expected '{expected_path}', got '{observed_path}'")
+        
+        # Check for content presence
+        if "content_contains" in expected:
+            expected_content = expected["content_contains"]
+            # This would need the actual content to check - for now just note it
+            pass
+        
+        # Check for minimum characters written
+        if "min_characters" in expected:
+            min_chars = expected["min_characters"]
+            actual_chars = observation.details.get("characters_written", 0)
+            if actual_chars < min_chars:
+                mismatches.append(f"characters: expected at least {min_chars}, got {actual_chars}")
+        
+        if mismatches:
+            return False, "; ".join(mismatches)
+        
+        return True, "Expected state matches observed state"
+
     def _finalize_content(self, context: ExecutionContext, step: ExecutionStep) -> None:
         # Publish generated content as the final response for content-only tasks.
         produced = context.metadata.get("produced", {})
@@ -510,6 +762,54 @@ class Executor:
         
         # Update subtask status for completed steps
         self._update_subtask_status(task, context)
+        
+        # Verify expected vs observed for each step that had expected_outcome
+        expected_outcome_failures = []
+        for tool_call in context.tool_calls:
+            tool_name = tool_call.get("tool")
+            if not tool_name:
+                continue
+            
+            # Find the observation for this tool call
+            for obs_dict in context.observations:
+                if isinstance(obs_dict, dict) and obs_dict.get("tool_name") == tool_name:
+                    # Find the step that produced this observation
+                    for step in context.execution_plan.steps:
+                        step_tool = step.metadata.get("tool")
+                        if step_tool == tool_name:
+                            expected_outcome = step.metadata.get("expected_outcome")
+                            if expected_outcome:
+                                # Reconstruct observation object
+                                from models import Observation
+                                try:
+                                    observation = Observation(
+                                        source=obs_dict.get("source", "tool_result"),
+                                        type=obs_dict.get("type", "action_result"),
+                                        status=obs_dict.get("status", "unknown"),
+                                        summary=obs_dict.get("summary", ""),
+                                        details=obs_dict.get("details", {}),
+                                        artifacts=obs_dict.get("artifacts", []),
+                                        environment=obs_dict.get("environment", {}),
+                                        step_id=obs_dict.get("step_id"),
+                                        action_id=obs_dict.get("action_id"),
+                                        tool_name=obs_dict.get("tool_name"),
+                                    )
+                                    matches, detail = self._compare_expected_vs_observed(expected_outcome, observation)
+                                    if not matches:
+                                        expected_outcome_failures.append(f"{tool_name}: {detail}")
+                                except Exception:
+                                    pass
+                            break
+        
+        if expected_outcome_failures:
+            context.errors.extend(expected_outcome_failures)
+            context.execution_trace.append({
+                "stage": "verification",
+                "action": "expected_vs_observed",
+                "result": "failed",
+                "details": {"failures": expected_outcome_failures}
+            })
+            return False
         
         # Get the set of tools that were actually executed in this plan
         executed_tools = set()

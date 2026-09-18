@@ -7,6 +7,7 @@ Recovery is deliberately narrow:
 * It is bounded by ``MAX_RECOVERY_ATTEMPTS`` per step.
 * It refuses to retry with identical arguments (no infinite loops).
 * Permanent failures (missing app, denied permission) are never retried.
+* Uses observations to understand what actually happened vs what was expected.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import logging
 from typing import Callable, Optional
 
 from config import ENABLE_LLM_INTERPRETATION, MAX_RECOVERY_ATTEMPTS
-from models import ExecutionContext, ExecutionStep
+from models import ExecutionContext, ExecutionStep, Observation
 from reasoning.json_llm import safe_reasoning_call
 from tools.capabilities import PLANNABLE_CAPABILITIES
 
@@ -86,6 +87,11 @@ class RecoveryManager:
 
         structured = context.structured_intent
         intent_json = json.dumps(structured.to_dict() if structured else {}, ensure_ascii=False)
+        
+        # Include observations from working state for better recovery context
+        observations_summary = self._get_observations_summary(context, step)
+        expected_outcome = step.metadata.get("expected_outcome")
+        
         data = safe_reasoning_call(
             system_prompt=RECOVERY_SYSTEM,
             user_prompt=recovery_user_prompt(
@@ -94,6 +100,8 @@ class RecoveryManager:
                 failed_arguments=json.dumps(step.metadata.get("parameters") or {}, ensure_ascii=False),
                 error=str(step.metadata.get("error") or (context.errors[-1] if context.errors else "")),
                 attempt=attempt,
+                observations=observations_summary,
+                expected_outcome=json.dumps(expected_outcome, ensure_ascii=False) if expected_outcome else None,
             ),
             ask=self._ask,
         )
@@ -110,3 +118,27 @@ class RecoveryManager:
         merged = dict(step.metadata.get("parameters") or {})
         merged.update(corrected)
         return merged
+
+    def _get_observations_summary(self, context: ExecutionContext, step: ExecutionStep) -> str:
+        """Extract relevant observations for the failed step."""
+        if not context.working_state:
+            return "No working state available"
+        
+        relevant_obs = []
+        step_id = step.id
+        action_id = step.metadata.get("action_id") or step.id
+        
+        for obs in context.working_state.latest_observations:
+            if obs.step_id == step_id or obs.action_id == action_id or obs.tool_name == step.metadata.get("tool"):
+                relevant_obs.append({
+                    "type": obs.type.value if hasattr(obs.type, 'value') else str(obs.type),
+                    "status": obs.status,
+                    "summary": obs.summary,
+                    "details": obs.details,
+                    "tool": obs.tool_name,
+                })
+        
+        if not relevant_obs:
+            return "No relevant observations for this step"
+        
+        return json.dumps(relevant_obs, ensure_ascii=False, indent=2)

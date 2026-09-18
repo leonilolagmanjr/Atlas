@@ -267,6 +267,158 @@ class PlannerDecision:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+# --- Observation and World State Models ---
+
+class ObservationSource(str, Enum):
+    """Source of an observation."""
+    TOOL_RESULT = "tool_result"
+    APPLICATION_STATE = "application_state"
+    BROWSER_STATE = "browser_state"
+    FILESYSTEM_STATE = "filesystem_state"
+    SYSTEM_STATE = "system_state"
+    USER_INPUT = "user_input"
+    REASONING = "reasoning"
+
+
+class ObservationType(str, Enum):
+    """Type of observation."""
+    ACTION_EXECUTED = "action_executed"
+    ACTION_RESULT = "action_result"
+    STATE_CHANGE = "state_change"
+    ERROR = "error"
+    VERIFICATION = "verification"
+    ENVIRONMENT = "environment"
+
+
+@dataclass
+class Observation:
+    """Structured observation from an action or state check."""
+    
+    source: ObservationSource
+    type: ObservationType
+    status: str  # "success" | "failure" | "partial" | "unknown"
+    summary: str
+    details: dict[str, Any] = field(default_factory=dict)
+    artifacts: list[str] = field(default_factory=list)
+    environment: dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    step_id: Optional[str] = None
+    action_id: Optional[str] = None
+    tool_name: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source.value if isinstance(self.source, ObservationSource) else self.source,
+            "type": self.type.value if isinstance(self.type, ObservationType) else self.type,
+            "status": self.status,
+            "summary": self.summary,
+            "details": self.details,
+            "artifacts": self.artifacts,
+            "environment": self.environment,
+            "timestamp": self.timestamp.isoformat(),
+            "step_id": self.step_id,
+            "action_id": self.action_id,
+            "tool_name": self.tool_name,
+        }
+
+
+@dataclass
+class WorkingState:
+    """Temporary working state for the current task/session.
+    
+    This represents what Atlas currently knows about the task and environment.
+    It is short-lived and distinct from long-term memory.
+    """
+    
+    # Task identification
+    task_id: str = field(default_factory=lambda: str(uuid4()))
+    objective: str = ""
+    current_plan: str = ""
+    current_step: Optional[str] = None
+    
+    # Step tracking
+    completed_steps: list[str] = field(default_factory=list)
+    pending_steps: list[str] = field(default_factory=list)
+    failed_steps: list[str] = field(default_factory=list)
+    
+    # Environment state
+    current_application: Optional[str] = None
+    current_window: Optional[str] = None
+    current_url: Optional[str] = None
+    current_page_title: Optional[str] = None
+    
+    # Observations and evidence
+    latest_observations: list[Observation] = field(default_factory=list)
+    retrieved_evidence: list[dict[str, Any]] = field(default_factory=list)
+    generated_outputs: dict[str, Any] = field(default_factory=dict)
+    known_artifacts: dict[str, str] = field(default_factory=dict)
+    
+    # Verification status
+    verification_status: dict[str, Any] = field(default_factory=dict)
+    
+    # Metadata
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def add_observation(self, observation: Observation) -> None:
+        """Add an observation and update timestamp."""
+        self.latest_observations.append(observation)
+        self.updated_at = datetime.now(timezone.utc)
+        # Keep only recent observations (last 50)
+        if len(self.latest_observations) > 50:
+            self.latest_observations = self.latest_observations[-50:]
+
+    def update_step(self, step_id: str, status: str) -> None:
+        """Update step tracking based on status."""
+        self.current_step = step_id
+        if status == "completed":
+            if step_id not in self.completed_steps:
+                self.completed_steps.append(step_id)
+            if step_id in self.pending_steps:
+                self.pending_steps.remove(step_id)
+        elif status == "failed":
+            if step_id not in self.failed_steps:
+                self.failed_steps.append(step_id)
+            if step_id in self.pending_steps:
+                self.pending_steps.remove(step_id)
+        elif status == "running":
+            if step_id not in self.pending_steps:
+                self.pending_steps.append(step_id)
+        self.updated_at = datetime.now(timezone.utc)
+
+    def set_application_state(self, application: str, window: str = "", url: str = "", page_title: str = "") -> None:
+        """Update application environment state."""
+        self.current_application = application
+        self.current_window = window or application
+        self.current_url = url
+        self.current_page_title = page_title
+        self.updated_at = datetime.now(timezone.utc)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "objective": self.objective,
+            "current_plan": self.current_plan,
+            "current_step": self.current_step,
+            "completed_steps": self.completed_steps,
+            "pending_steps": self.pending_steps,
+            "failed_steps": self.failed_steps,
+            "current_application": self.current_application,
+            "current_window": self.current_window,
+            "current_url": self.current_url,
+            "current_page_title": self.current_page_title,
+            "latest_observations": [obs.to_dict() for obs in self.latest_observations],
+            "retrieved_evidence": self.retrieved_evidence,
+            "generated_outputs": self.generated_outputs,
+            "known_artifacts": self.known_artifacts,
+            "verification_status": self.verification_status,
+            "metadata": self.metadata,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+        }
+
+
 @dataclass
 class ExecutionContext:
     """Central state for a single Atlas request execution."""
@@ -300,6 +452,7 @@ class ExecutionContext:
     execution_time: float = 0.0
     execution_trace: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    working_state: Optional[WorkingState] = None
 
     @property
     def request(self) -> str:
