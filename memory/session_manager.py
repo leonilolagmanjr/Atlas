@@ -9,7 +9,6 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 from uuid import uuid4
 
 from config import MAX_SESSIONS

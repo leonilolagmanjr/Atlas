@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from models_task import EvidenceSource, EvidenceState
+from models_task import EvidenceState
 
 
 @dataclass

@@ -3,16 +3,8 @@
 from __future__ import annotations
 
 import logging
-import re
-from typing import Any, Optional
-
-from content_formatting import (
-    ContentFormatter,
-    ContentType,
-    DestinationType,
-    format_content,
-    format_content_with_repair,
-)
+from typing import Any
+from content_formatting import ContentFormatter
 from tools.base import PermissionLevel, RiskLevel, Tool, ToolMetadata, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -86,6 +78,3 @@ class ContentFormatTool(Tool):
         except (KeyError, TypeError, ValueError, OSError) as exc:
             logger.exception("Content formatting failed")
             return ToolResult.failure(f"Content formatting failed: {exc}", recoverable=True)
-
-
-import re

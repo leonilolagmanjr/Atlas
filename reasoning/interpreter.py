@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from config import (
     CLARIFICATION_CONFIDENCE_THRESHOLD,

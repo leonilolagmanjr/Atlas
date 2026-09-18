@@ -22,7 +22,7 @@ from models import (
     ObservationType,
     WorkingState,
 )
-from models_task import Task, TaskState, CompletionCriteria, EvidenceState
+from models_task import Task, TaskState
 from vector_store import VectorStore
 from memory.memory_manager import MemoryManager
 from tools.router import ToolRouter
@@ -848,7 +848,8 @@ class Executor:
         
         if verification_passed:
             task.task_state = TaskState.COMPLETED.value
-            task.completion_criteria.all_met = True
+            if task.completion_criteria:
+                task.completion_criteria.all_met = True
             context.execution_trace.append({
                 "stage": "verification",
                 "action": "completion_check",

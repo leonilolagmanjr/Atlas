@@ -419,7 +419,7 @@ function ReasoningPanel({ task }: { task: TaskRecord }) {
   );
 }
 
-function WebResults({ calls, webResults }: { calls: Array<{ tool?: string; output?: unknown }>; webResults?: Array<{ title: string; url: string; snippet: string; source: string; thumbnail_url?: string }> }) {
+function WebResults({ calls, webResults }: { calls: Array<{ tool?: string; output?: unknown }>; webResults?: Array<{ title: string; url: string; snippet: string; source: string; thumbnail_url?: string | null }> }) {
   const toolResults = calls
     .filter((call) => call.tool === "web.search")
     .flatMap((call) => {

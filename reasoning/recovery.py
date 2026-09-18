@@ -17,7 +17,7 @@ import logging
 from typing import Callable, Optional
 
 from config import ENABLE_LLM_INTERPRETATION, MAX_RECOVERY_ATTEMPTS
-from models import ExecutionContext, ExecutionStep, Observation
+from models import ExecutionContext, ExecutionStep
 from reasoning.json_llm import safe_reasoning_call
 from tools.capabilities import PLANNABLE_CAPABILITIES
 

@@ -1,4 +1,4 @@
-﻿"""Behavior tests for the reasoning engine (spec section 25).
+"""Behavior tests for the reasoning engine (spec section 25).
 
 Everything runs offline: the model is a canned stub, tool execution is a
 recording fake, and knowledge retrieval is a controllable stub. The tests

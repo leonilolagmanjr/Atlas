@@ -57,11 +57,6 @@ MEMORY_FOLDER: Path = PROJECT_ROOT / "memory"
 
 # Short-term memory window controls
 MAX_RETAINED_MESSAGES: int = 10
-
-# Token budget is optional for now. If set, context builder may use a
-# lightweight estimate in the future.
-MAX_CONTEXT_TOKENS: int = 2048
-
 # Placeholder summarization threshold (conversation size)
 AUTO_SUMMARIZE_THRESHOLD: int = 80
 

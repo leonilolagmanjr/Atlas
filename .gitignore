@@ -13,3 +13,7 @@ database/
 .env.*
 /__pycache__
 /frontend/node_modules
+# Tool/editor scratch and local caches
+.kilo/
+.pytest_cache/
+*.orig.bak

@@ -228,7 +228,6 @@ class HybridRegressionTests(unittest.TestCase):
                     tool_router=router,
                 ),
                 tool_router=router,
-                interpreter=SemanticTaskInterpreter(ask=lambda **_: "{}"),
                 llm_ask=lambda **_: "{}",
             )
             brain.process("search the web for the latest python version and write it into notepad")

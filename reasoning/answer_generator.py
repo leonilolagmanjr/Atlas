@@ -33,7 +33,7 @@ from reasoning.reasoning_models import (
     ResponseMode,
     SourceType,
 )
-from reasoning.synthesis import ContentSynthesizer, DocumentStructure, OutputFormatter, synthesize_and_format
+from reasoning.synthesis import ContentSynthesizer, OutputFormatter
 
 logger = logging.getLogger(__name__)
 
@@ -239,7 +239,6 @@ class AnswerGenerator:
             )
         except Exception:
             # Fall back to regular grounded answer
-            logger = logging.getLogger(__name__)
             logger.exception("Synthesis failed, falling back to regular grounded answer")
             
             # Render evidence for regular grounded path

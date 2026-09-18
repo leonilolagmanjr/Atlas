@@ -13,7 +13,6 @@ from brain import Brain
 from executor import Executor, classify_failure
 from models import TaskStatus
 from planner import Planner
-from reasoning.task_interpreter import SemanticTaskInterpreter
 from reasoning.verifier import TaskVerifier
 from tools import ExecutionMode, PermissionEngine, ToolRegistry, ToolRouter
 from tools.base import Tool, ToolMetadata, ToolResult
@@ -84,7 +83,6 @@ def build_brain(ask, tools, *, mode: ExecutionMode = ExecutionMode.AUTONOMOUS) -
             tool_router=router,
         ),
         tool_router=router,
-        interpreter=SemanticTaskInterpreter(ask=ask),
         llm_ask=ask,
     )
 

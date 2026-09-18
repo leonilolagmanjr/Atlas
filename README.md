@@ -2,7 +2,7 @@
 
 Atlas is a local-first Python assistant with local Ollama generation, document retrieval, conversation memory, read-only research, and permission-aware Windows tools. A FastAPI adapter and React/Vite control room expose the same runtime. It is not a general autonomous computer agent or a security sandbox.
 
-**Documentation authority:** This README is the current architecture, installation, configuration, testing, and roadmap reference. The other architecture/setup/status documents link here rather than maintaining competing descriptions. [SECURITY.md](SECURITY.md) retains detailed security policy and limitations; [CHANGELOG.md](CHANGELOG.md) retains historical entries, not current capability or test-status guarantees.
+**Documentation authority:** This README is the current architecture, installation, configuration, testing, and roadmap reference. The other architecture/setup/status documents link here rather than maintaining competing descriptions. [SECURITY.md](SECURITY.md) retains detailed security policy and limitations. [CLEANUP_REPORT.md](CLEANUP_REPORT.md) records the last codebase cleanup pass (what was removed/consolidated/optimized), not current capability or test-status guarantees.
 
 ## Contents
 
@@ -75,7 +75,7 @@ The model proposes structure, not shell execution. Validation checks capability 
 | `reasoning/reasoning_engine.py` | Bounded source orchestration and answer/delegation decision |
 | `reasoning/query_router.py`, `reasoning/source_selector.py` | Routing signals and ordered source plans |
 | `reasoning/evidence_manager.py`, `evidence_models.py` | Evidence collection, provenance and sufficiency checks |
-| `reasoning/answer_generator.py`, `reasoning/self_introspection.py` | Answer modes and registry/config-derived self-description |
+| `reasoning/answer_generator.py`, `reasoning/synthesis.py`, `reasoning/self_introspection.py` | Answer modes, structured synthesis of retrieved evidence for web-research answers, and registry/config-derived self-description |
 | `reasoning/task_validator.py`, `reasoning/task_planner.py` | Task validation and dependency-ordered action planning |
 | `content_formatting.py`, `tools/format.py` | Content normalization, type detection, paragraph reconstruction, destination rendering, verification, and repair |
 | `executor.py`, `reasoning/verifier.py`, `reasoning/recovery.py` | Sequential execution, output publication, observations, verification and bounded recovery |
@@ -273,7 +273,7 @@ Most runtime settings are Python constants in `config.py`; there is no backend `
 | `TOP_K` / `MIN_SIMILARITY` | `5` / `0.75` | Retrieval ranking/acceptance inputs |
 | `MEMORY_FOLDER` / `MAX_RETAINED_MESSAGES` | `memory/` / `10` | Session storage and prompt history window |
 | `MAX_SESSIONS` / `AUTO_SAVE` | `50` / `True` | Session-count warning threshold (creation still proceeds) and autosave |
-| `MAX_CONTEXT_TOKENS` / `AUTO_SUMMARIZE_THRESHOLD` | `2048` / `80` | Reserved/placeholder controls, not enforced token budgeting or automatic summarization |
+| `AUTO_SUMMARIZE_THRESHOLD` | `80` | Reserved/placeholder control, not an enforced automatic-summarization trigger |
 | `LOG_LEVEL` / `LOG_TO_FILE` / `LOG_FILE` | `INFO` / `False` / `database/atlas.log` | Logging |
 | `LOG_RETRIEVAL` / `DEBUG_PIPELINE` | `True` / `False` | Retrieval diagnostics and structured pipeline tracing |
 | `REDACT_KEYS` | `password`, `token`, `api_key`, `secret` | Diagnostic key redaction, not comprehensive content redaction |

@@ -14,7 +14,7 @@ from config import (
     REASONING_TIMEOUT_SECONDS, WEB_RESEARCH_MAX_PAGES, WEB_RESEARCH_MAX_RESULTS,
 )
 from knowledge_search import retrieve
-from models_task import Task, EvidenceState, EvidenceSource, RETRIEVAL_GOALS, CONTENT_TYPES
+from models_task import Task, EvidenceState, EvidenceSource
 from reasoning.answer_generator import Answer, AnswerGenerator
 from reasoning.evidence_manager import EvidenceManager
 from reasoning.query_router import QueryRouter, RoutingSignals
@@ -24,7 +24,7 @@ from reasoning.reasoning_models import (
 )
 from reasoning.self_introspection import SelfIntrospection
 from reasoning.source_selector import SourceSelector
-from web_task import infer_retrieval_task, reformulate_query, validate_content, detect_source_type, score_source, RetrievalTask
+from web_task import reformulate_query, validate_content, detect_source_type, RetrievalTask
 #: Read-only research capabilities the reasoning engine performs itself while
 #: synthesizing a cited answer: web lookups and non-mutating file inspection.
 #: A task whose actions are all drawn from this set is served as research here;

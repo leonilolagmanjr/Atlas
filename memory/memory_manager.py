@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from config import AUTO_SAVE, MAX_RETAINED_MESSAGES, MEMORY_FOLDER, AUTO_SUMMARIZE_THRESHOLD
+from config import AUTO_SAVE, MEMORY_FOLDER, AUTO_SUMMARIZE_THRESHOLD
 from memory.context_builder import ContextBuilder
 from memory.models import ConversationSessionMetadata, MemoryMessage
 from memory.session_manager import SessionManager

@@ -77,6 +77,15 @@ def index_knowledge_base(*, vector_store: VectorStore, knowledge_folder: Path = 
 
     paths = get_documents(knowledge_folder)
 
+    # Remove documents that were indexed previously but no longer exist, so a
+    # deleted PDF stops being served from the vector store and its stale hash is
+    # dropped instead of lingering in the state file forever.
+    present_ids = {doc_id_for_path(path) for path in paths}
+    for doc_id in set(state.doc_hashes) - present_ids:
+        logger.info("Index: removed; dropping deleted document %s", doc_id)
+        vector_store.delete_by_doc_id(doc_id=doc_id)
+        updated_state.pop(doc_id, None)
+
     for path in paths:
         try:
             file_hash = sha256_file(path)

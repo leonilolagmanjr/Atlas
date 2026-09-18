@@ -24,8 +24,7 @@ from typing import Any, Callable, Iterable, Optional
 
 from config import ENABLE_LLM_INTERPRETATION, INTERPRETER_CONFIDENCE_THRESHOLD
 from models_task import (
-    Task, TaskAction, TaskState, EvidenceState, CompletionCriteria,
-    EvidenceSource, RETRIEVAL_GOALS, CONTENT_TYPES, SOURCE_TYPE_CLASSES
+    Task, TaskAction, TaskState, EvidenceState, CompletionCriteria
 )
 from reasoning.json_llm import safe_reasoning_call
 from tools.capabilities import CapabilityRegistry

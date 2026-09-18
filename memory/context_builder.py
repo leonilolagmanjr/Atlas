@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import List
-
 from config import MAX_RETAINED_MESSAGES
 from memory.models import MemoryMessage
 

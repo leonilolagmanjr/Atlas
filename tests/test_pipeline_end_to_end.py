@@ -12,7 +12,6 @@ from brain import Brain
 from executor import Executor
 from models import StructuredIntent, TaskStatus
 from planner import Planner
-from reasoning.interpreter import SemanticInterpreter
 from tools import ExecutionMode, PermissionEngine, ToolRegistry, ToolRouter
 from tools.base import Tool, ToolMetadata, ToolResult
 
@@ -92,7 +91,6 @@ def build_brain(ask, tools: list[Tool], *, mode: ExecutionMode = ExecutionMode.A
             tool_router=router,
         ),
         tool_router=router,
-        interpreter=SemanticInterpreter(ask=ask),
         llm_ask=ask,
     )
 

@@ -27,7 +27,7 @@ from models_task import Task
 from planner import Planner
 from reasoning.diagnostics import PipelineTrace
 from reasoning.answer_generator import AnswerGenerator
-from reasoning.interpreter import SemanticInterpreter, classify_category
+from reasoning.interpreter import classify_category
 from reasoning.reasoning_engine import ReasoningEngine
 from reasoning.recovery import RecoveryManager
 from reasoning.self_introspection import SelfIntrospection
@@ -55,7 +55,6 @@ class Brain:
         executor: Executor | None = None,
         memory_manager: MemoryManager | None = None,
         tool_router: ToolRouter | None = None,
-        interpreter: SemanticInterpreter | None = None,
         recovery: RecoveryManager | None = None,
         llm_ask: object | None = None,
         reasoning_engine: ReasoningEngine | None = None,
@@ -81,11 +80,6 @@ class Brain:
         )
         self._task_validator = TaskValidator(self._capabilities)
         self._task_planner = TaskPlanner(capabilities=self._capabilities)
-        # Legacy interpretation is retained as a deterministic fallback signal.
-        self._interpreter = interpreter or SemanticInterpreter(
-            ask=self._ask if ENABLE_LLM_INTERPRETATION else None,
-            capability_catalog=catalog,
-        )
         self._recovery = recovery or RecoveryManager(ask=self._ask)
         self._executor = executor or Executor(
             vector_store=vector_store,
