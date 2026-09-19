@@ -82,6 +82,7 @@ _CONTENT_NOUNS = (
     "poem", "story", "essay", "song", "joke", "letter", "email", "summary",
     "note", "report", "article", "script", "message", "list", "plan", "caption",
     "bio", "resume", "paragraph", "haiku", "limerick", "verse",
+    "code", "snippet",
 )
 #: Lexical normalizer, not a command table: adjective/noun variants map onto a
 #: canonical content type so "poetic", "poetry", or "verse" all mean a poem.
@@ -107,29 +108,26 @@ _DOCUMENT_NAME_TO_EXTENSION = {
     "receipt": "pdf", "invoice": "pdf", "log": "log",
 }
 #: Possessive / location framing that marks a noun as *the user's own* file.
-_POSSESSIVE_MARKERS = ("my ", "our ", "this ", "that ", "the ", "in downloads",
-                       "from downloads", "on my desktop", "in documents")
+#: A bare article ("the ", "this ", "that ") is deliberately NOT a marker: it
+#: matches almost any sentence and turned "write an essay about the election"
+#: into a local-file lookup. Only a real possessive or an explicit local-folder
+#: reference marks a document as the user's own.
+_POSSESSIVE_MARKERS = ("my ", "our ", "in downloads", "from downloads",
+                       "on my desktop", "in documents", "in my downloads",
+                       "in my documents", "on the desktop")
 _QUESTION_WORDS = ("what", "who", "when", "where", "why", "how", "explain",
                     "define", "compare", "summarize", "summarise", "describe")
 #: Transformation verbs that indicate content should be transformed (summarized, condensed, etc.)
 #: before being placed in a destination. These are distinct from placement verbs.
 _TRANSFORM_VERBS = ("summarize", "summarise", "condense", "extract", "abstract", "digest")
+#: Verbs that save/place a result somewhere. Kept separate from _CREATE_VERBS because
+#: "save" is a *placement* verb ("save the results to a file") and must not imply
+#: that new content be generated.
+_PLACEMENT_VERBS = _CREATE_VERBS + ("copy", "paste", "type", "put", "place", "add", "insert", "save", "store", "export", "dump", "drop")
 #: Transformation nouns that indicate the output should be a transformed version
 _TRANSFORM_NOUNS = ("summary", "summarisation", "explanation", "overview", "synopsis", "digest", "abstract")
 _PRONOUNS = {"it", "that", "this", "them", "those", "there", "the same", "one", "something"}
 
-# Site names that can be search platforms. These are NOT topics on their own.
-_SEARCH_PLATFORMS = frozenset({"youtube", "google", "the web", "the internet"})
-
-# Known application names to avoid misclassifying as topics.
-_KNOWN_APPLICATIONS = frozenset({
-    "notepad", "wordpad", "calculator", "calc", "paint", "mspaint",
-    "explorer", "file explorer", "task manager", "command prompt", "cmd",
-    "terminal", "powershell", "windows terminal", "vscode", "vs code",
-    "visual studio code", "chrome", "google chrome", "edge", "microsoft edge",
-    "firefox", "word", "excel", "powerpoint", "outlook", "spotify", "discord",
-    "steam", "vlc", "settings"
-})
 
 _ABOUT_RE = re.compile(
     r"\b(?:about|regarding|concerning|on the topic of|related to|re:)\s+"
@@ -138,6 +136,15 @@ _ABOUT_RE = re.compile(
     r"|\s+(?:save|store|export)\b"
     r"|\s*[.,?!]\s*$"
     r"|\s*$)",
+    re.IGNORECASE,
+)
+#: A topic introduced by "of"/"for" after a content noun: "a list of 5 workout
+#: exercises", "an essay on the election". Anchored on a content noun so a bare
+#: "of France" ("the capital of France") is never captured as a creation topic.
+_NOUN_OF_RE = re.compile(
+    r"\b[a-z]+s?\s+(?:of|on|for)\s+(?:the\s+|a\s+|an\s+)?"
+    r"((?:\d+\s+)?[A-Za-z][A-Za-z0-9' -]{1,60}?)"
+    r"(?:\s+(?:in|into|inside|using|with|and\b)\b|\s*[.,?!]\s*$|\s*$)",
     re.IGNORECASE,
 )
 _IN_APP_RE = re.compile(
@@ -256,7 +263,15 @@ class SemanticTaskInterpreter:
         capabilities = {action.capability for action in task.actions}
         if capabilities:
             sources = []
-            if "content.generate" in capabilities:
+            # Only add "model" if content.generate is NOT a transformation of
+            # retrieved content (i.e., it generates from model knowledge, not
+            # from input_content referencing another action's output).
+            generate_is_transformation = any(
+                action.capability == "content.generate"
+                and action.parameters.get("input_content", "").startswith("$")
+                for action in task.actions
+            )
+            if "content.generate" in capabilities and not generate_is_transformation:
                 sources.append("model")
             if any(cap.startswith("web.") for cap in capabilities):
                 sources.append("web")
@@ -264,7 +279,16 @@ class SemanticTaskInterpreter:
                 sources.append("files")
             if any(cap.startswith("system.") for cap in capabilities):
                 sources.append("system")
-            read_only = {"content.generate", "web.search", "web.fetch", "filesystem.search", "filesystem.read", "filesystem.list", "filesystem.metadata", "filesystem.search_content", "system.info"}
+            # Read-only capabilities do not make a task an action/hybrid: they
+            # observe or produce text. Only a capability that mutates local state
+            # or drives an application adds the "computer" source. This list must
+            # stay aligned with the reasoning engine's own research-only set.
+            read_only = {
+                "content.generate", "content.format", "web.search", "web.fetch",
+                "web.research", "filesystem.search", "filesystem.read",
+                "filesystem.list", "filesystem.metadata", "filesystem.search_content",
+                "system.info", "processes.list",
+            }
             if capabilities - read_only:
                 sources.append("computer")
             task.sources = list(dict.fromkeys(task.sources + sources))
@@ -301,29 +325,24 @@ class SemanticTaskInterpreter:
         return task
 
     def _with_context(self, task: Task, context: Task | None) -> Task:
-        # Inherit a destination for a follow-up that does not name one.
+        # Inherit a destination and shape for a follow-up that does not name one
+        # ("make it about dogs"). The inherited entities are merged first, then
+        # the content actions are rebuilt with the canonical generator so the
+        # follow-up runs the same generate -> format -> write pipeline as a full
+        # request. Patching a single write step onto the old actions would drop
+        # both the inherited content type and the formatting stage.
         if context is None or not self._is_follow_up(task):
             return task
+        inherited = False
         for key in ("application", "destination", "content_type", "folder"):
             value = context.entities.get(key)
             if value and not task.entities.get(key):
                 task.entities[key] = value
-        if task.entities.get("application") and task.actions:
-            if all(a.capability == "content.generate" for a in task.actions):
-                task.actions.append(
-                    TaskAction(
-                        action_id="a_ctx",
-                        capability="applications.write_text",
-                        parameters={
-                            "application": task.entities["application"],
-                            "text": "$generated_text",
-                        },
-                        description="Write the content into " + str(task.entities["application"]) + ".",
-                        depends_on=[task.actions[0].action_id],
-                        risk_level="medium_risk",
-                        requires_confirmation=True,
-                    )
-                )
+                inherited = True
+        if inherited:
+            rebuilt = self._content_actions(task.entities)
+            if rebuilt:
+                task.actions = rebuilt
         return task
     @staticmethod
     def _is_follow_up(task: Task) -> bool:
@@ -422,16 +441,16 @@ class SemanticTaskInterpreter:
         constraints = self._extract_constraints(text, entities)
 
         needs_clarification = self._needs_clarification(text, entities, actions)
-        
+
         # Build semantic decomposition for complex tasks
         subtasks = self._decompose_into_subtasks(text, entities, actions, goal)
-        
+
         # Initialize evidence state for retrieval tasks
         evidence_state = self._create_evidence_state(text, entities, goal) if self._needs_retrieval(actions) else None
-        
+
         # Initialize completion criteria
         completion_criteria = self._create_completion_criteria(text, entities, actions, goal, subtasks)
-        
+
         task = Task(
             task_type=task_type,
             goal=goal,
@@ -452,7 +471,7 @@ class SemanticTaskInterpreter:
             evidence_state=evidence_state,
             completion_criteria=completion_criteria,
         )
-        
+
         # Add execution trace entry
         task.execution_trace.append({
             "stage": "interpretation",
@@ -460,13 +479,13 @@ class SemanticTaskInterpreter:
             "result": "task_created",
             "details": {"task_type": task_type, "goal": goal, "actions_count": len(actions), "subtasks_count": len(subtasks)}
         })
-        
+
         return task
 
     def _needs_retrieval(self, actions: list[TaskAction]) -> bool:
         """Check if any action requires web/file retrieval."""
-        retrieval_capabilities = {"web.search", "web.fetch", "web.research", 
-                                  "filesystem.search", "filesystem.read", 
+        retrieval_capabilities = {"web.search", "web.fetch", "web.research",
+                                  "filesystem.search", "filesystem.read",
                                   "filesystem.search_content", "filesystem.list"}
         return any(a.capability in retrieval_capabilities for a in actions)
 
@@ -475,7 +494,7 @@ class SemanticTaskInterpreter:
         target = entities.get("topic") or entities.get("content_type") or ""
         content_type = entities.get("content_type", "generic")
         must_be_artifact = self._must_be_artifact(text, content_type)
-        
+
         # Determine retrieval goal based on task
         retrieval_goal = "find_information"
         if "script" in goal or "transcript" in goal or content_type in {"movie_script", "transcript", "lyrics", "code"}:
@@ -486,7 +505,7 @@ class SemanticTaskInterpreter:
             retrieval_goal = "find_reference"
         elif "media" in goal or content_type in {"video", "image"}:
             retrieval_goal = "find_media"
-        
+
         return EvidenceState(
             target=target,
             goal=retrieval_goal,
@@ -521,47 +540,47 @@ class SemanticTaskInterpreter:
     def _create_completion_criteria(self, text: str, entities: dict[str, Any], actions: list[TaskAction], goal: str, subtasks: list[dict]) -> CompletionCriteria:
         """Create explicit completion criteria for the task."""
         criteria = CompletionCriteria()
-        
+
         # Base criteria for all tasks
         criteria.add_criterion("task_understood", "User intent correctly interpreted", met=True)
-        
+
         # Retrieval criteria
         if self._needs_retrieval(actions):
             criteria.add_criterion("correct_target_identified", f"Correct target identified: {entities.get('topic', 'unknown')}")
             criteria.add_criterion("relevant_sources_retrieved", "Relevant source material retrieved")
             criteria.add_criterion("evidence_sufficient", "Sufficient evidence collected for output")
-        
+
         # Content generation criteria
         if any(a.capability == "content.generate" for a in actions):
             criteria.add_criterion("content_generated", "Content successfully generated")
             criteria.add_criterion("content_formatted", "Content formatted for destination")
-        
+
         # Delivery criteria
         if any(a.capability == "applications.write_text" for a in actions):
             app = entities.get("application", "the application")
             criteria.add_criterion("destination_opened", f"{app} opened successfully")
             criteria.add_criterion("content_delivered", f"Content written to {app}")
             criteria.add_criterion("delivery_verified", "Delivery verified")
-        
+
         if any(a.capability == "filesystem.write" for a in actions):
             criteria.add_criterion("file_created", "Output file created")
             criteria.add_criterion("file_verified", "File content verified")
-        
+
         # Subtask criteria
         for i, subtask in enumerate(subtasks):
             criteria.add_criterion(f"subtask_{i}_completed", f"Subtask completed: {subtask.get('description', 'unknown')}")
-        
+
         return criteria
 
     def _decompose_into_subtasks(self, text: str, entities: dict[str, Any], actions: list[TaskAction], goal: str) -> list[dict[str, Any]]:
         """Decompose complex request into explicit subtasks."""
         subtasks = []
-        
+
         # Analyze the request to identify distinct phases
         has_retrieval = self._needs_retrieval(actions)
         has_generation = any(a.capability == "content.generate" for a in actions)
         has_delivery = any(a.capability in {"applications.write_text", "filesystem.write"} for a in actions)
-        
+
         if has_retrieval:
             target = entities.get("topic", "the requested content")
             subtasks.append({
@@ -588,7 +607,7 @@ class SemanticTaskInterpreter:
                 "status": "pending",
                 "depends_on": ["subtask_2"],
             })
-        
+
         if has_generation:
             subtask_id = f"subtask_{len(subtasks) + 1}"
             subtasks.append({
@@ -599,7 +618,7 @@ class SemanticTaskInterpreter:
                 "status": "pending",
                 "depends_on": [subtasks[-1]["id"]] if subtasks else [],
             })
-        
+
         if has_delivery:
             dest = entities.get("application") or entities.get("filename") or "destination"
             subtask_id = f"subtask_{len(subtasks) + 1}"
@@ -629,7 +648,7 @@ class SemanticTaskInterpreter:
                 "status": "pending",
                 "depends_on": [subtasks[-1]["id"]] if subtasks else [],
             })
-        
+
         # Simple tasks without retrieval/generation/delivery
         if not subtasks and actions:
             for i, action in enumerate(actions):
@@ -641,7 +660,7 @@ class SemanticTaskInterpreter:
                     "status": "pending",
                     "depends_on": action.depends_on,
                 })
-        
+
         return subtasks
 
     # -- entity extraction -------------------------------------------------------
@@ -666,7 +685,11 @@ class SemanticTaskInterpreter:
             in_match = _IN_APP_RE.search(text)
             if in_match:
                 candidate = in_match.group(1).strip()
-                if self._plausible_application(candidate):
+                # A bare "in X" is ambiguous between an application ("in Notepad")
+                # and a topic/location qualifier ("the weather in Tokyo"). Only a
+                # *known* application is trusted here; an unknown destination app
+                # arrives from the "open X"/"copy to X" forms below or the LLM.
+                if self._plausible_application(candidate) and self._known_application(candidate):
                     application = candidate
         if application is None:
             # A placement verb with "to"/"into" ("copy to Notepad") names the
@@ -690,7 +713,15 @@ class SemanticTaskInterpreter:
         # Content type: the first known content noun (any noun works, known ones
         # are canonicalized; unknown ones are captured as a "content" entity).
         content_type = None
+        # Transformation nouns ("summary", "overview") describe how the result
+        # should be *reshaped*, not what kind of source to look for. "summarize
+        # the car videos" asks for a summary *of videos*, so the source type is a
+        # video, and the transformation belongs on the transform step. Capturing
+        # "summary" as the content type made task-aware retrieval hunt for a
+        # "summary artifact", which does not exist.
         for noun in _CONTENT_NOUNS:
+            if noun in _TRANSFORM_NOUNS:
+                continue
             if re.search(rf"\b{noun}s?\b", lowered):
                 content_type = noun
                 break
@@ -701,6 +732,13 @@ class SemanticTaskInterpreter:
                     break
         if content_type:
             entities["content_type"] = content_type
+        # Record the requested transformation shape separately (summary,
+        # overview, explanation, digest) so planning can consume the source
+        # content type and the output shape independently.
+        for noun in _TRANSFORM_NOUNS:
+            if re.search(rf"\b{noun}s?\b", lowered):
+                entities["transform"] = noun
+                break
 
         # Topic: "about X" is the strongest signal for content creation.
         # Only apply this for create requests, not search requests.
@@ -710,6 +748,16 @@ class SemanticTaskInterpreter:
                 topic = topic_match.group(1).strip(" ,.")
                 if topic:
                     entities["topic"] = topic
+            elif content_type:
+                # "make a list of 5 workout exercises" -- the topic follows "of"
+                # after the content noun, not "about". Only consulted when a
+                # content noun was actually found, so an unrelated "of France"
+                # is not promoted to a creation topic.
+                noun_of = _NOUN_OF_RE.search(text)
+                if noun_of:
+                    topic = noun_of.group(1).strip(" ,.")
+                    if topic:
+                        entities["topic"] = topic
         # For search requests without "about", extract the search target as the topic.
         elif has_search_verb and not entities.get("topic"):
             search_target = self._extract_search_target(text)
@@ -815,7 +863,8 @@ class SemanticTaskInterpreter:
         if save_as:
             filename = save_as.group(1).strip().strip("\"'")
             if filename and "not" not in filename.casefold().split():
-                entities["filename"] = filename
+                if self._plausible_filename(filename):
+                    entities["filename"] = filename
         if "filename" not in entities:
             # Only treat "as/named X.ext" as a filename, and only when X is a
             # real filename (has an extension); "a folder called Projects" must
@@ -833,24 +882,40 @@ class SemanticTaskInterpreter:
             if str(entities.get("filename", "")).casefold() == folder_name.casefold():
                 entities.pop("filename", None)
 
-        # Location: "on my desktop", "in Downloads".
+        # Location: "on my desktop", "in Downloads". A folder introduced by
+        # "to"/"into" in a move/copy request is the *destination*, not the place
+        # to search: "move the largest pdf to Documents" searches the root and
+        # moves into Documents, it does not search inside Documents.
         location_match = _ON_DESKTOP_RE.search(text) or _IN_FOLDER_RE.search(text)
         if location_match:
-            entities["folder"] = _KNOWN_FOLDERS.get(location_match.group(1).casefold(), location_match.group(1))
+            folder_value = _KNOWN_FOLDERS.get(location_match.group(1).casefold(), location_match.group(1))
+            dest_clause = re.search(
+                r"\b(?:to|into|onto)\s+(?:my\s+|the\s+)?(downloads|documents|desktop|pictures|music|videos)\b",
+                text, re.IGNORECASE,
+            )
+            if dest_clause and folder_value.casefold() == dest_clause.group(1).casefold():
+                entities["dest_folder"] = folder_value
+            else:
+                entities["folder"] = folder_value
 
-        # Quantity: "with 5 examples".
-        quantity = re.search(r"\b(\d{1,3})\b", text)
+        # Quantity: "with 5 examples". A standalone number of 1-3 digits only; a
+        # 4-digit year (2024) or a longer number (RTX 5090) is not a quantity.
+        quantity = re.search(r"(?<![\d.])(\d{1,3})(?![\d.])", text)
         if quantity:
             entities["quantity"] = int(quantity.group(1))
 
         # Content query for a local-document content search: a quoted phrase or
         # an explicit "for/about/containing X" clause. Only attached when the
         # request is about files, so a general question is not mistaken for one.
-        if (entities.get("file_intent") == "lookup" or entities.get("file_type")
-                or any(word in text.casefold() for word in ("file", "files", "folder", "document", "documents"))):
-            content_query = self._content_query(text)
-            if content_query:
-                entities["content_query"] = content_query
+        # A content query describes searching *local documents*. It must not be
+        # attached to a web request that merely mentions a file as an output
+        # ("search the web for car reviews and summarize them in a file").
+        if not entities.get("site"):
+            if (entities.get("file_intent") == "lookup" or entities.get("file_type")
+                    or any(word in text.casefold() for word in ("file", "files", "folder", "document", "documents"))):
+                content_query = self._content_query(text)
+                if content_query:
+                    entities["content_query"] = content_query
         return entities
     @staticmethod
     def _content_query(text: str) -> str | None:
@@ -870,13 +935,34 @@ class SemanticTaskInterpreter:
         return None
 
     def _is_file_request(self, text: str, entities: dict[str, Any]) -> bool:
-        if entities.get("file_type"):
-            return True
-        lowered = text.casefold()
+        # A *local* file lookup. A requested file type alone is not enough: the
+        # extension may describe where web content should be *saved* ("search for
+        # X and save it as Y.txt"), which is a web task with a write, not a search
+        # of the user's machine. Local framing (a possessive document, a folder,
+        # or the explicit word "file") is what makes the object local.
         if self._personal_document_request(text):
             return True
-        return any(word in lowered for word in ("file", "files", "pdf", "folder", "directory")) and bool(
-            entities.get("sort") or entities.get("folder")
+        if entities.get("file_intent") or entities.get("file_subject"):
+            return True
+        if entities.get("folder"):
+            return True
+        lowered = text.casefold()
+        names_file = any(re.search(rf"\b{word}\b", lowered) for word in ("file", "files", "folder", "directory"))
+        has_local_cue = bool(entities.get("sort") or entities.get("folder") or entities.get("file_type"))
+        return names_file and has_local_cue
+
+    def _transforms_current_info(self, lowered: str, entities: dict[str, Any]) -> bool:
+        # A transformation verb plus a current-information noun: "summarize the
+        # news about tesla", "condense the latest updates on X". The request is
+        # about information that changes, so it must be retrieved, not invented.
+        if not any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _TRANSFORM_VERBS):
+            return False
+        return bool(
+            re.search(
+                r"\b(?:news|headlines?|updates?|developments?|latest|recent|current|"
+                r"today|this week|this month|trending)\b",
+                lowered,
+            )
         )
 
     def _has_search_target(self, text: str, entities: dict[str, Any]) -> bool:
@@ -903,14 +989,16 @@ class SemanticTaskInterpreter:
 
     def _extract_search_target(self, text: str) -> str | None:
         """Extract the search target from a search request.
-        
+
         Returns the noun phrase after the search verb, or None if not found.
         Stops at clause boundaries like "and write", "in notepad", "and summarize", etc.
         """
         lowered = text.casefold()
         # Cut the text at clause boundaries first (placement verbs, destination prepositions, transformation verbs)
         body = re.split(
-            r"\b(?:and\s+)?(?:write|save|put|store|type|paste|copy|add|summarize|summarise|condense|extract|in|into|to|on)\b",
+            r"\b(?:and\s+)?(?:write|save|put|store|type|paste|copy|add|summarize|summarise|"
+            r"condense|extract|digest|export|create|make|insert|place|open|launch|start|"
+            r"in|into|to|on|using|with|from|display|show)\b",
             text, maxsplit=1, flags=re.IGNORECASE,
         )[0]
         match = re.search(
@@ -963,8 +1051,39 @@ class SemanticTaskInterpreter:
             return False
         if any(word in tokens for word in _TONE_WORDS) or tokens & set(_LENGTH_WORDS):
             return False
+        # A filename ("results.txt") is a file destination, not an application.
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]{1,6}", candidate.strip()):
+            return False
         # A destination should be a short proper name, not a sentence fragment.
         return len(lowered) <= 40 and len(lowered.split()) <= 4
+    @staticmethod
+    def _known_application(candidate: str) -> bool:
+        # Whole-word match against the application list, so "in Notepad" and
+        # "in VS Code" resolve while "in Tokyo" does not.
+        lowered = candidate.casefold().strip()
+        if lowered in _KNOWN_APPLICATIONS:
+            return True
+        return any(
+            re.search(rf"\b{re.escape(app)}\b", lowered) for app in _KNOWN_APPLICATIONS
+        )
+    @staticmethod
+    def _plausible_filename(candidate: str) -> bool:
+        # A captured filename must look like a name, not a generic noun phrase.
+        # "save the results to a file" must not capture "a file" as the target;
+        # "save it as cars.txt" must. An extension is the strong signal; a bare
+        # word is accepted only when it is not a stop-noun/pronoun.
+        name = candidate.strip().strip("\"'")
+        if not name or len(name) > 80:
+            return False
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]{1,6}", name):
+            return True
+        generic = {
+            "a file", "the file", "file", "a text file", "text file", "results",
+            "the results", "it", "that", "this", "them", "a document", "document",
+            "a summary", "summary", "the output", "output", "something", "there",
+        }
+        # "save it to notepad" captures an application name, not a filename.
+        return name.casefold() not in generic and name.casefold() not in _KNOWN_APPLICATIONS
 
     # -- action construction -----------------------------------------------------
 
@@ -1003,9 +1122,28 @@ class SemanticTaskInterpreter:
             or entities.get("file_subject") or entities.get("file_intent")
         )
         file_move_or_copy = (has_move or has_copy) and has_file_context
-        if file_move_or_copy or (has_search and self._is_file_request(text, entities)):
+        # An explicitly resolved web target ("search the web for X and save it as
+        # Y.txt") is a web task with a write, not a local file lookup. A file type
+        # in that request describes the *output* file, so it must not send Atlas
+        # to search the user's own disk. Genuine personal-file requests still win.
+        web_target = site in _WEB_HOSTS and not self._personal_document_request(text)
+        if not web_target and (file_move_or_copy or (has_search and self._is_file_request(text, entities))):
             return self._file_actions(text, entities, move=has_move, copy=has_copy, search=has_search or not (has_move or has_copy))
 
+        # 2b. Summarize/transform *a local file*: "create a summary of my
+        # report.pdf and put it in notepad". This reads the file and feeds its
+        # content to the generator, instead of generating unrelated content from
+        # the model's own knowledge. Triggered only by a transformation plus a
+        # local-file reference with no web target.
+        if (
+            not web_target
+            and self._transformation_requested(text)
+            and has_file_context
+            and not entities.get("site")
+        ):
+            local_plan = self._local_file_transform(text, entities)
+            if local_plan:
+                return local_plan
         # 3. Web search dominates when a site/video is explicitly named as a search platform.
         # A site is only a search target if it was explicitly set (which only
         # happens when there's a search verb). If there's no site, we don't
@@ -1018,6 +1156,21 @@ class SemanticTaskInterpreter:
             wants_web = True
             if not site:
                 site = "the web"
+        # "summarize the news about X" / "summarise the latest updates on Y" is a
+        # transformation of *current* information, so it needs web research even
+        # though it names no search verb or destination. Only a transformation
+        # plus a current-information noun triggers this, so an ordinary
+        # "summarize this document" is not sent to the web.
+        if not wants_web and self._transforms_current_info(lowered, entities):
+            wants_web = True
+            site = site or "the web"
+            if not entities.get("topic"):
+                # "summarize the news about tesla" -> topic "tesla"; the "about"
+                # phrase is the subject even though no search verb was used.
+                about = _ABOUT_RE.search(text)
+                target = about.group(1).strip(" ,.") if about else self._extract_search_target(text)
+                if target:
+                    entities["topic"] = target
         if wants_web:
             query = self._search_query(text, entities)
             # "search the web for X and write it into Notepad" is a hybrid task:
@@ -1057,14 +1210,24 @@ class SemanticTaskInterpreter:
                 )
             return actions
         # 4. Content creation, optionally written into an application.
-        # This triggers on create verbs OR when there's a content_type/topic with a destination.
+        # Triggers on a create verb, or on a bare content noun with no competing
+        # search/file intent: "tell me a joke", "give me a haiku" are generation
+        # requests even though they name no create verb.
         if has_create and (content_type or topic or entities.get("application")):
+            return self._content_actions(entities)
+        if content_type and not has_search and not has_move and not has_copy and "folder" not in lowered:
             return self._content_actions(entities)
 
         # 4b. Create a plain new file ("create a text file") with no named
-        # content or destination. The file is created with a simple, explicit
-        # note and a default name derived from the requested type.
-        if has_create and not has_delete and (entities.get("file_type") or "file" in lowered):
+        # content to generate. This is a bare file touch: it must NOT preempt a
+        # content-generation request that merely names an output type ("write
+        # python code to reverse a string and save it as reverse.py"), so it only
+        # fires when no content type or topic was extracted.
+        if (
+            has_create and not has_delete
+            and not content_type and not topic
+            and (entities.get("file_type") or "file" in lowered)
+        ):
             created = self._create_file_action(entities)
             if created is not None:
                 return [created]
@@ -1099,7 +1262,7 @@ class SemanticTaskInterpreter:
                     "tone": entities.get("tone"),
                     "style": entities.get("style"),
                     "length": entities.get("length"),
-                    "instructions": None,
+                    "instructions": self._generation_instructions(entities),
                 },
                 description=f"Generate a {content_type}"
                 + (f" about {topic}" if topic else "")
@@ -1111,64 +1274,274 @@ class SemanticTaskInterpreter:
         application = entities.get("application")
         filename = entities.get("filename")
         if application:
-            actions.append(
-                TaskAction(
-                    action_id="a2",
-                    capability="content.format",
-                    parameters={
-                        "content": "$generated_text",
-                        "destination": application,
-                        "title": topic or "",
-                        "repair": True,
-                    },
-                    description=f"Format the generated content for {application}.",
-                    depends_on=["a1"],
-                    produces="formatted_text",
-                    expected_output="formatted content ready for destination",
-                )
+            format_step = self._format_step(
+                action_id="a2",
+                source="$generated_text",
+                destination=application,
+                title=topic or "",
+                depends_on=["a1"],
             )
+            if format_step is not None:
+                actions.append(format_step)
+                write_input, write_depends = "$formatted_text", ["a2"]
+                write_id = "a3"
+            else:
+                # content.format is not registered: write the generated text
+                # directly rather than planning a step against a missing tool.
+                write_input, write_depends, write_id = "$generated_text", ["a1"], "a2"
             actions.append(
                 TaskAction(
-                    action_id="a3",
+                    action_id=write_id,
                     capability="applications.write_text",
-                    parameters={"application": application, "text": "$formatted_text"},
+                    parameters={"application": application, "text": write_input},
                     description=f"Write the formatted content into {application}.",
-                    depends_on=["a2"],
+                    depends_on=write_depends,
                     expected_output="content present in the application",
                     risk_level="medium_risk",
                     requires_confirmation=True,
                 )
             )
         elif filename:
-            actions.append(
-                TaskAction(
-                    action_id="a2",
-                    capability="content.format",
-                    parameters={
-                        "content": "$generated_text",
-                        "destination": filename,
-                        "title": topic or "",
-                        "repair": True,
-                    },
-                    description=f"Format the generated content for {filename}.",
-                    depends_on=["a1"],
-                    produces="formatted_text",
-                    expected_output="formatted content ready for destination",
-                )
+            format_step = self._format_step(
+                action_id="a2",
+                source="$generated_text",
+                destination=filename,
+                title=topic or "",
+                depends_on=["a1"],
             )
+            if format_step is not None:
+                actions.append(format_step)
+                write_input, write_depends, write_id = "$formatted_text", ["a2"], "a3"
+            else:
+                write_input, write_depends, write_id = "$generated_text", ["a1"], "a2"
             actions.append(
                 TaskAction(
-                    action_id="a3",
+                    action_id=write_id,
                     capability="filesystem.write",
-                    parameters={"path": filename, "text": "$formatted_text"},
+                    parameters={"path": filename, "text": write_input},
                     description=f"Save the formatted content as {filename}.",
-                    depends_on=["a2"],
+                    depends_on=write_depends,
                     expected_output=f"{filename} created",
                     risk_level="medium_risk",
                     requires_confirmation=True,
                 )
             )
         return actions
+    @staticmethod
+    def _generation_instructions(entities: dict[str, Any]) -> Optional[str]:
+        # Structural constraints the user stated that the model must honour: an
+        # explicit item count ("a list of 5 exercises"). Without this the model
+        # has no way to know how many items were requested.
+        parts: list[str] = []
+        quantity = entities.get("quantity")
+        if isinstance(quantity, int) and quantity > 0:
+            parts.append(f"Include exactly {quantity} item(s).")
+        if entities.get("length") == "short":
+            parts.append("Keep it short.")
+        elif entities.get("length") == "long":
+            parts.append("Make it detailed.")
+        return " ".join(parts) if parts else None
+    @staticmethod
+    def _transformation_requested(text: str) -> bool:
+        lowered = text.casefold()
+        if any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _TRANSFORM_VERBS):
+            return True
+        return any(re.search(rf"\b{noun}s?\b", lowered) for noun in _TRANSFORM_NOUNS)
+    def _local_file_transform(self, text: str, entities: dict[str, Any]) -> list[TaskAction]:
+        # Read the referenced local file, summarize/transform its content, then
+        # optionally deliver it. The file reference decides the search pattern;
+        # the transformation decides the output content type.
+        filename = entities.get("filename")
+        subject = entities.get("file_subject")
+        extension = entities.get("file_type")
+        folder = entities.get("folder")
+        if subject:
+            pattern = "*" + str(subject).strip("*?") + "*"
+            if extension:
+                pattern += f".{extension}"
+        elif extension:
+            pattern = f"*.{extension}"
+        else:
+            pattern = "*"
+        actions: list[TaskAction] = []
+        read_path = filename
+        if not read_path:
+            actions.append(
+                TaskAction(
+                    action_id="a1",
+                    capability="filesystem.search",
+                    parameters={"pattern": pattern, "path": folder, "max_results": 50},
+                    description=f"Find {pattern} files.",
+                    produces="file_matches",
+                    expected_output="matching file paths",
+                )
+            )
+            read_path = "$file_matches"
+        actions.append(
+            TaskAction(
+                action_id="a2" if not filename else "a1",
+                capability="filesystem.read",
+                parameters={"path": read_path, "max_bytes": 200000},
+                description="Read the file content.",
+                depends_on=["a1"] if not filename else [],
+                produces="file_content",
+                expected_output="the file text",
+            )
+        )
+        transform_type = str(entities.get("transform") or "summary")
+        if transform_type not in {"summary", "explanation", "overview", "digest"}:
+            transform_type = "summary"
+        read_id = "a2" if not filename else "a1"
+        generate = TaskAction(
+            action_id="a3" if not filename else "a2",
+            capability="content.generate",
+            parameters={
+                "content_type": transform_type,
+                "instructions": f"Summarize the following content, focusing on its key points.",
+                "input_content": "$file_content",
+                "topic": entities.get("topic") or "",
+            },
+            description=f"Produce a {transform_type} of the file content.",
+            depends_on=[read_id],
+            produces="generated_text",
+            expected_output=f"{transform_type} of the file content",
+        )
+        actions.append(generate)
+        destination = entities.get("application") or entities.get("filename")
+        if destination and entities.get("application"):
+            format_step = self._format_step(
+                action_id="a4", source="$generated_text", destination=destination,
+                title=entities.get("topic") or "", depends_on=[generate.action_id],
+            )
+            if format_step is not None:
+                actions.append(format_step)
+                write_text, write_deps = "$formatted_text", [format_step.action_id]
+            else:
+                write_text, write_deps = "$generated_text", [generate.action_id]
+            actions.append(
+                TaskAction(
+                    action_id="a5",
+                    capability="applications.write_text",
+                    parameters={"application": destination, "text": write_text},
+                    description=f"Write the {transform_type} into {destination}.",
+                    depends_on=write_deps,
+                    expected_output="content present in the application",
+                    risk_level="medium_risk",
+                    requires_confirmation=True,
+                )
+            )
+        return actions
+    def _format_step(
+        self, *, action_id: str, source: str, destination: str, title: str, depends_on: list[str]
+    ) -> Optional[TaskAction]:
+        # Build the content.format step, or None when the capability is not
+        # registered so the caller writes the source text directly. Keeping the
+        # composition registry-authoritative means a runtime without the
+        # formatter still produces a correct (if unformatted) result.
+        if not self._capabilities.exists("content.format"):
+            return None
+        return TaskAction(
+            action_id=action_id,
+            capability="content.format",
+            parameters={
+                "content": source,
+                "destination": destination,
+                "title": title,
+                "repair": True,
+            },
+            description=f"Format the generated content for {destination}.",
+            depends_on=list(depends_on),
+            produces="formatted_text",
+            expected_output="formatted content ready for destination",
+        )
+    def _file_destination_requested(self, text: str, entities: dict[str, Any]) -> bool:
+        # True when the request names a *file* destination (not an application).
+        # Structural, not a phrase table: a save/export verb plus an explicit file
+        # word, a file-type extension, or a *.ext filename means a file is the
+        # destination. "save the results to a file" and "save it as results.txt"
+        # both qualify; "save it in Notepad" (an application) does not."
+
+        lowered = text.casefold()
+        if entities.get("filename") or entities.get("file_type"):
+            return True
+        # A placement verb (save/write/put/...) or a transformation verb
+        # (summarize/condense/...) plus an explicit file word means a file is the
+        # destination: "save the results to a file", "summarize them in a file".
+        if not re.search(
+            r"\b(?:save|store|export|write|put|dump|summarize|summarise|condense|digest|abstract)\w*\b",
+            lowered,
+        ):
+            return False
+        if re.search(r"\b(?:into\s+)?(?:a\s+|the\s+|an\s+)?(?:file|files|txt|text file|document)\b", lowered):
+            return True
+        # "save it as cars.txt" style extension already captured by _AS_NAME_RE.
+        if re.search(r"\bas\s+[A-Za-z0-9_-]+\.[A-Za-z0-9]{1,6}\b", text):
+            return True
+        # A bare save/store/export of "the results"/"them"/"it" with no named
+        # destination means persistence ("search X and save the results"); the
+        # filename is derived from the topic.
+        if re.search(
+            r"\b(?:save|store|export|dump)\s+(?:the\s+|all\s+|these\s+|those\s+)?"
+            r"(?:results?|links?|output|findings?|it|them)\b",
+            lowered,
+        ):
+            return True
+        return False
+
+    def _default_results_filename(self, text: str, entities: dict[str, Any]) -> str:
+        # Derive a safe default filename for saved search results. The name comes
+        # from the topic (or the query body), slugified and bounded; the extension
+        # honours a requested file type. No path separators or traversal
+        # characters can enter it."
+
+        topic = str(entities.get("topic") or "").strip()
+        if not topic:
+            topic = self._search_query(text, entities)
+        slug = re.sub(r"[^a-z0-9]+", "_", topic.casefold()).strip("_")
+        slug = slug[:60].strip("_") or "atlas_search"
+        extension = str(entities.get("file_type") or "txt")
+        return f"{slug}.{extension}"
+
+    def _search_results_to_file(
+        self, text: str, entities: dict[str, Any], *, query: str = "", site: str | None = None
+    ) -> list[TaskAction]:
+        # Plan a plain web search whose results are saved to a file. The saved
+        # content is the rendered result list, published by the search as
+        # $search_results and consumed by filesystem.write -- the search links,
+        # not a full-page artifact (which a script/lyrics request needs and
+        # _search_follow_up handles separately)."
+
+        query = query or self._search_query(text, entities)
+        path = entities.get("filename") or self._default_results_filename(text, entities)
+        folder = entities.get("folder")
+        if folder:
+            path = f"{folder}/{path}"
+        return [
+            TaskAction(
+                action_id="a1",
+                capability="web.search",
+                parameters={
+                    "query": query,
+                    "site": site,
+                    "sort": entities.get("sort"),
+                    "max_results": 8,
+                },
+                description=f"Search {site or 'the web'} for {query}.",
+                produces="search_results",
+                expected_output="result links",
+            ),
+            TaskAction(
+                action_id="a2",
+                capability="filesystem.write",
+                parameters={"path": path, "text": "$search_results", "overwrite": False},
+                description=f"Save the search results to {path}.",
+                depends_on=["a1"],
+                expected_output=f"{path} created",
+                risk_level="medium_risk",
+                requires_confirmation=True,
+            ),
+        ]
+
     def _search_follow_up(
         self, text: str, entities: dict[str, Any], *, query: str = "", site: str | None = None
     ) -> list[TaskAction]:
@@ -1190,8 +1563,7 @@ class SemanticTaskInterpreter:
         # destination, we still produce a research+generate pipeline for the
         # reasoning engine to execute and return as an answer.
         lowered = text.casefold()
-        placement_verbs = _CREATE_VERBS + ("copy", "paste", "type", "put", "place", "add", "insert")
-        has_placement = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in placement_verbs)
+        has_placement = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _PLACEMENT_VERBS)
         has_transformation_verb = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _TRANSFORM_VERBS)
         has_transformation_noun = any(re.search(rf"\b{noun}\b", lowered) for noun in _TRANSFORM_NOUNS)
         has_transformation = has_transformation_verb or has_transformation_noun
@@ -1199,22 +1571,56 @@ class SemanticTaskInterpreter:
             return []
         application = entities.get("application")
         filename = entities.get("filename")
-        has_destination = application or filename
-        
-        # Determine the type of transformation for tailored instructions
-        transform_type = "summary"
-        if re.search(r"\bexplanation\b", lowered):
-            transform_type = "explanation"
-        elif re.search(r"\b(overview|synopsis)\b", lowered):
-            transform_type = "overview"
-        elif re.search(r"\bdigest\b", lowered):
-            transform_type = "digest"
-        
+        # A file destination (explicit filename, a requested file type, or a
+        # save-verb with a file word) means the *results* are persisted unless a
+        # transformation reshapes them first. This is independent of whether the
+        # filename was explicit: "save them in results.txt" and "save the results
+        # to a file" are the same task.
+        wants_file_results = (
+            not application and self._file_destination_requested(text, entities)
+        )
+        if wants_file_results and not has_transformation:
+            return self._search_results_to_file(text, entities, query=query, site=site)
+        if wants_file_results and has_transformation and not filename:
+            # "search X, summarize, save to a file": the summary is the artifact
+            # to persist, so derive the filename and keep the transform pipeline.
+            filename = self._default_results_filename(text, entities)
+        has_destination = bool(application or filename or wants_file_results)
+
+        # Determine the type of transformation for tailored instructions. The
+        # interpreter records the requested shape as an entity; fall back to the
+        # lexical scan so an LLM-sourced task still resolves a transform type.
+        transform_type = str(entities.get("transform") or "summary")
+        if transform_type not in {"summary", "explanation", "overview", "digest"}:
+            if re.search(r"\bexplanation\b", lowered):
+                transform_type = "explanation"
+            elif re.search(r"\b(overview|synopsis)\b", lowered):
+                transform_type = "overview"
+            elif re.search(r"\bdigest\b", lowered):
+                transform_type = "digest"
+            else:
+                transform_type = "summary"
+
         # Determine the retrieval goal based on whether this is a direct artifact
         # request or a transformation request.
         topic = entities.get("topic")
         content_type = entities.get("content_type")
-        
+        # A transformation request ("summarize these videos") wants information
+        # about the subject that is then reshaped -- not the source artifact
+        # itself. Retrieval must target the source content type and not demand an
+        # artifact, or it would hunt for a "summary document".
+        source_content_type = "generic" if has_transformation else content_type
+        # Only a document content type can be an "artifact" to retrieve. "save the
+        # results" / "save it" is a placement of search output, not a request for
+        # a document, so it must not set must_be_artifact (which would send
+        # retrieval hunting for a "best laptops document").
+        document_requested = str(content_type or "").casefold() in {
+            "script", "transcript", "lyrics", "song", "code", "documentation",
+            "list", "movie_script",
+        }
+        wants_artifact = has_placement and not has_transformation and document_requested
+        # A pure "save the results to a file" request does not want an artifact
+        # read; it wants the search results written out, which is handled above.
         # A placement request wants the content itself (the script/transcript
         # article), not a page that merely discusses it, so the retrieval task
         # is marked as an artifact request.
@@ -1227,9 +1633,9 @@ class SemanticTaskInterpreter:
                 "max_results": 8,
                 "max_pages": 5,
                 "target": topic,
-                "content_type": content_type,
-                "must_be_artifact": has_placement,  # Only true for direct placement (copy script)
-                "goal": "retrieve_document" if has_placement else "find_information",
+                "content_type": source_content_type,
+                "must_be_artifact": wants_artifact,
+                "goal": "retrieve_document" if wants_artifact else "find_information",
             },
             description="Retrieve the requested content and isolate it."
             + ("" if has_placement else " for transformation."),
@@ -1254,6 +1660,7 @@ class SemanticTaskInterpreter:
                 capability="content.generate",
                 parameters={
                     "content_type": transform_type,
+                    "input_content_type": source_content_type,
                     "topic": topic or "",
                     "instructions": transform_instructions,
                     "input_content": "$web_content",
@@ -1418,10 +1825,13 @@ class SemanticTaskInterpreter:
             )
         )
         if move or copy:
-            destination = "Documents" if not re.search(r"\b(?:to|into)\s+(?:my\s+|the\s+)?(\w+)", text.casefold()) else None
-            dest_match = re.search(r"\b(?:to|into)\s+(?:my\s+|the\s+)?(downloads|documents|desktop|pictures|music|videos)\b", text, re.IGNORECASE)
-            if dest_match:
-                destination = _KNOWN_FOLDERS.get(dest_match.group(1).casefold(), dest_match.group(1))
+            # The destination folder is parsed as a distinct entity; fall back to
+            # a "to/into <folder>" clause when the entity was not set.
+            destination = entities.get("dest_folder")
+            if not destination:
+                dest_match = re.search(r"\b(?:to|into)\s+(?:my\s+|the\s+)?(downloads|documents|desktop|pictures|music|videos)\b", text, re.IGNORECASE)
+                if dest_match:
+                    destination = _KNOWN_FOLDERS.get(dest_match.group(1).casefold(), dest_match.group(1))
             capability = "filesystem.copy" if copy else "filesystem.move"
             actions.append(
                 TaskAction(
@@ -1460,7 +1870,8 @@ class SemanticTaskInterpreter:
         # Notepad" is a search *for X*; the trailing write clause is not part
         # of the query. Cut the text at the clause boundary first.
         body = re.split(
-            r"\b(?:and\s+)?(?:write|save|put|store|type|paste|copy|add)\b",
+            r"\b(?:and\s+)?(?:write|save|put|store|type|paste|copy|add|open|launch|start|"
+            r"summarize|summarise|condense|digest|export|create|make|insert|place|display|show)\b",
             text, maxsplit=1, flags=re.IGNORECASE,
         )[0]
         # Fall back to stripping site/action/boilerplate words from the request.
@@ -1475,6 +1886,11 @@ class SemanticTaskInterpreter:
         # search ...") must not leak into the query text.
         application = str(entities.get("application") or "").casefold()
         stop.update(token for token in re.findall(r"[a-z0-9]+", application))
+        if not body.strip():
+            # The clause verb led the sentence ("open chrome and search for
+            # weather"): there is no prefix clause, so strip the scaffolding
+            # from the whole text rather than echoing the entire prompt back.
+            body = text
         tokens = [t for t in re.findall(r"[A-Za-z0-9]+", body.casefold()) if t not in stop]
         return " ".join(tokens).strip() or text.strip()
 
@@ -1538,20 +1954,29 @@ class SemanticTaskInterpreter:
         # with no resolvable target is ambiguous.
         if re.search(r"\b(?:open|launch|start|write|put|type|save|move|copy)\s+(?:it|that|this|them|those|there)\b", lowered):
             # "move it to Documents" is unambiguous only because a prior search
-            # step locates the object. A pronoun with no such resolving step (for
-            # example "open it and write something") has no referent and is
-            # genuinely ambiguous.
-            has_resolving_search = any(a.capability == "filesystem.search" for a in actions)
+            # step locates the object. A pronoun whose referent is produced by an
+            # earlier planned step (a file search, or the results a web search
+            # returns) is resolvable; a pronoun with no such step ("open it and
+            # write something") has no referent and is genuinely ambiguous.
+            resolving = {"filesystem.search", "filesystem.search_content", "web.search", "web.research"}
+            has_resolving_search = any(a.capability in resolving for a in actions)
             if (
                 not has_resolving_search
                 and not entities.get("application")
                 and not entities.get("filename")
             ):
                 return True
-        # A content request that names no application, filename, or topic is too
-        # thin to act on safely.
+        # A content request is only unactionable when it names neither a content
+        # type nor a topic nor a destination ("write something"). "write a
+        # poem" is fully satisfiable: the model generates the poem and Atlas
+        # returns it, so it must NOT be blocked waiting for a destination.
         if actions and all(a.capability == "content.generate" for a in actions):
-            if not entities.get("application") and not entities.get("filename") and not entities.get("topic"):
+            if not (
+                entities.get("content_type")
+                or entities.get("topic")
+                or entities.get("application")
+                or entities.get("filename")
+            ):
                 return True
         return False
 

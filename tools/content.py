@@ -33,6 +33,7 @@ class ContentGenerationTool(Tool):
             "length": {"type": "string", "description": "short or long"},
             "instructions": {"type": "string", "description": "extra free-form guidance"},
             "input_content": {"type": "string", "description": "existing content to transform (for summarization, rewriting, etc.)"},
+            "input_content_type": {"type": "string", "description": "content type of the provided input_content, e.g. article, video, transcript"},
         },
         output_schema={"text": {"type": "string"}},
         permission_level=PermissionLevel.READ_ONLY,
@@ -56,6 +57,7 @@ class ContentGenerationTool(Tool):
         length = str(parameters.get("length") or "").strip()
         instructions = str(parameters.get("instructions") or "").strip()
         input_content = str(parameters.get("input_content") or "").strip()
+        input_content_type = str(parameters.get("input_content_type") or "").strip()
 
         request = self._build_request(
             content_type=content_type,
@@ -65,6 +67,7 @@ class ContentGenerationTool(Tool):
             length=length,
             instructions=instructions,
             input_content=input_content,
+            input_content_type=input_content_type,
         )
         # content.generate must return prose, so a JSON-looking answer is not
         # expected; call the model directly for the free-text body instead.
@@ -100,10 +103,12 @@ class ContentGenerationTool(Tool):
         length: str,
         instructions: str = "",
         input_content: str = "",
+        input_content_type: str = "",
     ) -> str:
         # Transformation mode: input_content provided -> transform it
         if input_content:
-            parts = [f"Transform the following content into a {content_type}."]
+            source = f" the following {input_content_type} content" if input_content_type and input_content_type != "generic" else " the following content"
+            parts = [f"Transform{source} into a {content_type}."]
             if topic:
                 parts.append(f"Subject: {topic}.")
             if instructions:

@@ -281,6 +281,7 @@ class QueryRouter:
             prior_task=prior_task,
             task=task,
             history=history,
+            file_intent=file_intent,
         )
         if ambiguous_reference:
             features.append("unresolved_reference")
@@ -469,6 +470,7 @@ def _has_unresolved_reference(
     prior_task: Task | None,
     task: Task,
     history: str,
+    file_intent: "FileIntent | None" = None,
 ) -> bool:
     """Detect a target that only exists in earlier context.
 
@@ -482,7 +484,17 @@ def _has_unresolved_reference(
     entities = task.entities
     if entities.get("application") or entities.get("filename") or entities.get("folder"):
         return False
+    # An explicitly named local file ("read my notes.txt and summarize it") gives
+    # the pronoun a concrete referent even though it is not a filename entity.
+    if file_intent is not None and (file_intent.subject or file_intent.extension or file_intent.folder):
+        return False
     if any(action.capability.startswith("filesystem.") for action in task.actions):
+        return False
+    # A pronoun whose referent is the content a planned step produces ("summarize
+    # them" of a web search/research result, "write it" from generated text) is
+    # resolvable, so it is not an ambiguous reference.
+    producing = {"web.search", "web.research", "web.fetch", "content.generate"}
+    if any(action.capability in producing for action in task.actions):
         return False
     referent_available = bool(
         prior_task is not None or (history or "").strip() or task.context.get("prior_task")

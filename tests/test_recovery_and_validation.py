@@ -167,3 +167,135 @@ class PlanValidationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class ApprovalSignatureTests(unittest.TestCase):
+    # An approval grant is bound to the exact arguments the user approved. A
+    # bounded recovery that rewrites a consequential step's arguments produces a
+    # different signature, so the old grant no longer authorizes the new effect.
+
+    def test_signature_is_stable_for_identical_arguments(self):
+        from executor import approval_signature
+
+        self.assertEqual(
+            approval_signature("filesystem.write", {"path": "a.txt", "text": "hi"}),
+            approval_signature("filesystem.write", {"text": "hi", "path": "a.txt"}),
+        )
+
+    def test_signature_changes_when_arguments_change(self):
+        from executor import approval_signature
+
+        self.assertNotEqual(
+            approval_signature("filesystem.write", {"path": "a.txt"}),
+            approval_signature("filesystem.write", {"path": "b.txt"}),
+        )
+
+    def test_executor_requires_reapproval_after_argument_change(self):
+        from executor import Executor, approval_signature
+        from tools import ExecutionMode, PermissionEngine, ToolRegistry, ToolRouter
+        from tools.base import PermissionLevel, RiskLevel, Tool, ToolMetadata, ToolResult
+
+        calls: list[dict] = []
+
+        class ConfirmingWrite(Tool):
+            metadata = ToolMetadata(
+                name="filesystem.write",
+                description="filesystem.write",
+                category="computer.filesystem",
+                permission_level=PermissionLevel.MEDIUM_RISK,
+                risk_level=RiskLevel.MEDIUM,
+            )
+
+            def execute(self, parameters):
+                calls.append(dict(parameters))
+                return ToolResult(success=True, status="completed", output={"path": parameters.get("path")})
+
+        registry = ToolRegistry()
+        registry.register(ConfirmingWrite())
+        router = ToolRouter(registry=registry, permission_engine=PermissionEngine(mode=ExecutionMode.CONFIRM))
+        executor = Executor(
+            vector_store=type("V", (), {"search": lambda *a, **k: []})(),
+            system_prompt="s",
+            retrieval_template="{context}{question}",
+            tool_router=router,
+        )
+
+        plan = ExecutionPlan(
+            user_question="save",
+            steps=[
+                ExecutionStep(
+                    id="s1",
+                    name="write",
+                    action="invoke_tool",
+                    description="write",
+                    metadata={"tool": "filesystem.write", "parameters": {"path": "approved.txt", "text": "hi"}},
+                )
+            ],
+        )
+        context = ExecutionContext(user_input="save")
+        # The user approved the step with path "approved.txt".
+        context.metadata["approved_tools"] = {"filesystem.write"}
+        context.metadata["approved_signatures"] = {
+            approval_signature("filesystem.write", {"path": "approved.txt", "text": "hi"})
+        }
+        # A recovery rewrote the destination to something else.
+        plan.steps[0].metadata["parameters"] = {"path": "different.txt", "text": "hi"}
+
+        executor.execute(plan, context)
+
+        # The altered write was not authorized, so the tool never ran.
+        self.assertEqual(calls, [])
+        self.assertEqual(context.status, TaskStatus.WAITING_FOR_CONFIRMATION)
+
+    def test_executor_allows_unchanged_approved_arguments(self):
+        from executor import Executor, approval_signature
+        from tools import ExecutionMode, PermissionEngine, ToolRegistry, ToolRouter
+        from tools.base import PermissionLevel, RiskLevel, Tool, ToolMetadata, ToolResult
+
+        calls: list[dict] = []
+
+        class ConfirmingWrite(Tool):
+            metadata = ToolMetadata(
+                name="filesystem.write",
+                description="filesystem.write",
+                category="computer.filesystem",
+                permission_level=PermissionLevel.MEDIUM_RISK,
+                risk_level=RiskLevel.MEDIUM,
+            )
+
+            def execute(self, parameters):
+                calls.append(dict(parameters))
+                return ToolResult(success=True, status="completed", output={"path": parameters.get("path")})
+
+        registry = ToolRegistry()
+        registry.register(ConfirmingWrite())
+        router = ToolRouter(registry=registry, permission_engine=PermissionEngine(mode=ExecutionMode.CONFIRM))
+        executor = Executor(
+            vector_store=type("V", (), {"search": lambda *a, **k: []})(),
+            system_prompt="s",
+            retrieval_template="{context}{question}",
+            tool_router=router,
+        )
+        plan = ExecutionPlan(
+            user_question="save",
+            steps=[
+                ExecutionStep(
+                    id="s1",
+                    name="write",
+                    action="invoke_tool",
+                    description="write",
+                    metadata={"tool": "filesystem.write", "parameters": {"path": "approved.txt", "text": "hi"}},
+                )
+            ],
+        )
+        context = ExecutionContext(user_input="save")
+        context.metadata["approved_tools"] = {"filesystem.write"}
+        context.metadata["approved_signatures"] = {
+            approval_signature("filesystem.write", {"path": "approved.txt", "text": "hi"})
+        }
+
+        executor.execute(plan, context)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["path"], "approved.txt")

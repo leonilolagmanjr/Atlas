@@ -30,6 +30,16 @@ def interpret_tool_result(tool_name: str, result: ToolResult) -> str:
         return f"Opened {result.output.get('application', 'the application')}."
     if tool_name == "applications.launch" and isinstance(result.output, dict):
         return f"Launched {result.output.get('executable', 'the application')}."
+    if tool_name == "filesystem.write" and isinstance(result.output, dict):
+        path = result.output.get("path")
+        if path:
+            return f"Saved the content to {path}."
+        return "Saved the content to a file."
+    if tool_name == "filesystem.search" and isinstance(result.output, dict):
+        matches = result.output.get("matches") or []
+        if not matches:
+            return "No matching files were found."
+        return f"Found {len(matches)} matching file(s)."
     if tool_name == "web.search" and isinstance(result.output, dict):
         results = result.output.get("results") or []
         query = result.output.get("query", "the request")

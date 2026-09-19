@@ -641,6 +641,11 @@ class ContentFormatter:
             return DestinationType.CODE_EDITOR
         elif any(term in lowered for term in ["terminal", "cmd", "powershell", "console"]):
             return DestinationType.TERMINAL
+        # A plain-text file destination (results.txt, notes.log, output.csv)
+        # renders as plain text, the same as Notepad, rather than as generic
+        # prose; a Markdown/HTML file keeps its own structure.
+        if re.search(r"\.(?:txt|log|csv|tsv|text)$", lowered.strip()):
+            return DestinationType.NOTEPAD
         return DestinationType.GENERIC
 
     def format_with_repair(self, raw_content: str, destination: str = "notepad", title: str = "", source: str = "", url: str = "", max_repairs: int = 2) -> tuple[str, dict[str, Any]]:

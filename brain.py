@@ -340,12 +340,25 @@ class Brain:
         context = self._pending_context(task_id)
         if context is None or context.execution_plan is None:
             return "There is no pending action to approve."
+        from executor import approval_signature
         tool_names = {
             str(step.metadata.get("tool"))
             for step in context.execution_plan.steps
             if step.action == "invoke_tool" and step.metadata.get("tool")
         }
         context.metadata["approved_tools"] = tool_names
+        # Bind the grant to the exact arguments the user approved, so a recovery
+        # that rewrites a consequential step's arguments cannot proceed on the
+        # old approval.
+        signatures = set()
+        for step in context.execution_plan.steps:
+            if step.action != "invoke_tool":
+                continue
+            tool = str(step.metadata.get("tool") or "")
+            parameters = step.metadata.get("parameters") or {}
+            if tool and isinstance(parameters, dict):
+                signatures.add(approval_signature(tool, parameters))
+        context.metadata["approved_signatures"] = signatures
         self._executor.execute(context.execution_plan, context)
         if context.status != TaskStatus.WAITING_FOR_CONFIRMATION:
             self._pending_contexts.pop(context.task_id, None)

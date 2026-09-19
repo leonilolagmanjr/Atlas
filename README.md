@@ -60,7 +60,7 @@ CLI / FastAPI + React
 
 The semantic interpreter can propose source/request-type fields directly. Routing also uses deterministic signals and conversation context; it is not solely a keyword-to-tool switch. Instructional questions must remain distinct from requests to perform an action. Unsupported or ambiguous targets should produce clarification or a limitation, not an invented tool.
 
-An action identifies a registered capability, parameters, dependencies, and optionally a named output. For example, content generation can publish `generated_text`, which `applications.write_text` consumes as `$generated_text`. Topic, tone, length, and destination are separate parameters: in “write a poem about cars in Notepad,” cars is the topic and Notepad is the application.
+An action identifies a registered capability, parameters, dependencies, and optionally a named output. For example, content generation can publish `generated_text`, which `applications.write_text` consumes as `$generated_text`, and a web search publishes `search_results`, which `filesystem.write` consumes to save the result list. Topic, tone, length, and destination are separate parameters: in “write a poem about cars in Notepad,” cars is the topic and Notepad is the application. A file destination is parsed distinctly from an application destination, and a move/copy target folder (“move the largest pdf to Documents”) is the destination, not the search location.
 
 The model proposes structure, not shell execution. Validation checks capability existence, required parameters/types, dependency identifiers, and output references. Planning orders dependencies, but cycle validation and order-independent reference validation remain incomplete. The generated-text handoff works; generic `$name` output resolution still has legacy gaps and must not be treated as reliable arbitrary dataflow.
 
@@ -107,6 +107,8 @@ Keep new capabilities behind existing tool contracts; do not put subprocess exec
 | Atlas capabilities/model/tools | Uses actual registered capability metadata and runtime configuration, rather than model claims about installed tools |
 | Action request | Preserves `Task.actions` and delegates execution to the permission-gated executor |
 | Hybrid request | Combines a source and an action: "search the web for X and write it into Notepad" runs task-aware retrieval (goal + content-type inference → source ranking → extraction → validation → bounded retry) and writes the validated content after confirmation, not the search links and not a page about the subject. Composition is limited to the existing action capabilities. |
+| Search results saved to a file | "search for X and save the results to a file" plans `web.search` → `filesystem.write` and persists the rendered result list (links and snippets), deriving a safe default filename from the topic when none is given. A transformation saves its *output*: "search X, summarize, save to a file" runs `web.research` → `content.generate` → `content.format` → `filesystem.write`. |
+| Transformation vs. artifact | A transformation noun ("summary", "overview") names how the result is reshaped, not the source to retrieve. "summarize the car videos" retrieves *information about* videos (`must_be_artifact=False`, source content type) and then generates the summary; it does not hunt for a "summary document". A direct artifact request ("get the bee movie script") still sets `must_be_artifact=True`. |
 | Ambiguous request | "open it", "find that file", "make it better" with no resolvable referent return a clarification question instead of guessing a source or action |
 
 Read-only research actions (`web.search`/`web.fetch` and non-mutating `filesystem.list/search/read/metadata/search_content`) are served by the reasoning engine, which synthesizes a cited answer. Tasks that mutate state or control applications—including hybrids—are delegated to the validator/planner/executor path. An ordered source plan is not an autonomous research/action graph; selecting web and computer sources does not implement “research and install any program”, and only existing validated Task actions can run.
@@ -189,7 +191,7 @@ Application text entry resolves a target and attempts window/control-based deliv
 
 The verifier records `verified`, `unverified`, or `failed` according to capability contracts. Many checks inspect returned output shape or tool-reported values (for example, a PID or character count), **not an independent observation of the intended effect**. Bounded recovery can adjust arguments for the same capability, with per-step and plan-wide limits; it is not arbitrary replanning.
 
-New API task submissions use a single FIFO worker, but approval resolution has known concurrency gaps. Do not rely on a global guarantee that all actions can never overlap. Approvals are associated with a task, but existing grants are not fully bound to exact step arguments; changed recovery arguments need stronger reapproval handling. Both are priority hardening work, not completed security properties.
+New API task submissions use a single FIFO worker, but approval resolution has known concurrency gaps. Do not rely on a global guarantee that all actions can never overlap. Approval grants are bound to the exact planned step arguments (a deterministic signature over the capability and its planned parameters), so a bounded recovery that rewrites a consequential step's arguments is not covered by the earlier grant and pauses for fresh approval. Atomic serialized approval execution remains future hardening work.
 
 ## Memory and persistence
 
@@ -317,7 +319,8 @@ The suite uses `unittest` and covers these categories:
 - Semantic Task/source fields, malformed model output, instructional-question versus action behavior, clarification and parameter preservation.
 - Registry-derived capability availability/introspection, task validation, dependency ordering, generated-text handoff, action delegation and end-to-end execution with fake models/tools. This coverage does not establish complete cycle/reference correctness.
 - General/current/local-file/system/memory source routing, accepted versus rejected evidence, answer provenance, per-call budgets and cooperative deadline/cancellation behavior.
-- General-purpose routing regressions: personal-document lookups staying local, create-text-file actions, hybrid search-then-write composition, ambiguous requests clarifying instead of guessing, and the read-only-research-versus-mutation delegation split.
+- General-purpose routing regressions: personal-document lookups staying local, create-text-file actions, hybrid search-then-write composition, transformation-versus-artifact separation, search-results-saved-to-file and transform-then-save composition, generation-without-destination, named-file pronoun resolution, ambiguous requests clarifying instead of guessing, and the read-only-research-versus-mutation delegation split.
+- Content formatting destination resolution (plain-text file vs. Markdown vs. generic), answer routing between the deterministic artifact synthesiser and the evidence-grounded prompt, and argument-bound approval grants (a changed planned step argument requires reapproval).
 - Bounded filesystem traversal/read/content search, exclusions, root escapes, PDF text handling, and move/copy contracts. Platform or symlink-privilege checks may skip where unavailable.
 - Permission decisions, pause/resume, recovery, task snapshots, queue behavior, application resolution and mocked Windows text-entry paths.
 - PowerShell validation/result interpretation, public URL and redirect checks, provider fallback, mocked web/YouTube responses, and Ollama timeout configuration.
@@ -335,7 +338,7 @@ Manual smoke checks should separately confirm local Ollama availability, one gen
 - **Cooperative limits:** the reasoning deadline is checked between calls; the engine accepts a cancellation callback/token, but Brain/API/UI do not provide full end-to-end running-task cancellation. In-flight model, file/PDF, or network calls are not forcibly preempted by that token.
 - **Transport is not wall-clock preemption:** Ollama has a transport timeout, not a hard absolute generation deadline. PDF extraction can block within one page. Reasoning source/tool budgets do not globally meter every internal provider request, retrieval subquery, or legacy executor operation.
 - **Web boundary gaps:** initial/final URLs and redirects check public IPv4/IPv6 destinations, but DNS re-resolution and proxy behavior leave DNS-rebinding/TOCTOU risk. This is not a network sandbox.
-- **Approval gaps:** task-specific approval does not yet ensure atomic serialized approval execution or immutable argument-bound grants. Recoveries that change effectful arguments need reapproval hardening.
+- **Approval gaps:** task-specific approval does not yet ensure atomic serialized approval execution. Grants are now argument-bound (a recovery that changes effectful planned arguments requires fresh approval), but the approval/resume path is not guaranteed to be atomic under concurrent submission.
 - **Verification limits:** tool-reported output shape often stands in for independent effect checks; citations and retrieval sufficiency do not prove truth.
 - **Local-first, not offline-only:** selected web research sends queries to public services; model/embedding setup may download data. Files, memory, task history, and logs can hold private information.
 - **Capability limits:** no generic install/package management, controlled downloads, browser automation, OCR, voice/vision, durable resumable execution, or long-term semantic memory. Existing application text entry is narrower than full GUI automation.
@@ -344,7 +347,7 @@ Manual smoke checks should separately confirm local Ollama availability, one gen
 
 Priority order emphasizes reliability before broader autonomy:
 
-1. Serialize approval/resume through the execution queue and bind approval to exact step/target/arguments, including changed recovery arguments.
+1. Serialize approval/resume atomically through the execution queue (approval grants are already bound to exact planned step arguments, so changed recovery arguments require reapproval).
 2. Complete dependency-cycle validation, order-independent reference checks, generic output resolution, and recovery-state correctness. Add independent effect observations for file/application actions and stronger source/answer verification; test ambiguous targets and failed recovery honestly.
 3. Wire cancellation across Brain, API and UI; isolate potentially blocking model/PDF/tool work where hard deadlines are needed; add durable live checkpoints without silently replaying effects.
 4. Harden web connection resolution/proxy handling, source trust and provenance, and expand regression coverage for hostile/unavailable sources and platform boundaries.

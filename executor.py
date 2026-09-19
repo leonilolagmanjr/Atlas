@@ -232,10 +232,20 @@ class Executor:
         # require it, and a resumed plan must still be considered approved. Do
         # not use pop() here or the first tool call would discard the approval.
         approved_tools = context.metadata.get("approved_tools") or set()
+        # An approval is bound to the exact arguments the user saw. If a bounded
+        # recovery rewrote a consequential step's arguments after the grant, the
+        # old approval does not cover the new effect, so it must be re-obtained.
+        approved_signatures = context.metadata.get("approved_signatures")
+        approved = tool_name in approved_tools
+        if approved and approved_signatures is not None:
+            # Signature over the *planned* parameters the user approved (references
+            # included), before $reference resolution, so it matches the grant.
+            planned = step.metadata.get("parameters") or {}
+            approved = approval_signature(tool_name, planned) in approved_signatures
         result = self._tool_router.execute(
             tool_name,
             parameters,
-            approved=tool_name in approved_tools,
+            approved=approved,
         )
         context.tool_calls.append(
             {
@@ -494,6 +504,10 @@ class Executor:
             # A fetch publishes its page text (not the raw {url, text} mapping)
             # so a downstream write receives usable content.
             produced[str(name)] = str(output.get("text") or "")
+        elif name and tool == "filesystem.read" and isinstance(output, dict):
+            # A local read publishes its text (not the raw {path, content} mapping)
+            # so a downstream transform/generate step receives usable content.
+            produced[str(name)] = str(output.get("content") or "")
         elif name and tool == "web.research" and isinstance(output, dict):
             # Research publishes the ranked, isolated content as text.
             produced[str(name)] = str(output.get("content") or "")
@@ -968,6 +982,23 @@ class Executor:
             context.final_response = message
         else:
             context.final_response = UNKNOWN_RESPONSE
+
+
+def approval_signature(tool_name: str, parameters: dict) -> str:
+    # Return a stable signature binding an approval to exact step arguments.
+    # The signature is deterministic (sorted keys, JSON-encoded values with a
+    # string fallback) so an unchanged request matches its grant while a
+    # recovery that rewrites the arguments produces a different signature and
+    # therefore needs fresh approval. It is a hash, not the arguments.
+
+    import hashlib
+    import json
+    try:
+        payload = json.dumps(parameters, sort_keys=True, default=str, ensure_ascii=False)
+    except (TypeError, ValueError):
+        payload = repr(sorted((str(k), str(v)) for k, v in parameters.items()))
+    digest = hashlib.sha256(f"{tool_name}\u0000{payload}".encode("utf-8")).hexdigest()
+    return digest[:32]
 
 
 def _top_result_url(output: dict) -> str | None:

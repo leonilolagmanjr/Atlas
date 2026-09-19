@@ -15,7 +15,7 @@ from models import TaskStatus
 from planner import Planner
 from reasoning.verifier import TaskVerifier
 from tools import ExecutionMode, PermissionEngine, ToolRegistry, ToolRouter
-from tools.base import Tool, ToolMetadata, ToolResult
+from tools.base import PermissionLevel, RiskLevel, Tool, ToolMetadata, ToolResult
 
 
 class FakeVectorStore:
@@ -151,6 +151,97 @@ class DeterministicPipelineTests(unittest.TestCase):
         self.assertEqual(brain.last_context.status, TaskStatus.UNCERTAIN)
         self.assertEqual(writer.calls, [])
         self.assertIsNotNone(out)
+
+class WebSearchToFileExecutionTests(unittest.TestCase):
+    # "Search X and save the results to a file" must actually execute a search
+    # and a file write, and the write must receive the rendered result list
+    # (not the raw {url, results} mapping).
+
+    def test_search_results_are_written_to_the_derived_file(self):
+        from tools.base import PermissionLevel, RiskLevel
+        class WebSearchTool(RecordingTool):
+            def __init__(self):
+                super().__init__(
+                    "web.search",
+                    {
+                        "query": "rtx 5090 benchmarks",
+                        "results": [
+                            {"title": "RTX 5090 Review", "url": "https://example.com/a", "snippet": "fast"},
+                            {"title": "Benchmarks", "url": "https://example.com/b", "snippet": "fps"},
+                        ],
+                    },
+                )
+
+        class WriteFileTool(RecordingTool):
+            def __init__(self):
+                super().__init__("filesystem.write", {"path": "rtx_5090_benchmarks.txt", "bytes": 42})
+                self.metadata = ToolMetadata(
+                    name="filesystem.write",
+                    description="filesystem.write",
+                    category="computer.filesystem",
+                    permission_level=PermissionLevel.MEDIUM_RISK,
+                    risk_level=RiskLevel.MEDIUM,
+                )
+
+        search = WebSearchTool()
+        writer = WriteFileTool()
+        brain = build_brain(lambda **_: "{}", [search, writer])
+        brain.process("Search for RTX 5090 benchmarks and save the results to a file.")
+
+        ctx = brain.last_context
+        self.assertEqual(ctx.status, TaskStatus.COMPLETED)
+        tools = [s.metadata.get("tool") for s in ctx.execution_plan.steps]
+        self.assertEqual(tools, ["web.search", "filesystem.write"])
+        self.assertEqual(writer.calls[0]["path"], "rtx_5090_benchmarks.txt")
+        # The write received rendered text, not a dict.
+        written = writer.calls[0]["text"]
+        self.assertIsInstance(written, str)
+        self.assertIn("RTX 5090 Review", written)
+        self.assertIn("https://example.com/a", written)
+
+    def test_summarize_then_save_runs_the_full_transform_chain(self):
+        # search -> web.research -> summarize -> format -> write file: the raw
+        # retrieved content reaches the generator and the summary reaches the file.
+        retrieved = "Car A is fast. Car B is efficient. Car C is affordable."
+
+        class ResearchTool(RecordingTool):
+            def __init__(self):
+                super().__init__(
+                    "web.research",
+                    {"content": retrieved, "sources": ["https://example.com/cars"], "validated": True},
+                )
+
+        class GeneratorTool(RecordingTool):
+            def __init__(self):
+                super().__init__("content.generate", {"text": "Summary: A, B, C differ in speed, efficiency, cost."})
+
+        class WriteFileTool(RecordingTool):
+            def __init__(self):
+                super().__init__("filesystem.write", {"path": "car_reviews.txt", "bytes": 10})
+                self.metadata = ToolMetadata(
+                    name="filesystem.write",
+                    description="filesystem.write",
+                    category="computer.filesystem",
+                    permission_level=PermissionLevel.MEDIUM_RISK,
+                    risk_level=RiskLevel.MEDIUM,
+                )
+
+        researcher = ResearchTool()
+        generator = GeneratorTool()
+        formatter = FormattingTool({"text": "Summary: A, B, C differ in speed, efficiency, cost."})
+        writer = WriteFileTool()
+        brain = build_brain(lambda **_: "{}", [researcher, generator, formatter, writer])
+        brain.process("search the web for car reviews and summarize them in a file")
+
+        ctx = brain.last_context
+        tools = [s.metadata.get("tool") for s in ctx.execution_plan.steps]
+        self.assertEqual(tools, ["web.research", "content.generate", "content.format", "filesystem.write"])
+        # The generator received the raw, isolated retrieved content.
+        self.assertIn("Car A is fast", generator.calls[0]["input_content"])
+        self.assertEqual(generator.calls[0]["content_type"], "summary")
+        # The file received the summary text.
+        self.assertEqual(writer.calls[0]["path"], "car_reviews.txt")
+        self.assertIn("Summary:", writer.calls[0]["text"])
 
 
 class LLMInterpretedPipelineTests(unittest.TestCase):

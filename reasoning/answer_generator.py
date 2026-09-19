@@ -167,9 +167,18 @@ class AnswerGenerator:
         provenance = evidence.retrieved_sources()
         citations = evidence.citation_list()
         
-        # If we have a task with evidence_state and it's a web research task,
-        # use the structured synthesizer
-        if task is not None and hasattr(task, 'evidence_state') and task.evidence_state and mode == ResponseMode.WEB_RESEARCH:
+        # The deterministic document synthesizer is for *artifact* retrieval
+        # ("get the bee movie script"): it preserves the requested document as-is
+        # instead of summarizing it. An informational web-research answer is
+        # better served by the evidence-grounded prompt, which names the user's
+        # question and cites sources, so it must not be replaced by a raw
+        # bullet dump of extracted sentences.
+        evidence_state = getattr(task, "evidence_state", None) if task is not None else None
+        if (
+            evidence_state is not None
+            and mode == ResponseMode.WEB_RESEARCH
+            and bool(getattr(evidence_state, "must_be_artifact", False))
+        ):
             return self._synthesized_answer(question, task, provenance, citations, history, notes)
         
         rendered = evidence.render_for_prompt()

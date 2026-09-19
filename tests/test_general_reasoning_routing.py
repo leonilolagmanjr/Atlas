@@ -129,6 +129,274 @@ class HybridRegressionTests(unittest.TestCase):
         task = _interpreter().interpret("Search YouTube for popular videos.")
         self.assertEqual([a.capability for a in task.actions], ["web.search"])
 
+class SaveResultsRegressionTests(unittest.TestCase):
+    # "Save the results to a file" must persist something, not be dropped. Before
+    # this fix the save clause was silently discarded: the task planned a bare
+    # web.search and reported the links as if the request were fulfilled.
+
+    CASES = [
+        "Search for RTX 5090 benchmarks and save the results to a file.",
+        "search for Python decorators and save the results to a file",
+        "look up RTX 5090 benchmarks and save them in results.txt",
+        "search for climate data and put the results in a text file",
+    ]
+
+    def test_save_results_produces_a_search_then_write(self):
+        for prompt in self.CASES:
+            with self.subTest(prompt=prompt):
+                task = _interpreter().interpret(prompt)
+                capabilities = [a.capability for a in task.actions]
+                self.assertEqual(capabilities, ["web.search", "filesystem.write"], prompt)
+                search, write = task.actions
+                self.assertEqual(search.produces, "search_results")
+                self.assertEqual(write.parameters["text"], "$search_results")
+                self.assertTrue(write.requires_confirmation)
+
+    def test_derived_filename_is_safe_and_named_from_topic(self):
+        task = _interpreter().interpret(
+            "Search for RTX 5090 benchmarks and save the results to a file."
+        )
+        path = task.actions[1].parameters["path"]
+        self.assertEqual(path, "rtx_5090_benchmarks.txt")
+        self.assertNotIn("/", path)
+        self.assertNotIn("..", path)
+
+    def test_a_generic_file_noun_is_not_captured_as_a_filename(self):
+        # "save the results to a file" must not treat "a file" as a real name,
+        # and must not become an artifact request.
+        task = _interpreter().interpret(
+            "search for python decorators and save the results to a file"
+        )
+        self.assertNotIn("filename", task.entities)
+        self.assertNotEqual(task.entities.get("application"), "a file")
+
+    def test_results_saved_to_file_is_not_a_local_file_search(self):
+        # A requested output extension (results.txt) must not send Atlas to
+        # search the user's own disk instead of the web.
+        task = _interpreter().interpret(
+            "look up RTX 5090 benchmarks and save them in results.txt"
+        )
+        capabilities = [a.capability for a in task.actions]
+        self.assertIn("web.search", capabilities)
+        self.assertNotIn("filesystem.search", capabilities)
+        self.assertFalse(task.needs_clarification)
+
+    def test_summarize_then_save_to_file_is_not_a_local_file_search(self):
+        # "summarize them in a file" writes the summary; it must not become a
+        # local content search and must not drop the write step.
+        task = _interpreter().interpret(
+            "search the web for car reviews and summarize them in a file"
+        )
+        capabilities = [a.capability for a in task.actions]
+        self.assertEqual(
+            capabilities,
+            ["web.research", "content.generate", "content.format", "filesystem.write"],
+        )
+        self.assertEqual(task.actions[-1].parameters["path"], "car_reviews.txt")
+
+    def test_transformation_does_not_request_a_summary_artifact(self):
+        # "summarize the car videos" is information about videos, not a request
+        # for a "summary document"; must_be_artifact must stay False and the
+        # retrieval content type must not be the transformation noun.
+        task = _interpreter().interpret(
+            "Search YouTube for car videos and put the summary in Notepad"
+        )
+        research = task.actions[0]
+        self.assertFalse(research.parameters["must_be_artifact"])
+        self.assertNotEqual(research.parameters["content_type"], "summary")
+        self.assertEqual(research.parameters["goal"], "find_information")
+        self.assertEqual(
+            [a.capability for a in task.actions],
+            ["web.research", "content.generate", "content.format", "applications.write_text"],
+        )
+
+    def test_summarize_results_has_no_ambiguous_reference(self):
+        # "summarize them" refers to the search results, which the plan produces.
+        task, signals, _ = _route("Search for RTX 5090 benchmarks and summarize them.")
+        self.assertFalse(signals.ambiguous_reference)
+        self.assertIn("web.research", [a.capability for a in task.actions])
+
+    def test_create_about_an_article_noun_is_not_a_local_file_lookup(self):
+        # "write an essay about the election" is content creation. The bare
+        # article "the" must not mark "essay" as the user's own document.
+        task = _interpreter().interpret(
+            "write an essay about the 2024 election in notepad"
+        )
+        self.assertEqual(task.entities.get("content_type"), "essay")
+        self.assertNotIn("file_intent", task.entities)
+        self.assertNotIn("file_subject", task.entities)
+        self.assertEqual(task.entities.get("application"), "notepad")
+        self.assertEqual(
+            [a.capability for a in task.actions],
+            ["content.generate", "content.format", "applications.write_text"],
+        )
+
+    def test_standalone_number_is_the_only_quantity(self):
+        # A 4-digit year or a longer model number must not be read as a count,
+        # and must not leak a partial-digit "quantity" from inside it.
+        self.assertNotIn("quantity", _interpreter().interpret("write a haiku about 2025").entities)
+        self.assertNotIn(
+            "quantity",
+            _interpreter().interpret("search for RTX 5090 benchmarks").entities,
+        )
+        self.assertEqual(
+            _interpreter().interpret("search for the top 5 GPUs").entities.get("quantity"), 5
+        )
+
+    def test_make_a_list_of_topic_is_captured(self):
+        # "make a list of 5 workout exercises" introduces the topic after "of",
+        # not "about". The topic must survive or Atlas writes about nothing.
+        task = _interpreter().interpret(
+            "make a list of 5 workout exercises and put it in notepad"
+        )
+        self.assertEqual(task.entities.get("content_type"), "list")
+        self.assertEqual(task.entities.get("topic"), "5 workout exercises")
+        self.assertEqual(task.entities.get("quantity"), 5)
+
+    def test_creation_topic_of_clause_does_not_hijack_general_questions(self):
+        # A bare "of X" on a non-creation request must not become a topic.
+        task = _interpreter().interpret("what is the capital of France")
+        self.assertIsNone(task.entities.get("topic"))
+
+    def test_move_destination_is_not_the_search_location(self):
+        # "move the largest pdf to Documents" searches for the largest PDF and
+        # moves it *into* Documents; it must not search inside Documents.
+        task = _interpreter().interpret("move the largest pdf to Documents")
+        capabilities = [a.capability for a in task.actions]
+        self.assertEqual(capabilities, ["filesystem.search", "filesystem.move"])
+        search, move = task.actions
+        self.assertIsNone(search.parameters.get("path"))
+        self.assertEqual(search.parameters.get("select"), "largest")
+        self.assertEqual(move.parameters.get("destination"), "Documents")
+
+    def test_personal_document_lookup_still_detected(self):
+        # The stricter possessive set must not lose genuine local-file requests.
+        task = _interpreter().interpret("find my resume")
+        self.assertEqual(task.entities.get("file_intent"), "lookup")
+        self.assertEqual(task.entities.get("file_subject"), "resume")
+
+    def test_bare_save_of_results_writes_a_file(self):
+        # "save the results" with no explicit file word still persists.
+        task = _interpreter().interpret("search for the best laptops and save the results")
+        self.assertEqual(
+            [a.capability for a in task.actions], ["web.search", "filesystem.write"]
+        )
+        # The search is a plain web.search of the *results* (no artifact demand).
+        self.assertEqual(task.actions[0].capability, "web.search")
+        self.assertEqual(task.actions[1].parameters["path"], "best_laptops.txt")
+
+    def test_explicit_filename_saves_results_not_an_artifact(self):
+        # "export the results to recipes.csv" persists the result list; it must
+        # not become an artifact retrieval with a polluted query.
+        task = _interpreter().interpret(
+            "search for recipes and export the results to recipes.csv"
+        )
+        self.assertEqual(
+            [a.capability for a in task.actions], ["web.search", "filesystem.write"]
+        )
+        self.assertEqual(task.actions[1].parameters["path"], "recipes.csv")
+        self.assertNotIn("export", task.actions[0].parameters["query"])
+
+    def test_location_qualifier_is_not_an_application(self):
+        # "the weather in Tokyo" must not resolve Tokyo as the destination app.
+        task = _interpreter().interpret(
+            "look up the weather in Tokyo and save it as weather.txt"
+        )
+        self.assertNotEqual(task.entities.get("application"), "Tokyo")
+        self.assertEqual(
+            [a.capability for a in task.actions], ["web.search", "filesystem.write"]
+        )
+        self.assertEqual(task.actions[1].parameters["path"], "weather.txt")
+
+    def test_trailing_open_clause_is_not_part_of_the_query(self):
+        task = _interpreter().interpret("search for cat pictures and open notepad")
+        search = next(a for a in task.actions if a.capability == "web.search")
+        self.assertEqual(search.parameters["query"], "cat pictures")
+        self.assertIn("applications.launch_named", [a.capability for a in task.actions])
+
+    def test_summarize_current_news_uses_web_research(self):
+        # "summarize the news" needs current information, so it retrieves it
+        # rather than relying on the model's possibly-stale knowledge.
+        task = _interpreter().interpret("summarize the news about tesla")
+        self.assertEqual(
+            [a.capability for a in task.actions], ["web.research", "content.generate"]
+        )
+        self.assertEqual(task.actions[0].parameters["query"], "tesla")
+
+    def test_summarize_local_document_is_not_sent_to_the_web(self):
+        # A transformation without a current-information noun stays local.
+        task = _interpreter().interpret("summarize this document")
+        self.assertEqual(task.actions, [])
+
+    def test_stated_quantity_reaches_generation_instructions(self):
+        # "a list of 5 items" must tell the generator how many to produce.
+        task = _interpreter().interpret(
+            "make a list of 5 workout exercises and put it in notepad"
+        )
+        self.assertIn("5", task.actions[0].parameters["instructions"])
+
+    def test_stated_length_reaches_generation_instructions(self):
+        short = _interpreter().interpret("write a short poem about cars")
+        self.assertIn("short", short.actions[0].parameters["instructions"].casefold())
+        plain = _interpreter().interpret("write a poem about cars")
+        self.assertIsNone(plain.actions[0].parameters["instructions"])
+
+    def test_follow_up_preserves_content_type_and_pipeline(self):
+        # "make it about dogs" after "write a poem about cars in notepad" must
+        # keep the poem content type and the full generate->format->write chain,
+        # not degrade to generic text with an unwrapped write.
+        interpreter = _interpreter()
+        first = interpreter.interpret("write a poem about cars in notepad")
+        second = interpreter.interpret("make it about dogs", context=first)
+        self.assertEqual(
+            [a.capability for a in second.actions],
+            ["content.generate", "content.format", "applications.write_text"],
+        )
+        self.assertEqual(second.actions[0].parameters["content_type"], "poem")
+        self.assertEqual(second.actions[0].parameters["topic"], "dogs")
+        self.assertEqual(second.actions[-1].parameters["application"], "notepad")
+
+    def test_named_file_resolves_pronoun_reference(self):
+        # "read my notes.txt and summarize it" has a concrete referent; it must
+        # not be reported as an ambiguous reference requiring clarification.
+        task, signals, plan = _route("Read my notes.txt and summarize it")
+        self.assertFalse(signals.ambiguous_reference)
+        self.assertEqual([s.value for s in plan.sources], ["files"])
+
+    def test_generation_without_destination_is_not_blocked(self):
+        # "write a poem" is satisfiable in chat; Atlas must not demand a
+        # destination before generating content.
+        for prompt in ("write a poem", "write a haiku", "tell me a joke"):
+            with self.subTest(prompt=prompt):
+                task = _interpreter().interpret(prompt)
+                self.assertFalse(task.needs_clarification)
+                self.assertEqual([a.capability for a in task.actions], ["content.generate"])
+
+    def test_bare_content_noun_generates_without_a_create_verb(self):
+        # "tell me a joke" names no create verb but is a generation request.
+        task = _interpreter().interpret("tell me a joke")
+        self.assertEqual(task.actions[0].parameters["content_type"], "joke")
+
+    def test_generation_request_never_uses_the_web(self):
+        # A self-contained generation request must not be mistaken for research.
+        task = _interpreter().interpret("write a poem about cars")
+        self.assertEqual([a.capability for a in task.actions], ["content.generate"])
+
+    def test_artifact_request_is_unchanged_by_the_save_path(self):
+        # "get the X script and copy it in Notepad" still retrieves the artifact
+        # itself; the save-results path must not swallow it.
+        task = _interpreter().interpret("get the bee movie script and copy it in Notepad")
+        capabilities = [a.capability for a in task.actions]
+        self.assertEqual(
+            capabilities, ["web.research", "content.format", "applications.write_text"]
+        )
+        self.assertTrue(task.actions[0].parameters.get("must_be_artifact"))
+
+    def test_save_with_local_document_still_searches_files(self):
+        # Genuine local-file requests are unaffected by the web-target guard.
+        task = _interpreter().interpret("find my resume")
+        self.assertEqual([a.capability for a in task.actions], ["filesystem.search"])
+
     def test_copy_it_in_notepad_is_a_web_hybrid_not_a_file_copy(self):
         # "copy" here means "place the found text", not a filesystem copy; the
         # bare verb must not hijack the search into a file move/copy plan.
