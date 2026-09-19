@@ -1,34 +1,122 @@
-"""Permission-gated text entry into a resolved Windows application window."""
+"""Permission-gated text entry into a resolved Windows application window.
+
+Entry is one half of the computer-interaction loop; the other half is observing
+whether the text actually landed. This module therefore does not report success
+just because a message was sent: after delivery it reads the target control back
+through :mod:`computer.perception` and reports one of
+
+* ``confirmed``   - the text is readable in the control (verified);
+* ``failed``      - the control is readable and the text is *not* there, which
+                    the executor records as a verification failure (distinct
+                    from an execution failure) so bounded recovery can retry;
+* ``unconfirmed`` - the control cannot be read back, so Atlas says so instead of
+                    claiming verification.
+"""
 
 from __future__ import annotations
 
 import ctypes
-from ctypes import wintypes
 import base64
 import subprocess
 import time
 from typing import Any
 
 from computer.launch import resolve_application_name
+from computer.perception import TEXT_CONTROL_CLASSES as _TEXT_CONTROL_CLASSES
+from computer.perception import class_name_of as _class_name
+from computer.perception import find_target_window as _find_target_window
+from computer.perception import find_text_control as _find_text_control
+from computer.perception import read_control_text as _control_text
+from computer.perception import send_message as _send_message
+from computer.perception import window_text as _window_text
 from tools.base import PermissionLevel, RiskLevel, Tool, ToolMetadata, ToolResult
+
+#: Delivery strategies, in the order the automatic path tries them.
+#: ``direct`` writes through a window message (focus-free and most reliable);
+#: ``paste`` asks the control to paste from the clipboard; ``auto`` tries direct,
+#: then paste, then a focus-based clipboard paste for legacy controls.
+DELIVERY_MODES: tuple[str, ...] = ("auto", "direct", "paste")
+_WM_SETTEXT = 0x000C
+_WM_PASTE = 0x0302
+
+
+def _bounded_seconds(value: Any, *, default: int, low: int, high: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(low, min(high, number))
+
+
+def _text_present(current: str, submitted: str) -> bool:
+    """Return True when ``submitted`` is readable inside a control's text."""
+
+    needle = submitted.strip()
+    haystack = current.strip()
+    if not needle or not haystack:
+        return False
+    if needle in haystack:
+        return True
+    head, tail = needle[:200], needle[-200:]
+    return head in haystack and tail in haystack
+
+
+def _set_text_directly(user32: Any, control: Any, text: str) -> bool:
+    """Write text into a control through WM_SETTEXT, with no focus or clipboard.
+
+    This is the most reliable path and works even when the application is
+    minimized or unfocused. Existing document text is preserved by prepending it
+    to the new text instead of clobbering an open document.
+    """
+
+    try:
+        existing = _control_text(user32, control)
+        combined = f"{existing}\n{text}" if existing.strip() else text
+        result = user32.SendMessageW(control, _WM_SETTEXT, 0, ctypes.c_wchar_p(combined))
+    except Exception:  # noqa: BLE001
+        return False
+    # SendMessageW returns nonzero on success for WM_SETTEXT.
+    return bool(result)
 
 
 class ApplicationTextEntryTool(Tool):
     metadata = ToolMetadata(
         name="applications.write_text",
-        description="Open a trusted Windows application and enter supplied text into it.",
+        description=(
+            "Open a trusted Windows application, enter supplied text, and read "
+            "the result back to verify it was written."
+        ),
         category="computer.applications",
         input_schema={
             "application": {"type": "string", "description": "target application name, e.g. Notepad"},
             "text": {"type": "string", "description": "exact text to enter"},
+            "delivery": {
+                "type": "string",
+                "description": "auto (default), direct (window message) or paste",
+            },
+            "wait_seconds": {
+                "type": "integer",
+                "description": "bounded seconds to wait for the application window (1-15)",
+            },
         },
-        output_schema={"pid": {"type": "integer"}, "application": {"type": "string"}, "characters": {"type": "integer"}},
+        output_schema={
+            "pid": {"type": "integer"},
+            "application": {"type": "string"},
+            "characters": {"type": "integer"},
+            "delivery": {"type": "string"},
+            "observed": {"type": "boolean"},
+            "observed_characters": {"type": "integer"},
+            "verification": {"type": "string"},
+            "target": {"type": "object"},
+        },
         permission_level=PermissionLevel.MEDIUM_RISK,
         risk_level=RiskLevel.MEDIUM,
+        verifiable=True,
     )
 
     def __init__(self, *, startup_wait_seconds: float = 1.5) -> None:
         self._startup_wait_seconds = startup_wait_seconds
+
 
     def execute(self, parameters: dict[str, Any]) -> ToolResult:
         try:
@@ -41,10 +129,21 @@ class ApplicationTextEntryTool(Tool):
                 return ToolResult.failure("Text cannot be empty")
             if len(text) > 100_000:
                 return ToolResult.failure("Text exceeds the 100,000 character limit")
+            delivery = str(parameters.get("delivery") or "auto").strip().casefold()
+            if delivery not in DELIVERY_MODES:
+                return ToolResult.failure(
+                    f"delivery must be one of: {', '.join(DELIVERY_MODES)}"
+                )
+            window_timeout = _bounded_seconds(
+                parameters.get("wait_seconds"), default=5, low=1, high=15
+            )
 
             executable = resolve_application_name(application)
             if executable is None:
-                return ToolResult.failure(f"Could not resolve a trusted executable for: {application}", recoverable=True)
+                return ToolResult.failure(
+                    f"Could not resolve a trusted executable for: {application}",
+                    recoverable=True,
+                )
 
             process = subprocess.Popen(
                 [str(executable)],
@@ -53,181 +152,174 @@ class ApplicationTextEntryTool(Tool):
                 stderr=subprocess.DEVNULL,
             )
             time.sleep(self._startup_wait_seconds)
-            self._type_into_process(process.pid, text, executable.name)
+            observation = self._type_into_process(
+                process.pid,
+                text,
+                executable.name,
+                delivery=delivery,
+                window_timeout=window_timeout,
+            )
+            if not isinstance(observation, dict):
+                observation = {}
+            observed = observation.get("observed")
+            if observed is True:
+                verification = "confirmed"
+            elif observed is False:
+                verification = "failed"
+            else:
+                verification = "unconfirmed"
             return ToolResult(
                 success=True,
-                status="written",
+                status="written" if verification != "failed" else "verification_failed",
                 output={
                     "pid": process.pid,
                     "application": application,
                     "executable": str(executable),
                     "characters": len(text),
+                    "delivery": observation.get("delivery"),
+                    "observed": observed,
+                    "observed_characters": observation.get("observed_characters"),
+                    "verification": verification,
+                    "target": observation.get("target"),
                 },
             )
         except (KeyError, OSError, ValueError, subprocess.SubprocessError) as exc:
             return ToolResult.failure(str(exc), recoverable=True)
 
-    @staticmethod
-    def _type_into_process(pid: int, text: str, executable_name: str) -> None:
+    @classmethod
+    def _type_into_process(
+        cls,
+        pid: int,
+        text: str,
+        executable_name: str,
+        *,
+        delivery: str = "auto",
+        window_timeout: float = 5.0,
+    ) -> dict[str, Any]:
+        """Deliver ``text`` and observe the result. Returns an observation dict."""
+
         if not hasattr(ctypes, "windll"):
             raise OSError("Direct Windows text entry requires Windows")
 
         user32 = ctypes.windll.user32
-        window = _find_target_window(user32, pid, executable_name)
+        window = _find_target_window(user32, pid, executable_name, timeout=window_timeout)
         if not window:
-            raise OSError("Application window could not be found")
+            raise OSError(
+                f"Application window for '{executable_name}' could not be found "
+                f"within {window_timeout:.0f}s"
+            )
 
-        # Windows foreground-locking makes SetForegroundWindow unreliable, and
-        # SendKeys targets whatever happens to be focused. So text is delivered
-        # directly to the target control's message queue, which needs no focus.
         control = _find_text_control(user32, window)
-        if _set_text_directly(user32, control, text):
-            return
-        if _paste_into_control(user32, control, text):
-            return
-        # Last resort: focus the window and paste via the clipboard.
-        user32.ShowWindow(window, 9)
-        user32.BringWindowToTop(window)
-        if not _focus_window(user32, window):
-            raise OSError("Application window could not be focused")
-        time.sleep(0.2)
-        _set_clipboard(text)
-        paste_script = "$shell=New-Object -ComObject WScript.Shell; Start-Sleep -Milliseconds 150; $shell.SendKeys('^v')"
-        completed = subprocess.run(
-            ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", paste_script],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-            shell=False,
-        )
-        if completed.returncode != 0:
-            raise OSError(completed.stderr.strip() or "Could not paste text into the focused application")
+        target = {
+            "window_title": _window_text(user32, window),
+            "window_class": _class_name(user32, window),
+            "control_class": _class_name(user32, control),
+        }
 
+        method = cls._deliver(user32, window, control, text, delivery=delivery)
+        if method is None:
+            raise OSError(
+                f"Text could not be delivered to {executable_name} "
+                f"using the '{delivery}' delivery path"
+            )
 
-def _find_target_window(user32: Any, pid: int, executable_name: str, *, timeout: float = 5.0) -> Any:
-    # Match a window by the launched pid first, then by process image name, then
-    # by window class name. Packaged apps (Windows 11 Notepad) hand off to a
-    # different process, so image/class matching is required, and the window can
-    # take a moment to appear, so discovery is retried until the timeout.
-    stem = executable_name.rsplit(".", 1)[0].casefold()
-    deadline = time.time() + timeout
-    while True:
-        window = wintypes.HWND()
-        fallback_window = wintypes.HWND()
-        class_match = wintypes.HWND()
+        # Allow the control time to process the text before reading back.
+        time.sleep(0.5)
 
-        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-        def find_window(hwnd: wintypes.HWND, _: wintypes.LPARAM) -> bool:
-            process_id = wintypes.DWORD()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
-            if not user32.IsWindowVisible(hwnd) or not user32.GetWindowTextLengthW(hwnd):
-                return True
-            if process_id.value == pid:
-                window.value = hwnd
+        observed, observed_characters = cls._confirm_text(user32, control, text, method=method)
+        return {
+            "delivery": method,
+            "observed": observed,
+            "observed_characters": observed_characters,
+            "target": target,
+        }
+
+    @classmethod
+    def _deliver(
+        cls,
+        user32: Any,
+        window: Any,
+        control: Any,
+        text: str,
+        *,
+        delivery: str,
+    ) -> str | None:
+        """Try the requested delivery paths in order; return the method used."""
+
+        if delivery in {"auto", "direct"} and _set_text_directly(user32, control, text):
+            return "wm_settext"
+        if delivery in {"auto", "paste"} and _paste_into_control(user32, control, text):
+            return "wm_paste"
+        if delivery == "auto" and _paste_via_focus(user32, window, text):
+            return "clipboard_paste"
+        return None
+
+    @staticmethod
+    def _paste_via_focus(user32: Any, window: Any, text: str) -> bool:
+        # Last resort for legacy controls that ignore window messages: focus the
+        # window and paste from the clipboard.
+        try:
+            user32.ShowWindow(window, 9)
+            user32.BringWindowToTop(window)
+            if not _focus_window(user32, window):
                 return False
-            if _process_image_name(process_id.value).casefold() == executable_name.casefold():
-                fallback_window.value = hwnd
-            elif _class_name(user32, hwnd).casefold() == stem:
-                class_match.value = hwnd
-            return True
-        user32.EnumWindows(find_window, 0)
-        found = window.value or fallback_window.value or class_match.value
-        if found:
-            return found
-        if time.time() >= deadline:
-            return None
-        time.sleep(0.25)
-
-
-#: Control class names that accept text. Covers classic Win32 edit controls and
-#: the modern rich-edit controls used by Windows 11 apps (Notepad, WordPad).
-_TEXT_CONTROL_CLASSES = {
-    "edit",
-    "richedit",
-    "richedit20a",
-    "richedit20w",
-    "richedit50w",
-    "richeditd2dpt",
-    "textbox",
-    "scintilla",
-}
-
-def _find_text_control(user32: Any, window: Any) -> Any:
-    # Find an editable descendant of the target window. Modern apps nest the edit
-    # control several levels deep, so the whole subtree is searched. If none is
-    # found, the top-level window is returned so messages still reach it.
-    control = wintypes.HWND()
-
-    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-    def find_child(hwnd: wintypes.HWND, _: wintypes.LPARAM) -> bool:
-        if _class_name(user32, hwnd).casefold() in _TEXT_CONTROL_CLASSES:
-            control.value = hwnd
+            time.sleep(0.2)
+            _set_clipboard(text)
+            paste_script = (
+                "$shell=New-Object -ComObject WScript.Shell; "
+                "Start-Sleep -Milliseconds 150; $shell.SendKeys('^v')"
+            )
+            completed = subprocess.run(
+                ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", paste_script],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+                shell=False,
+            )
+        except (OSError, subprocess.SubprocessError):
             return False
-        return True
-    try:
-        user32.EnumChildWindows(window, find_child, 0)
-    except Exception:  # noqa: BLE001 - fall back to the parent window
-        return window
-    return control.value or window
+        return completed.returncode == 0
 
+    @staticmethod
+    def _confirm_text(
+        user32: Any,
+        control: Any,
+        text: str,
+        *,
+        method: str,
+    ) -> tuple[bool | None, int | None]:
+        """Read the control back and decide whether the text actually landed."""
 
-def _class_name(user32: Any, hwnd: Any) -> str:
-    buffer = ctypes.create_unicode_buffer(256)
-    user32.GetClassNameW(hwnd, buffer, len(buffer))
-    return buffer.value
-
-
-def _set_text_directly(user32: Any, control: Any, text: str) -> bool:
-    # WM_SETTEXT replaces a control's contents without any focus or clipboard.
-    # This is the most reliable path and works even when the app is minimized or
-    # unfocused. To avoid clobbering an already-open document, any existing text
-    # is preserved by prepending the control's current contents.
-    WM_SETTEXT = 0x000C
-    try:
-        existing = _control_text(user32, control)
-        combined = f"{existing}\n{text}" if existing.strip() else text
-        result = user32.SendMessageW(control, WM_SETTEXT, 0, ctypes.c_wchar_p(combined))
-    except Exception:  # noqa: BLE001
-        return False
-    # SendMessageW returns nonzero on success for WM_SETTEXT.
-    return bool(result)
-
-
-def _control_text(user32: Any, control: Any, *, limit: int = 200_000) -> str:
-    WM_GETTEXTLENGTH = 0x000E
-    WM_GETTEXT = 0x000D
-    try:
-        length = int(user32.SendMessageW(control, WM_GETTEXTLENGTH, 0, 0))
-        if length <= 0:
-            return ""
-        buffer = ctypes.create_unicode_buffer(min(length, limit) + 1)
-        user32.SendMessageW(control, WM_GETTEXT, len(buffer), buffer)
-        return buffer.value
-    except Exception:  # noqa: BLE001
-        return ""
+        deadline = time.time() + (4.0 if method == "clipboard_paste" else 3.0)
+        current = ""
+        while True:
+            current = _control_text(user32, control)
+            if _text_present(current, text):
+                return True, len(current)
+            if time.time() >= deadline:
+                break
+            time.sleep(0.2)
+        # An unreadable control (no known text class) leaves the result unknown.
+        class_name = _class_name(user32, control).casefold()
+        if class_name not in _TEXT_CONTROL_CLASSES:
+            return None, None
+        # Known text control (including RichEditD2DPT) but the expected text is not
+        # present: verification failure.
+        return False, len(current)
 
 
 def _paste_into_control(user32: Any, control: Any, text: str) -> bool:
     # Put the text on the clipboard, then ask the control to paste itself via
     # WM_PASTE. Unlike SendKeys, this is addressed to the control directly, so it
-    # does not depend on which window is currently focused.
-    WM_PASTE = 0x0302
+    # does not depend on which window is currently focused. Whether the paste
+    # worked is decided by the read-back in _confirm_text, not here.
     try:
         _set_clipboard(text)
-        user32.SendMessageW(control, WM_PASTE, 0, 0)
+        _send_message(user32, control, _WM_PASTE, 0, 0)
     except Exception:  # noqa: BLE001
         return False
-    return _control_contains(user32, control, text)
-
-
-def _control_contains(user32: Any, control: Any, text: str) -> bool:
-    WM_GETTEXTLENGTH = 0x000E
-    try:
-        length = int(user32.SendMessageW(control, WM_GETTEXTLENGTH, 0, 0))
-    except Exception:  # noqa: BLE001
-        return False
-    return length >= len(text.strip())
+    return True
 
 
 def _focus_window(user32: Any, window: Any, *, attempts: int = 5) -> bool:
@@ -274,18 +366,3 @@ def _set_clipboard(text: str) -> None:
     )
     if completed.returncode != 0:
         raise OSError(completed.stderr.strip() or "Could not set the Windows clipboard")
-
-
-def _process_image_name(pid: int) -> str:
-    kernel32 = ctypes.windll.kernel32
-    process = kernel32.OpenProcess(0x1000, False, pid)
-    if not process:
-        return ""
-    try:
-        buffer = ctypes.create_unicode_buffer(1024)
-        size = wintypes.DWORD(len(buffer))
-        if kernel32.QueryFullProcessImageNameW(process, 0, buffer, ctypes.byref(size)):
-            return buffer.value.rsplit("\\", 1)[-1]
-        return ""
-    finally:
-        kernel32.CloseHandle(process)

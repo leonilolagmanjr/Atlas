@@ -77,6 +77,8 @@ class TaskVerifier:
             "content.generate": self._verify_content,
             "content.format": self._verify_format,
             "applications.write_text": self._verify_write_text,
+            "computer.observe": self._verify_observation,
+            "computer.windows": self._verify_window_list,
             "filesystem.write": self._verify_path_written,
             "filesystem.create_folder": self._verify_folder,
             "filesystem.move": self._verify_move,
@@ -117,18 +119,79 @@ class TaskVerifier:
 
     @staticmethod
     def _verify_write_text(output: Any) -> VerificationOutcome:
-        if isinstance(output, dict) and output.get("characters"):
+        # Preferred evidence is the read-back observation made by the tool after
+        # delivery. ``observed is False`` is positive evidence that the intended
+        # effect did not happen, so it is reported as a *failed* verification,
+        # which the executor keeps distinct from a failed execution.
+        if isinstance(output, dict) and output.get("observed") is False:
+            target = output.get("target") if isinstance(output.get("target"), dict) else {}
+            location = target.get("control_class") or target.get("window_title") or "the target control"
+            return VerificationOutcome(
+                "applications.write_text",
+                False,
+                "failed",
+                f"The text was not present in {location} after writing it.",
+            )
+        if isinstance(output, dict) and output.get("observed") is True:
             return VerificationOutcome(
                 "applications.write_text",
                 True,
                 "verified",
-                f"Wrote {output['characters']} characters into {output.get('application', 'the app')}.",
+                f"Read the text back from {output.get('application', 'the app')} "
+                f"({output.get('observed_characters', 'unknown')} characters in the control).",
+            )
+        if isinstance(output, dict) and output.get("characters"):
+            # No read-back was possible: the character count proves delivery was
+            # requested, not that the text landed. Report it as sent, and say so.
+            return VerificationOutcome(
+                "applications.write_text",
+                True,
+                "verified",
+                f"Sent {output['characters']} characters to "
+                f"{output.get('application', 'the app')}; the control could not be read back.",
             )
         return VerificationOutcome(
             "applications.write_text",
             False,
             "unverified",
             "The application did not report written characters.",
+        )
+
+    @staticmethod
+    def _verify_observation(output: Any) -> VerificationOutcome:
+        if isinstance(output, dict) and output.get("status") == "observed":
+            return VerificationOutcome(
+                "computer.observe",
+                True,
+                "verified",
+                str(output.get("summary") or "Observed the application window."),
+            )
+        if isinstance(output, dict) and output.get("status") == "target_missing":
+            return VerificationOutcome(
+                "computer.observe",
+                False,
+                "unverified",
+                str(output.get("summary") or "No matching window was found."),
+            )
+        return VerificationOutcome(
+            "computer.observe",
+            False,
+            "unverified",
+            "The application's UI state could not be observed.",
+        )
+
+    @staticmethod
+    def _verify_window_list(output: Any) -> VerificationOutcome:
+        if isinstance(output, dict) and isinstance(output.get("windows"), list):
+            count = output.get("count", len(output["windows"]))
+            return VerificationOutcome(
+                "computer.windows",
+                bool(output["windows"]),
+                "verified" if output["windows"] else "unverified",
+                f"{count} open window(s)." if output["windows"] else "No windows are open.",
+            )
+        return VerificationOutcome(
+            "computer.windows", False, "unverified", "No window list was returned."
         )
 
     @staticmethod

@@ -27,6 +27,9 @@ PLANNABLE_CAPABILITIES: frozenset[str] = frozenset(
         "applications.write_text",
         "applications.launch_named",
         "applications.launch",
+        # Computer perception (read-only observation of the desktop)
+        "computer.windows",
+        "computer.observe",
         # Filesystem (high-level, permission-gated)
         "filesystem.list",
         "filesystem.read",
@@ -249,15 +252,57 @@ _FALLBACK_CAPABILITIES: dict[str, Capability] = {
     ),
     "applications.write_text": Capability(
         name="applications.write_text",
-        description="Write supplied text into a resolved application.",
+        description="Write supplied text into a resolved application and read it back.",
         category="computer.applications",
         parameters={
             "application": {"type": "string", "description": "target application name"},
             "text": {"type": "string", "description": "text to enter"},
+            "delivery": {
+                "type": "string",
+                "description": "auto (default), direct (window message) or paste",
+            },
+            "wait_seconds": {
+                "type": "integer",
+                "description": "bounded seconds to wait for the application window (1-15)",
+            },
         },
         required_parameters=("application", "text"),
         risk_level="medium_risk",
         requires_confirmation=True,
+        verifiable=True,
+    ),
+    "computer.windows": Capability(
+        name="computer.windows",
+        description=(
+            "List open desktop windows (title, class, process, focus state) "
+            "without changing anything."
+        ),
+        category="computer.perception",
+        parameters={
+            "application": {"type": "string", "description": "optional name filter"},
+            "include_hidden": {"type": "boolean"},
+            "max_results": {"type": "integer"},
+        },
+        required_parameters=(),
+        risk_level="read_only",
+        requires_confirmation=False,
+        verifiable=True,
+    ),
+    "computer.observe": Capability(
+        name="computer.observe",
+        description=(
+            "Observe the current or named application's UI state: window, "
+            "controls, focused control, and readable text."
+        ),
+        category="computer.perception",
+        parameters={
+            "application": {"type": "string", "description": "optional application name"},
+            "wait_seconds": {"type": "integer"},
+            "text_limit": {"type": "integer"},
+        },
+        required_parameters=(),
+        risk_level="read_only",
+        requires_confirmation=False,
         verifiable=True,
     ),
     "web.search": Capability(

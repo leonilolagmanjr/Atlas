@@ -20,6 +20,7 @@ from config import (
     OLLAMA_MODEL,
 )
 from executor import Executor, UNKNOWN_RESPONSE
+from computer.runtime import build_computer_observer
 from knowledge_search import retrieve as retrieve_knowledge
 from llm import ask
 from models import ExecutionContext, PlanStatus, StructuredIntent, TaskStatus
@@ -88,6 +89,7 @@ class Brain:
             memory_manager=memory_manager,
             tool_router=tool_router,
             recovery=self._recovery,
+            observer=build_computer_observer(),
         )
         self._self_introspection = SelfIntrospection(
             self._capabilities,

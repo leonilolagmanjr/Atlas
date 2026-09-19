@@ -110,6 +110,10 @@ FILESYSTEM_CONTENT_MAX_BYTES: int = 200_000
 # ---- Computer tools ----
 EXECUTION_MODE: str = "confirm"
 COMPUTER_ROOT: Path = PROJECT_ROOT
+# Observe the UI before/after computer actions so Atlas can verify an effect it
+# caused instead of trusting a tool-reported success. Read-only and cheap;
+# disable only if window enumeration is undesirable in this environment.
+ENABLE_COMPUTER_OBSERVATION: bool = True
 
 # ---- API task history ----
 TASK_STORE_FILE: Path = PROJECT_ROOT / "database" / "tasks.json"

@@ -23,6 +23,24 @@ from tools.capabilities import PLANNABLE_CAPABILITIES
 
 logger = logging.getLogger(__name__)
 
+#: Upper bound for the window wait the deterministic UI recovery may set. Kept
+#: small so recovery can never turn a failed action into a long stall.
+MAX_UI_WAIT_SECONDS = 15
+#: Delivery-path preference changes tried by deterministic UI recovery, in order.
+#: Each change is an argument change for the *same* capability: the effect the
+#: user approved is identical, only the mechanism differs.
+_UI_DELIVERY_FALLBACKS: tuple[str, ...] = ("paste", "direct")
+
+
+def _bounded_wait(value: object, *, default: int = 5) -> int:
+    """Coerce a planned wait into the bounded window-discovery range."""
+
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(1, min(MAX_UI_WAIT_SECONDS, number))
+
 
 class RecoveryManager:
     """Analyze a failed step and, when safe, correct its arguments."""
@@ -48,7 +66,11 @@ class RecoveryManager:
             )
             return False
 
-        corrected = self._propose_correction(context, step, attempt=attempts + 1)
+        corrected = self._deterministic_correction(step, classification)
+        strategy = "deterministic"
+        if corrected is None:
+            corrected = self._propose_correction(context, step, attempt=attempts + 1)
+            strategy = "model"
         if corrected is None:
             return False
 
@@ -59,6 +81,7 @@ class RecoveryManager:
 
         step.metadata["recovery_attempts"] = attempts + 1
         step.metadata["recovery_reason"] = classification.get("category")
+        step.metadata["recovery_strategy"] = strategy
         step.metadata["parameters"] = corrected
         context.metadata.setdefault("recovery_history", []).append(
             {
@@ -67,10 +90,54 @@ class RecoveryManager:
                 "from": current,
                 "to": corrected,
                 "reason": classification.get("category"),
+                "strategy": strategy,
             }
         )
-        logger.info("Recovery rewrote arguments for step %s (attempt %d)", step.id, attempts + 1)
+        logger.info(
+            "Recovery rewrote arguments for step %s (attempt %d, %s)",
+            step.id,
+            attempts + 1,
+            strategy,
+        )
         return True
+
+    def _deterministic_correction(
+        self,
+        step: ExecutionStep,
+        classification: dict,
+    ) -> Optional[dict]:
+        """Correct arguments for a known UI failure without asking the model.
+
+        Deterministic first, model second: these failures have a small, obvious
+        set of argument-level fixes (wait longer, deliver differently), so the
+        common recovery case needs no inference at all. Nothing here can add,
+        remove, or reorder capabilities, and the attempt count stays bounded by
+        ``MAX_RECOVERY_ATTEMPTS`` in :meth:`attempt_recovery`.
+        """
+
+        tool = str(step.metadata.get("tool") or "")
+        category = str(classification.get("category") or "")
+        if tool != "applications.write_text":
+            return None
+        parameters = dict(step.metadata.get("parameters") or {})
+
+        if category == "ui_target_missing":
+            wait = _bounded_wait(parameters.get("wait_seconds"))
+            if wait >= MAX_UI_WAIT_SECONDS:
+                return None
+            return {**parameters, "wait_seconds": min(MAX_UI_WAIT_SECONDS, wait * 2)}
+
+        if category == "ui_verification_failed":
+            current_delivery = str(parameters.get("delivery") or "auto").casefold()
+            for candidate in _UI_DELIVERY_FALLBACKS:
+                if candidate != current_delivery:
+                    return {**parameters, "delivery": candidate}
+            wait = _bounded_wait(parameters.get("wait_seconds"))
+            if wait >= MAX_UI_WAIT_SECONDS:
+                return None
+            return {**parameters, "wait_seconds": min(MAX_UI_WAIT_SECONDS, wait + 5)}
+
+        return None
 
     def _propose_correction(
         self,

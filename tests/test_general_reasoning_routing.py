@@ -600,5 +600,63 @@ class ExecutorWebResultRenderingTests(unittest.TestCase):
         self.assertIn("No web results", rendered)
 
 
+class TransformToDestinationRegressionTests(unittest.TestCase):
+    """Transformation requests with a destination must generate + write content.
+
+    These lock in the fix for the primary regression:
+    "summarize the avatar movie in notepad" must produce
+    generate -> format -> write actions, not be answered inline.
+    """
+
+    NOTEPAD_CASES = [
+        "summarize the avatar movie in notepad",
+        "summarize Avatar in Notepad",
+        "write a poem about cars in Notepad",
+        "put a short explanation of black holes into Notepad",
+        "create a summary of the matrix in notepad",
+        "write an overview of python in notepad",
+        "summarize avatar and write it to notepad",
+        "open notepad and write a list of my tasks",
+    ]
+
+    def test_transform_plus_destination_produces_write_action(self):
+        expected_capabilities = ["content.generate", "content.format", "applications.write_text"]
+        for text in self.NOTEPAD_CASES:
+            with self.subTest(text=text):
+                task, _, _ = _route(text)
+                caps = [a.capability for a in task.actions]
+                self.assertEqual(caps, expected_capabilities, f"Failed for: {text}")
+                write_action = next(a for a in task.actions if a.capability == "applications.write_text")
+                self.assertEqual(write_action.parameters["application"].casefold(), "notepad")
+
+    def test_summarize_avatar_movie_has_summary_content_type(self):
+        task, _, _ = _route("summarize the avatar movie in notepad")
+        gen = next(a for a in task.actions if a.capability == "content.generate")
+        self.assertEqual(gen.parameters["content_type"], "summary")
+        self.assertIn("avatar", str(gen.parameters.get("topic", "")))
+
+    def test_pure_summarize_without_destination_is_informational(self):
+        """'summarize Avatar' (no destination) should NOT trigger computer actions."""
+        task, _, _ = _route("summarize Avatar")
+        self.assertEqual([a.capability for a in task.actions], [])
+
+    def test_explain_to_file_destination(self):
+        """'explain X and put it in a file' should generate + write to a file."""
+        task, _, _ = _route("explain quantum computing and put it in a file")
+        caps = [a.capability for a in task.actions]
+        self.assertIn("content.generate", caps)
+        self.assertIn("filesystem.write", caps)
+
+    def test_summarize_news_is_web_research(self):
+        """'summarize the latest news about X' should use web.research, not local generation."""
+        task, _, _ = _route("summarize the latest news about spacex")
+        caps = [a.capability for a in task.actions]
+        self.assertIn("web.research", caps)
+        self.assertIn("content.generate", caps)
+        # The query should not contain boilerplate
+        research = next(a for a in task.actions if a.capability == "web.research")
+        self.assertNotIn("latest news", research.parameters.get("query", ""))
+
+
 if __name__ == "__main__":
     unittest.main()

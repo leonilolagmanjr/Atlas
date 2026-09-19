@@ -10,13 +10,25 @@ from computer.filesystem import (
     FilesystemSearchTool,
 )
 from computer.processes import ProcessInspectTool, ProcessListTool
+from computer.perception import (
+    ComputerObserveTool,
+    ComputerObserver,
+    OpenWindowsTool,
+)
 from computer.runtime import register_read_only_tools
 from computer.system import SystemInfoTool
+from computer.text_entry import ApplicationTextEntryTool
 
 __all__ = [
+    "ApplicationLaunchTool",
+    "ApplicationTextEntryTool",
+    "ComputerObserveTool",
+    "ComputerObserver",
     "InstalledApplicationSearchTool",
     "InstalledApplicationsTool",
-    "ApplicationLaunchTool",
+    "OpenWindowsTool",
+    "register_read_only_tools",
+    "SystemInfoTool",
     "FilesystemListTool",
     "FilesystemMetadataTool",
     "FilesystemReadTool",
@@ -24,6 +36,4 @@ __all__ = [
     "FilesystemSearchContentTool",
     "ProcessInspectTool",
     "ProcessListTool",
-    "register_read_only_tools",
-    "SystemInfoTool",
 ]

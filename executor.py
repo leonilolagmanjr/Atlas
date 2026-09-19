@@ -33,6 +33,21 @@ UNKNOWN_RESPONSE = "I don't know based on my knowledge base."
 #: Plan-wide cap on LLM-assisted recovery attempts. Prevents a plan from looping
 #: even when individual steps stay within their own retry limit.
 MAX_PLAN_RECOVERIES = 3
+#: Capabilities that change what is on screen. After one of these succeeds the
+#: executor observes the application again (OBSERVE -> ACT -> OBSERVE) so the
+#: result is recorded as state, not just as a tool reply.
+UI_STATEFUL_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        "applications.launch",
+        "applications.launch_named",
+        "applications.write_text",
+    }
+)
+#: How long to wait for a window to appear when observing after a launch.
+_OBSERVE_AFTER_LAUNCH_SECONDS = 4.0
+#: A verification failure is distinct from an execution failure. This phrase is
+#: what failure classification keys on, so the two are never conflated.
+_VERIFICATION_FAILURE_PREFIX = "did not produce the expected effect"
 #: Sentinel prefix marking a plan argument that references an earlier
 #: step's produced output instead of a literal value.
 GENERATED_TEXT_REF = "$generated_text"
@@ -50,6 +65,7 @@ class Executor:
         memory_manager: MemoryManager | None = None,
         tool_router: ToolRouter | None = None,
         recovery: object | None = None,
+        observer: object | None = None,
     ) -> None:
         self._vector_store = vector_store
         self._system_prompt = system_prompt
@@ -57,6 +73,7 @@ class Executor:
         self._memory_manager = memory_manager
         self._tool_router = tool_router
         self._recovery = recovery
+        self._observer = observer
         from reasoning.verifier import TaskVerifier
         self._verifier = TaskVerifier()
         self._handlers: dict[str, Callable[[ExecutionContext, ExecutionStep], None]] = {
@@ -306,7 +323,7 @@ class Executor:
         context.metadata.setdefault("tool_results", []).append(result.output)
         self._capture_produced_output(step, result.output, context)
         # Observation/verification: record honest evidence for this action.
-        self._record_verification(context, tool_name, result.output)
+        outcome = self._record_verification(context, tool_name, result.output)
         
         # Create structured observation and update working state
         action_id = step.metadata.get("action_id") or step.id
@@ -320,6 +337,22 @@ class Executor:
         )
         context.observations.append(observation.to_dict())
         self._update_working_state(context, observation)
+
+        # OBSERVE again: the tool reported success, but Atlas also looks at the
+        # application state it just changed, so the result is recorded as state.
+        self._observe_after_action(context, step, tool_name, parameters)
+
+        if outcome.status == "failed":
+            # The action ran but the intended effect could not be observed. This
+            # is a verification failure, not an execution failure: it fails the
+            # step (so bounded recovery may retry) while telling the user which
+            # of the two happened.
+            context.errors.append(
+                f"{tool_name} {_VERIFICATION_FAILURE_PREFIX}: {outcome.detail}"
+            )
+            raise RuntimeError(
+                f"{tool_name} {_VERIFICATION_FAILURE_PREFIX}: {outcome.detail}"
+            )
         
         # Compare expected vs observed if expected_outcome is specified
         expected_outcome = step.metadata.get("expected_outcome")
@@ -554,7 +587,7 @@ class Executor:
             }
         )
 
-    def _record_verification(self, context: ExecutionContext, tool_name: str, output: object) -> None:
+    def _record_verification(self, context: ExecutionContext, tool_name: str, output: object):
         # Observe the tool output and record whether the intended effect is
         # supported by evidence. Unverified outcomes are surfaced, never silently
         # upgraded to success.
@@ -563,6 +596,74 @@ class Executor:
             {"tool": tool_name, "status": outcome.status, "detail": outcome.detail}
         )
         context.verification_results.append(outcome.to_dict())
+        if context.working_state is not None:
+            context.working_state.verification_status[tool_name] = outcome.status
+        return outcome
+
+    def _observe_after_action(
+        self,
+        context: ExecutionContext,
+        step: ExecutionStep,
+        tool_name: str,
+        parameters: dict,
+    ) -> None:
+        """Observe the UI state after a screen-changing action.
+
+        This is the second OBSERVE of the loop. The observation is recorded as an
+        application-state observation and in the working state, so a later step
+        (or the user) can see what actually happened without re-deriving it from
+        a tool reply. Failures to observe are recorded honestly and never fail
+        the step: an unobservable screen is not a failed action.
+        """
+
+        if self._observer is None or tool_name not in UI_STATEFUL_CAPABILITIES:
+            return
+        application = str(parameters.get("application") or "").strip() or None
+        launched = tool_name.startswith("applications.launch")
+        try:
+            observation = self._observer.observe_application(
+                application,
+                wait_seconds=_OBSERVE_AFTER_LAUNCH_SECONDS if launched else 0.0,
+            )
+        except Exception as exc:  # noqa: BLE001 - observation is best-effort
+            logger.info("Post-action observation failed for %s: %r", tool_name, exc)
+            context.warnings.append(f"Could not observe the application state after {tool_name}.")
+            return
+        if not isinstance(observation, dict):
+            return
+
+        context.metadata["last_ui_observation"] = observation
+        context.metadata.setdefault("ui_observations", []).append(observation)
+        context.observations.append(
+            {
+                "source": ObservationSource.APPLICATION_STATE.value,
+                "type": ObservationType.ENVIRONMENT.value,
+                "status": str(observation.get("status") or "unknown"),
+                "summary": str(observation.get("summary") or ""),
+                "details": {
+                    "fidelity": observation.get("fidelity"),
+                    "window": observation.get("window"),
+                    "text_length": len(str(observation.get("text") or "")),
+                    "after": tool_name,
+                },
+                "artifacts": [],
+                "environment": {"application": application or ""},
+                # "tool" (not "tool_name") is deliberate: _verify_completion
+                # reconstructs expected-vs-observed comparisons from tool-result
+                # observations, and a UI-state observation must not be mistaken
+                # for the tool reply that carries those details.
+                "step_id": step.id,
+                "action_id": step.metadata.get("action_id") or step.id,
+                "tool": tool_name,
+            }
+        )
+
+        window = observation.get("window") if isinstance(observation.get("window"), dict) else None
+        if window and context.working_state is not None:
+            context.working_state.set_application_state(
+                application=str(window.get("application") or application or ""),
+                window=str(window.get("title") or ""),
+            )
 
     def _create_observation(
         self,
@@ -929,7 +1030,7 @@ class Executor:
         for tool_call in context.tool_calls:
             tool_name = tool_call.get("tool")
             output = tool_call.get("output", {})
-            
+
             if tool_name == "applications.write_text":
                 # Verify text was actually written
                 if isinstance(output, dict):
@@ -937,12 +1038,26 @@ class Executor:
                     if chars <= 0:
                         context.errors.append("Application write reported zero characters written")
                         return False
-                    
+
+                    # A tool that explicitly reports the text was not present
+                    # after writing is a verification failure, not a success.
+                    verification = output.get("verification")
+                    observed = output.get("observed")
+                    if verification == "failed" or observed is False:
+                        target = output.get("target", {}) if isinstance(output.get("target"), dict) else {}
+                        control = target.get("control_class", "the target control")
+                        context.errors.append(
+                            "Application write verification failed: text was not present "
+                            f"in {control} after writing it."
+                        )
+                        return False
+
                     # Mark delivery criteria as met
                     if task.completion_criteria:
                         task.completion_criteria.mark_met("content_delivered")
-                        task.completion_criteria.mark_met("delivery_verified")
-                
+                        if observed is True or verification == "confirmed":
+                            task.completion_criteria.mark_met("delivery_verified")
+
             elif tool_name == "filesystem.write":
                 # Verify file was created
                 if isinstance(output, dict):
@@ -950,11 +1065,10 @@ class Executor:
                     if not path:
                         context.errors.append("File write did not return a path")
                         return False
-                    
                     if task.completion_criteria:
                         task.completion_criteria.mark_met("file_created")
                         task.completion_criteria.mark_met("file_verified")
-            
+
             elif tool_name == "applications.launch_named":
                 # Verify app launched
                 if isinstance(output, dict):
@@ -962,11 +1076,11 @@ class Executor:
                     if not pid:
                         context.errors.append("Application launch did not return a PID")
                         return False
-                    
                     if task.completion_criteria:
                         task.completion_criteria.mark_met("destination_opened")
-        
+
         return True
+
 
     def _mark_failed(self, context: ExecutionContext) -> None:
         if context.execution_plan is not None:
@@ -1063,9 +1177,17 @@ def classify_failure(context: ExecutionContext) -> dict[str, object]:
         category = "unknown_capability"
     elif "confirmation" in message or "denied" in message:
         category = "permission"
-    elif "could not be focused" in message or "could not be found" in message and "window" in message:
+    elif "did not produce the expected effect" in message:
+        # The action ran but the intended effect is absent: a verification
+        # failure. It is recoverable, because the delivery path or the wait can
+        # legitimately change on a retry, and it is never reported as a success.
+        category = "ui_verification_failed"
+    elif "could not be focused" in message:
         # A GUI focus failure cannot be fixed by changing tool arguments.
         category = "gui_unavailable"
+    elif "could not be found" in message and "window" in message:
+        # The window was not there yet. Waiting longer can legitimately help.
+        category = "ui_target_missing"
     elif "not found" in message or "could not resolve" in message:
         category = "missing_target"
     elif "parameter" in message or "missing" in message or "must be" in message:
@@ -1074,7 +1196,13 @@ def classify_failure(context: ExecutionContext) -> dict[str, object]:
         category = "timeout"
     else:
         category = "execution_error"
-    recoverable = category in {"invalid_arguments", "execution_error", "timeout"}
+    recoverable = category in {
+        "invalid_arguments",
+        "execution_error",
+        "timeout",
+        "ui_target_missing",
+        "ui_verification_failed",
+    }
     return {"category": category, "recoverable": recoverable, "message": message}
 
 

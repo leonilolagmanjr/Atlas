@@ -338,6 +338,8 @@ class ComputerToolTests(unittest.TestCase):
                 "applications.launch",
                 "applications.launch_named",
                 "applications.write_text",
+                "computer.windows",
+                "computer.observe",
                 "content.generate",
                 "content.format",
                 "powershell.execute",
@@ -424,6 +426,13 @@ class ComputerToolTests(unittest.TestCase):
         self.assertEqual(context.status, TaskStatus.WAITING_FOR_CONFIRMATION)
         self.assertEqual(plan.steps[0].status.value, "PENDING")
         self.assertEqual(context.tool_calls[0]["status"], "confirmation_required")
+
+    def test_perception_tools_registered_in_runtime(self) -> None:
+        r = ToolRegistry()
+        register_read_only_tools(r)
+        names = {tool.metadata.name for tool in r.list_tools()}
+        self.assertIn("computer.observe", names)
+        self.assertIn("computer.windows", names)
 
 
 if __name__ == "__main__":

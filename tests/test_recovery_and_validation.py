@@ -46,6 +46,37 @@ class FailureClassificationTests(unittest.TestCase):
         self.assertEqual(result["category"], "gui_unavailable")
         self.assertFalse(result["recoverable"])
 
+    def test_ui_verification_failure_is_recoverable_and_distinct(self):
+        result = classify_failure(
+            self._context_with_error(
+                "applications.write_text did not produce the expected effect: "
+                "the text was not present in Edit after writing it."
+            )
+        )
+        self.assertEqual(result["category"], "ui_verification_failed")
+        self.assertTrue(result["recoverable"])
+
+    def test_ui_target_missing_is_recoverable(self):
+        result = classify_failure(
+            self._context_with_error("Notepad window could not be found after 5s")
+        )
+        self.assertEqual(result["category"], "ui_target_missing")
+        self.assertTrue(result["recoverable"])
+
+    def test_verification_failure_is_not_misread_as_execution_failure(self):
+        # The two failure kinds must classify differently even though both
+        # reach the executor as errors.
+        verification = classify_failure(
+            self._context_with_error(
+                "applications.write_text did not produce the expected effect: absent"
+            )
+        )
+        execution = classify_failure(
+            self._context_with_error("SendMessageW failed: access denied")
+        )
+        self.assertEqual(verification["category"], "ui_verification_failed")
+        self.assertNotEqual(execution["category"], "ui_verification_failed")
+
 
 class RecoveryTests(unittest.TestCase):
     def _failed_step(self, *, tool: str = "web.search", parameters=None) -> ExecutionStep:
@@ -116,6 +147,97 @@ class RecoveryTests(unittest.TestCase):
         step = self._failed_step(tool="powershell.execute")
 
         self.assertFalse(RecoveryManager(ask=lambda **_: "{}").attempt_recovery(context, step))
+
+
+class UiRecoveryTests(unittest.TestCase):
+    """Deterministic (no-model) recovery for computer-interaction failures."""
+
+    def _step(self, parameters: dict) -> ExecutionStep:
+        return ExecutionStep(
+            id="write_step",
+            name="Write text",
+            action="invoke_tool",
+            description="",
+            metadata={"tool": "applications.write_text", "parameters": parameters},
+        )
+
+    def _context(self, message: str) -> ExecutionContext:
+        context = ExecutionContext(user_input="x")
+        context.errors.append(message)
+        context.metadata["failure_classification"] = classify_failure(context)
+        return context
+
+    def test_verification_failure_switches_delivery_without_the_model(self):
+        def refusing_ask(**_kwargs):
+            raise AssertionError("deterministic recovery must not call the model")
+
+        context = self._context(
+            "applications.write_text did not produce the expected effect: absent"
+        )
+        step = self._step({"application": "Notepad", "text": "hi", "delivery": "auto"})
+
+        self.assertTrue(RecoveryManager(ask=refusing_ask).attempt_recovery(context, step))
+        self.assertEqual(step.metadata["parameters"]["delivery"], "paste")
+        self.assertEqual(step.metadata["recovery_strategy"], "deterministic")
+
+    def test_delivery_fallback_chain_is_bounded(self):
+        context = self._context(
+            "applications.write_text did not produce the expected effect: absent"
+        )
+        step = self._step({"application": "Notepad", "text": "hi", "delivery": "paste"})
+
+        self.assertTrue(
+            RecoveryManager(ask=lambda **_: "{}").attempt_recovery(context, step)
+        )
+        self.assertEqual(step.metadata["parameters"]["delivery"], "direct")
+
+    def test_target_missing_doubles_the_wait_bounded(self):
+        context = self._context("Notepad window could not be found after 5s")
+        step = self._step({"application": "Notepad", "text": "hi", "wait_seconds": 3})
+
+        self.assertTrue(
+            RecoveryManager(ask=lambda **_: "{}").attempt_recovery(context, step)
+        )
+        self.assertEqual(step.metadata["parameters"]["wait_seconds"], 6)
+
+    def test_target_missing_never_waits_longer_than_the_cap(self):
+        context = self._context("Notepad window could not be found after 20s")
+        step = self._step({"application": "Notepad", "text": "hi", "wait_seconds": 15})
+
+        # At the cap there is no deterministic fix and no model is available,
+        # so recovery must stop instead of stalling longer.
+        self.assertFalse(RecoveryManager(ask=None).attempt_recovery(context, step))
+        self.assertEqual(step.metadata["parameters"]["wait_seconds"], 15)
+
+    def test_deterministic_ui_recovery_never_touches_other_tools(self):
+        context = self._context(
+            "web.search did not produce the expected effect: absent"
+        )
+        step = ExecutionStep(
+            id="search_step",
+            name="Search",
+            action="invoke_tool",
+            description="",
+            metadata={"tool": "web.search", "parameters": {"query": "cars"}},
+        )
+
+        # No model available: the deterministic UI corrections do not apply.
+        self.assertFalse(RecoveryManager(ask=None).attempt_recovery(context, step))
+        self.assertEqual(step.metadata["parameters"], {"query": "cars"})
+
+    def test_recovery_records_history_entry(self):
+        context = self._context(
+            "applications.write_text did not produce the expected effect: absent"
+        )
+        step = self._step({"application": "Notepad", "text": "hi", "delivery": "auto"})
+
+        self.assertTrue(
+            RecoveryManager(ask=lambda **_: "{}").attempt_recovery(context, step)
+        )
+        history = context.metadata["recovery_history"]
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["step_id"], "write_step")
+        self.assertEqual(history[0]["reason"], "ui_verification_failed")
 
 
 class PlanValidationTests(unittest.TestCase):

@@ -43,6 +43,8 @@ _READ_TOOLS = frozenset({
     "filesystem.list", "filesystem.search", "filesystem.read", "filesystem.metadata",
     "filesystem.search_content", "web.search", "web.fetch", "web.research",
     "system.info", "processes.list",
+    # Read-only UI perception tools are safe for the reasoning loop.
+    "computer.windows", "computer.observe",
 })
 
 

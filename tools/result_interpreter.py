@@ -20,10 +20,44 @@ def interpret_tool_result(tool_name: str, result: ToolResult) -> str:
         return "PowerShell completed successfully with no output."
     if tool_name == "applications.write_text" and isinstance(result.output, dict):
         application = result.output.get("application", "the application")
+        verification = result.output.get("verification")
+        if verification == "confirmed":
+            return (
+                f"Wrote {result.output.get('characters', 'the')} characters into {application} "
+                "and read the text back to confirm it."
+            )
+        if verification == "failed":
+            return (
+                f"The text could not be found in {application} after writing it, "
+                "so the write is not verified."
+            )
         characters = result.output.get("characters")
         if characters is not None:
-            return f"Wrote {characters} characters into {application}."
+            return (
+                f"Wrote {characters} characters into {application}. "
+                "I could not read the control back, so this is not independently verified."
+            )
         return f"Wrote the requested text into {application}."
+    if tool_name == "computer.observe" and isinstance(result.output, dict):
+        status = result.output.get("status")
+        if status == "observed":
+            return str(result.output.get("summary") or "Observed the application window.")
+        return str(
+            result.output.get("summary")
+            or "I could not observe an application window for this request."
+        )
+    if tool_name == "computer.windows" and isinstance(result.output, dict):
+        windows = result.output.get("windows") or []
+        if not windows:
+            return "No open windows matched that request."
+        titles = [
+            str(window.get("title") or window.get("class_name") or "untitled")
+            for window in windows[:10]
+            if isinstance(window, dict)
+        ]
+        lines = [f"{len(windows)} open window(s):"]
+        lines.extend(f"- {title}" for title in titles)
+        return "\n".join(lines)
     if tool_name == "content.generate" and isinstance(result.output, dict):
         return str(result.output.get("text") or "Content generated.")
     if tool_name == "applications.launch_named" and isinstance(result.output, dict):

@@ -27,10 +27,11 @@ Atlas is a local-first Python assistant with local Ollama generation, document r
 - Bounded local file listing, search, UTF-8 text reading, PDF text extraction, and content search.
 - Registered, permission-aware application launch/text entry and filesystem write/create/move/copy actions.
 - Read-only Windows process/system/application inspection and validated PowerShell inspection.
+- Closed-loop UI observation for computer actions: window inventory, application/window/control matching, and control text reading, so Atlas can observe whether an action it performed actually changed the visible application state before claiming success; failures are classified as execution vs verification vs recovery problems, and bounded recovery can retry the same capability with a different delivery mechanism or wait time.
 - Dependency-ordered action plans, named output references, sequential execution, approval pause/resume, and bounded recovery.
 - Persisted conversation sessions, durable API task snapshots, and sanitized reasoning-stage/provenance displays.
 
-These are implemented paths, not a guarantee that arbitrary natural-language requests work. Model interpretation, search-provider availability, application/window resolution, and evidence quality affect results. Generic software installation, downloads, browser interaction, OCR, and unrestricted GUI automation are not implemented.
+These are implemented paths, not a guarantee that arbitrary natural-language requests work. Model interpretation, search-provider availability, application/window resolution, and evidence quality affect results. Generic software installation, downloads, browser interaction, OCR, voice/vision, and unrestricted GUI automation are not implemented.
 
 ## Architecture
 
@@ -279,6 +280,7 @@ Most runtime settings are Python constants in `config.py`; there is no backend `
 | `LOG_LEVEL` / `LOG_TO_FILE` / `LOG_FILE` | `INFO` / `False` / `database/atlas.log` | Logging |
 | `LOG_RETRIEVAL` / `DEBUG_PIPELINE` | `True` / `False` | Retrieval diagnostics and structured pipeline tracing |
 | `REDACT_KEYS` | `password`, `token`, `api_key`, `secret` | Diagnostic key redaction, not comprehensive content redaction |
+| `ENABLE_COMPUTER_OBSERVATION` | `True` | Read-only Windows UI observation (window inventory, application matching, control text reading) before and after computer actions, so Atlas can verify effects it caused instead of trusting tool-reported success alone |
 
 The frontend reads `VITE_ATLAS_API_URL` through Vite, defaulting to `http://127.0.0.1:8000/api`. This is a frontend build/dev setting, not a Python `.env` setting.
 
@@ -339,7 +341,7 @@ Manual smoke checks should separately confirm local Ollama availability, one gen
 - **Transport is not wall-clock preemption:** Ollama has a transport timeout, not a hard absolute generation deadline. PDF extraction can block within one page. Reasoning source/tool budgets do not globally meter every internal provider request, retrieval subquery, or legacy executor operation.
 - **Web boundary gaps:** initial/final URLs and redirects check public IPv4/IPv6 destinations, but DNS re-resolution and proxy behavior leave DNS-rebinding/TOCTOU risk. This is not a network sandbox.
 - **Approval gaps:** task-specific approval does not yet ensure atomic serialized approval execution. Grants are now argument-bound (a recovery that changes effectful planned arguments requires fresh approval), but the approval/resume path is not guaranteed to be atomic under concurrent submission.
-- **Verification limits:** tool-reported output shape often stands in for independent effect checks; citations and retrieval sufficiency do not prove truth.
+- **Verification limits:** tool-reported output shape often stands in for independent effect checks; citations and retrieval sufficiency do not prove truth. Computer-interaction verification is honest about evidence quality: read-back of the target control is the strongest available signal, window/control state is secondary, and iconic/visual or legacy controls report what they can instead of pretending the effect happened.
 - **Local-first, not offline-only:** selected web research sends queries to public services; model/embedding setup may download data. Files, memory, task history, and logs can hold private information.
 - **Capability limits:** no generic install/package management, controlled downloads, browser automation, OCR, voice/vision, durable resumable execution, or long-term semantic memory. Existing application text entry is narrower than full GUI automation.
 
