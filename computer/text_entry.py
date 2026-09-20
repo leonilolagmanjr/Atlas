@@ -51,6 +51,10 @@ def _bounded_seconds(value: Any, *, default: int, low: int, high: int) -> int:
 def _text_present(current: str, submitted: str) -> bool:
     """Return True when ``submitted`` is readable inside a control's text."""
 
+    # Check exact substring first (handles whitespace differences)
+    if submitted in current:
+        return True
+    # Fallback: check stripped versions
     needle = submitted.strip()
     haystack = current.strip()
     if not needle or not haystack:
@@ -224,9 +228,18 @@ class ApplicationTextEntryTool(Tool):
             )
 
         # Allow the control time to process the text before reading back.
-        time.sleep(0.5)
+        # Windows 11 RichEditD2DPT needs time to update internal buffer.
+        time.sleep(1.0)
 
         observed, observed_characters = cls._confirm_text(user32, control, text, method=method)
+
+        # If read-back failed but control is readable, re-detect control in case
+        # the control hierarchy changed (e.g. Notepad creates new edit control).
+        if observed is False and observed_characters is not None:
+            control = _find_text_control(user32, window)
+            time.sleep(0.5)
+            observed, observed_characters = cls._confirm_text(user32, control, text, method=method)
+
         return {
             "delivery": method,
             "observed": observed,

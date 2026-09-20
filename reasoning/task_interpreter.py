@@ -289,7 +289,10 @@ class SemanticTaskInterpreter:
                 "filesystem.list", "filesystem.metadata", "filesystem.search_content",
                 "system.info", "processes.list",
                 # Read-only UI perception: observing the desktop changes nothing.
+                # Visual interaction tools are NOT here: they change the screen
+                # and must remain permission-gated consequential actions.
                 "computer.windows", "computer.observe",
+                "computer.vision_observe", "computer.find",
             }
             if capabilities - read_only:
                 sources.append("computer")

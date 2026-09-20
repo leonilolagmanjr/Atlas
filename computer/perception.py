@@ -814,14 +814,34 @@ class OpenWindowsTool(Tool):
             return ToolResult.failure(str(exc), recoverable=True)
 
 
+def _wants_visual_state(parameters: dict[str, Any]) -> bool:
+    """Return True when the request asks for a screenshot-based visual state."""
+
+    if not isinstance(parameters, dict):
+        return False
+    return any(
+        bool(parameters.get(key))
+        for key in ("full_screen", "region", "allow_vlm", "vlm_question")
+    ) or parameters.get("include_ocr") is not None or parameters.get("include_uia") is not None
+
+
 class ComputerObserveTool(Tool):
-    """Read-only UI observation: window, controls, focus, and readable text."""
+    """Read-only UI observation.
+
+    It observes the window/control state Atlas can obtain from Windows directly
+    (window, controls, focused control, readable text). When the optional vision
+    layer is enabled and the request asks for a screenshot-based observation
+    (full_screen/region/include_ocr/allow_vlm), it delegates to the layered
+    perception engine and returns the structured visual state instead, so
+    computer.observe remains the single observation entry point.
+    """
 
     metadata = ToolMetadata(
         name="computer.observe",
         description=(
-            "Observe the current or named application's UI state: window, "
-            "controls, focused control, and readable text."
+            "Observe the current or named application's state: window, controls, "
+            "focused control, and readable text; optionally a full visual-state "
+            "observation (UI Automation + local OCR + image processing + VLM)."
         ),
         category="computer.perception",
         input_schema={
@@ -836,6 +856,12 @@ class ComputerObserveTool(Tool):
             "max_controls": {"type": "integer"},
             "text_limit": {"type": "integer"},
             "include_controls": {"type": "boolean"},
+            "full_screen": {"type": "boolean", "description": "observe the whole screen (visual state)"},
+            "region": {"type": "object", "description": "optional region to observe (visual state)"},
+            "include_ocr": {"type": "boolean", "description": "read visible text with local OCR"},
+            "include_uia": {"type": "boolean", "description": "read the Windows UI Automation tree"},
+            "allow_vlm": {"type": "boolean", "description": "consult the local vision model (only when needed)"},
+            "vlm_question": {"type": "string", "description": "structured question for the vision model"},
         },
         output_schema={
             "status": {"type": "string"},
@@ -853,6 +879,8 @@ class ComputerObserveTool(Tool):
     def execute(self, parameters: dict[str, Any]) -> ToolResult:
         try:
             self.validate(parameters)
+            if _wants_visual_state(parameters):
+                return self._observe_visual_state(parameters)
             observation = observe(
                 str(parameters.get("application") or "").strip() or None,
                 wait_seconds=_bounded_int(
@@ -873,3 +901,17 @@ class ComputerObserveTool(Tool):
             )
         except (OSError, ValueError) as exc:
             return ToolResult.failure(str(exc), recoverable=True)
+
+    def _observe_visual_state(self, parameters: dict[str, Any]) -> ToolResult:
+        """Delegate to the layered perception engine for a visual observation."""
+
+        from config import VISION_ENABLED
+        from computer.vision_tools import VisionObserveTool
+
+        if not VISION_ENABLED:
+            message = (
+                "Local vision is disabled (VISION_ENABLED is false); returning the "
+                "window-only observation instead."
+            )
+            return ToolResult.failure(message, recoverable=False)
+        return VisionObserveTool().execute(parameters)

@@ -30,6 +30,23 @@ MAX_UI_WAIT_SECONDS = 15
 #: Each change is an argument change for the *same* capability: the effect the
 #: user approved is identical, only the mechanism differs.
 _UI_DELIVERY_FALLBACKS: tuple[str, ...] = ("paste", "direct")
+#: Visual interaction capabilities whose recovery is "re-observe with a wider
+#: net": wait longer, then let the local vision model help. Defined here (rather
+#: than imported from computer.interaction) to keep the recovery module free of
+#: an execution-time dependency on the vision package.
+VISUAL_ACTION_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        "computer.click",
+        "computer.double_click",
+        "computer.right_click",
+        "computer.move",
+        "computer.drag",
+        "computer.type",
+        "computer.keypress",
+        "computer.scroll",
+        "computer.focus",
+    }
+)
 
 
 def _bounded_wait(value: object, *, default: int = 5) -> int:
@@ -117,6 +134,8 @@ class RecoveryManager:
 
         tool = str(step.metadata.get("tool") or "")
         category = str(classification.get("category") or "")
+        if tool in VISUAL_ACTION_CAPABILITIES:
+            return self._correct_visual_action(tool, category, step)
         if tool != "applications.write_text":
             return None
         parameters = dict(step.metadata.get("parameters") or {})
@@ -137,6 +156,36 @@ class RecoveryManager:
                 return None
             return {**parameters, "wait_seconds": min(MAX_UI_WAIT_SECONDS, wait + 5)}
 
+    def _correct_visual_action(
+        self,
+        tool: str,
+        category: str,
+        step: ExecutionStep,
+    ) -> Optional[dict]:
+        """Correct a visual action's arguments for a known UI failure.
+
+        The recovery strategy for a visual action is always the same bounded
+        idea: *re-observe*. A visual target that has moved or not yet appeared
+        is fixed by asking perception again with a longer wait (target missing)
+        or by allowing the local vision model to help locate a stubborn element
+        (verification failed). Argument changes stay for the *same* capability,
+        so the effect the user approved is unchanged.
+        """
+
+        parameters = dict(step.metadata.get("parameters") or {})
+        if category == "ui_target_missing":
+            wait = _bounded_wait(parameters.get("wait_seconds"))
+            if wait >= MAX_UI_WAIT_SECONDS:
+                return None
+            return {**parameters, "wait_seconds": min(MAX_UI_WAIT_SECONDS, wait * 2)}
+        if category in {"ui_verification_failed", "missing_target"}:
+            if not parameters.get("allow_vlm"):
+                return {**parameters, "allow_vlm": True}
+            # Already tried the model: widen the acceptable observation age once.
+            age = parameters.get("max_age_seconds")
+            if age is None:
+                return {**parameters, "max_age_seconds": MAX_UI_WAIT_SECONDS}
+            return None
         return None
 
     def _propose_correction(

@@ -114,6 +114,40 @@ COMPUTER_ROOT: Path = PROJECT_ROOT
 # caused instead of trusting a tool-reported success. Read-only and cheap;
 # disable only if window enumeration is undesirable in this environment.
 ENABLE_COMPUTER_OBSERVATION: bool = True
+# ---- Local computer vision ("Eyes") ----
+# Layered perception: Windows UI Automation -> OCR -> image processing -> VLM.
+# Every layer is optional and degrades gracefully; the deterministic layers
+# (UIA, OCR, image processing) never require a model, and Atlas keeps working
+# with no vision model installed at all.
+#
+# Master switch for the screenshot/OCR/image/VLM perception path. When False,
+# the screenshot-based tools report honestly that they are disabled and the
+# existing window-only observation path is unaffected.
+VISION_ENABLED: bool = True
+# Which local vision provider to construct: "ollama" (a local multimodal model
+# served by Ollama) or "none" (deterministic perception only, no VLM).
+# There is deliberately no cloud computer-use provider.
+VISION_PROVIDER: str = "ollama"
+# The local multimodal model used for VLM enrichment. It is NOT auto-downloaded;
+# configure a model that already exists in the local Ollama instance.
+VISION_MODEL: str = "llava:7b"
+# Longest edge, in pixels, a screenshot is downscaled to before OCR/VLM use.
+# Smaller images mean lower latency and lower VRAM use.
+VISION_MAX_IMAGE_SIZE: int = 1280
+# Transport timeout (seconds) for one local VLM call.
+VISION_TIMEOUT: float = 60.0
+# Minimum per-element confidence for a VLM-proposed target to be a candidate.
+VISION_CONFIDENCE_THRESHOLD: float = 0.5
+# Maximum observation age (seconds) before a visual action referencing it is
+# rejected as stale and must re-observe first.
+VISION_OBSERVATION_MAX_AGE_SECONDS: float = 30.0
+# Maximum number of VLM enrichment calls allowed per request (bounded so a
+# request can never loop on inference).
+VISION_MAX_VLM_CALLS: int = 2
+# Local OCR language(s) for the optional tesseract backend.
+VISION_OCR_LANGUAGES: str = "eng"
+# Run region-based OCR instead of full-screen OCR whenever a region is known.
+VISION_PREFER_REGION_OCR: bool = True
 
 # ---- API task history ----
 TASK_STORE_FILE: Path = PROJECT_ROOT / "database" / "tasks.json"

@@ -5,3 +5,20 @@ ollama
 fastapi
 uvicorn
 httpx
+
+# --- Optional: local computer vision ("Eyes") ---
+# These are NOT required. The vision subsystem degrades gracefully without them:
+#   - Screen capture uses the Win32 GDI path (no dependency).
+#   - UI Automation uses ctypes + COM (no dependency).
+#   - Image processing (regions/change detection/color/shape) uses opencv + numpy
+#     when present; capture still works without them (pure-Python PNG encoder).
+#   - Local OCR uses the tesseract engine; install the binary separately and
+#     uncomment pytesseract/pillow to use the Python binding (the CLI is used
+#     automatically as a fallback).
+#   - The local VLM is served by the existing `ollama` dependency against a
+#     multimodal model you already pulled (e.g. llava:7b); no new package needed.
+# Uncomment to enable the full image-processing and OCR layers:
+# opencv-python
+# numpy
+# pytesseract
+# pillow

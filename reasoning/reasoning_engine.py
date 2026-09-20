@@ -45,6 +45,7 @@ _READ_TOOLS = frozenset({
     "system.info", "processes.list",
     # Read-only UI perception tools are safe for the reasoning loop.
     "computer.windows", "computer.observe",
+    "computer.vision_observe", "computer.find",
 })
 
 

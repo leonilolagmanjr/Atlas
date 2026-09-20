@@ -5,6 +5,20 @@ from __future__ import annotations
 import json
 
 from tools.base import ToolResult
+#: Visual interaction capabilities whose result describes a validated target.
+_VISUAL_ACTION_TOOLS: frozenset[str] = frozenset(
+    {
+        "computer.click",
+        "computer.double_click",
+        "computer.right_click",
+        "computer.move",
+        "computer.drag",
+        "computer.type",
+        "computer.keypress",
+        "computer.scroll",
+        "computer.focus",
+    }
+)
 
 
 def interpret_tool_result(tool_name: str, result: ToolResult) -> str:
@@ -46,6 +60,34 @@ def interpret_tool_result(tool_name: str, result: ToolResult) -> str:
             result.output.get("summary")
             or "I could not observe an application window for this request."
         )
+    if tool_name == "computer.vision_observe" and isinstance(result.output, dict):
+        return str(result.output.get("summary") or "Observed the screen.")
+    if tool_name == "computer.find" and isinstance(result.output, dict):
+        candidates = result.output.get("candidates") or []
+        if not candidates:
+            return str(
+                result.output.get("summary")
+                or "No visible element matched that request."
+            )
+        lines = [f"Found {len(candidates)} candidate(s):"]
+        for candidate in candidates[:10]:
+            if not isinstance(candidate, dict):
+                continue
+            name = str(candidate.get("name") or candidate.get("type") or "element")
+            confidence = candidate.get("confidence")
+            source = candidate.get("source")
+            suffix = f" (confidence {confidence}, via {source})" if confidence is not None else ""
+            lines.append(f"- {name}{suffix}")
+        return "\n".join(lines)
+    if tool_name in _VISUAL_ACTION_TOOLS and isinstance(result.output, dict):
+        status = str(result.output.get("status") or "done")
+        target = result.output.get("target")
+        if isinstance(target, dict):
+            label = target.get("name") or target.get("element_id") or (
+                f"({target.get('x')}, {target.get('y')})"
+            )
+            return f"{status.capitalize()} on {label}; verifying the effect needs the next observation."
+        return f"{status.capitalize()} the requested interaction."
     if tool_name == "computer.windows" and isinstance(result.output, dict):
         windows = result.output.get("windows") or []
         if not windows:

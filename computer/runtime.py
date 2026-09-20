@@ -18,12 +18,24 @@ from computer.filesystem import (
     FilesystemSearchTool,
     FilesystemWriteTool,
 )
+from computer.interaction import (
+    ComputerClickTool,
+    ComputerDoubleClickTool,
+    ComputerDragTool,
+    ComputerFocusTool,
+    ComputerKeypressTool,
+    ComputerMoveTool,
+    ComputerRightClickTool,
+    ComputerScrollTool,
+    ComputerTypeTool,
+)
 from computer.launch import ApplicationLaunchTool, NamedApplicationLaunchTool
 from computer.perception import ComputerObserveTool, ComputerObserver, OpenWindowsTool
 from computer.powershell import PowerShellTool
 from computer.processes import ProcessInspectTool, ProcessListTool
 from computer.system import SystemInfoTool
 from computer.text_entry import ApplicationTextEntryTool
+from computer.vision_tools import VisionFindTool, VisionObserveTool
 from tools.content import ContentGenerationTool
 from tools.format import ContentFormatTool
 from tools.knowledge import ToolKnowledgeStore, load_json
@@ -75,6 +87,17 @@ def register_read_only_tools(
         ApplicationTextEntryTool(),
         OpenWindowsTool(),
         ComputerObserveTool(),
+        VisionObserveTool(),
+        VisionFindTool(),
+        ComputerClickTool(),
+        ComputerDoubleClickTool(),
+        ComputerRightClickTool(),
+        ComputerMoveTool(),
+        ComputerDragTool(),
+        ComputerTypeTool(),
+        ComputerKeypressTool(),
+        ComputerScrollTool(),
+        ComputerFocusTool(),
         ContentGenerationTool(ask=ask),
         ContentFormatTool(),
         PowerShellTool(knowledge=knowledge),
@@ -95,7 +118,12 @@ def register_read_only_tools(
     # mutates that module namespace; it only confirms the observation tools
     # present in the actual registry so the validator/interpreter see the same
     # read-only classification the capability catalog already declares.
-    observation_labels = ("computer.observe", "computer.windows")
+    observation_labels = (
+        "computer.observe",
+        "computer.windows",
+        "computer.vision_observe",
+        "computer.find",
+    )
 
     registry_labels = {metadata.name for metadata in registry.list_metadata()}
     missing = [label for label in observation_labels if label not in registry_labels]

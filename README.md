@@ -8,6 +8,7 @@ Atlas is a local-first Python assistant with local Ollama generation, document r
 
 - [Current capabilities](#current-capabilities)
 - [Architecture](#architecture)
+- [Local computer vision ("Eyes")](#local-computer-vision-eyes)
 - [Sources and evidence](#sources-and-evidence)
 - [Tools and execution](#tools-and-execution)
 - [Memory and persistence](#memory-and-persistence)
@@ -28,10 +29,11 @@ Atlas is a local-first Python assistant with local Ollama generation, document r
 - Registered, permission-aware application launch/text entry and filesystem write/create/move/copy actions.
 - Read-only Windows process/system/application inspection and validated PowerShell inspection.
 - Closed-loop UI observation for computer actions: window inventory, application/window/control matching, and control text reading, so Atlas can observe whether an action it performed actually changed the visible application state before claiming success; failures are classified as execution vs verification vs recovery problems, and bounded recovery can retry the same capability with a different delivery mechanism or wait time.
+- **Local computer vision ("Eyes")** — a layered, local-first perception subsystem (Windows UI Automation → local OCR → image processing → optional local VLM) that builds a typed structured visual state, plus permission-gated, observation-validated mouse/keyboard interaction, so Atlas can observe and act on applications and websites it has no dedicated API integration for. Screen capture, window detection, UIA, OCR, image preprocessing, element detection, mouse/keyboard, and observation/verification all work without any external API; the local VLM is optional and everything degrades gracefully.
 - Dependency-ordered action plans, named output references, sequential execution, approval pause/resume, and bounded recovery.
 - Persisted conversation sessions, durable API task snapshots, and sanitized reasoning-stage/provenance displays.
 
-These are implemented paths, not a guarantee that arbitrary natural-language requests work. Model interpretation, search-provider availability, application/window resolution, and evidence quality affect results. Generic software installation, downloads, browser interaction, OCR, voice/vision, and unrestricted GUI automation are not implemented.
+These are implemented paths, not a guarantee that arbitrary natural-language requests work. Model interpretation, search-provider availability, application/window resolution, OCR/VLM quality, and evidence quality affect results. Generic software installation, downloads, unrestricted GUI automation, and voice are not implemented. Local vision generalizes to applications without a dedicated integration only insofar as the layered perception can see them; it is not a claim that every GUI is fully automatable.
 
 ## Architecture
 
@@ -86,12 +88,85 @@ The model proposes structure, not shell execution. Validation checks capability 
 | `llm.py`, `providers/` | Injectable model-call boundary; current facade constructs the Ollama provider |
 | `tools/` | Tool contracts, actual registry, capability descriptors, router, permissions, knowledge and discovery |
 | `computer/`, `web.py` | Windows/filesystem/PowerShell providers and read-only public search/fetch/research tools |
+| `computer/vision/` | Local vision ("Eyes"): `models.py` (typed `VisualState`), `perception.py` (layered orchestrator), `uia.py` (UI Automation), `ocr.py` (local OCR), `imaging.py` (capture + OpenCV processing), `providers.py` (injectable `VisionProvider`), `actions.py` (target validation/coordinate safety), `input.py` (Win32 mouse/keyboard) |
+| `computer/vision_tools.py`, `computer/interaction.py` | `computer.observe`/`computer.find` observation tools and the permission-gated visual interaction tools |
 | `web_content.py`, `web_research.py`, `web_task.py` | Main-content extraction, task-aware multi-attempt retrieval pipeline, and retrieval task/goal/content-type/scoring/validation models |
 | `memory/`, `task_store.py` | Conversation storage and durable API task snapshots |
 | `api.py`, `frontend/` | Local HTTP adapter and polling control room |
 | `config.py`, `logger.py`, `prompts/` | Runtime constants, logging and prompt templates |
 
 Keep new capabilities behind existing tool contracts; do not put subprocess execution in the interpreter, source selector, or frontend. Prefer injected providers/tools for tests and preserve the distinction between evidence and instructions.
+
+## Local computer vision ("Eyes")
+
+Atlas can visually observe the Windows desktop and act on what it sees without any external/cloud computer-use API. The subsystem extends the existing Task IR, planner, executor, permission system, verifier, and recovery — it does **not** add a second agent framework, planner, or permission system.
+
+The loop is the existing one, extended with a perception stage:
+
+```text
+Windows
+  -> Screen Capture (region / active-window / full-screen, downscaled)
+  -> Deterministic Perception
+       Layer 1  Windows UI Automation  (window title, process, control type,
+                accessible name, role, bounds, enabled/focused/selected, value, hierarchy)
+       Layer 2  Local OCR              (text + bounding box + confidence)
+       Layer 3  Image processing       (OpenCV: regions, diff/change detection, color/shape)
+  -> VisualState (typed)
+  -> Layer 4  Local VLM only when deterministic perception is insufficient
+  -> VisualState enrichment (VLM proposes elements/targets, always tagged source=vlm)
+  -> Atlas Task/Reasoning system -> Task Planner -> Executor -> Observation -> Verifier / Recovery
+```
+
+### Layered perception strategy
+Screenshots are **not** sent to a model for every operation. The cheapest, most reliable source is tried first:
+
+1. **UI Automation (Layer 1)** — for normal Windows applications, the accessibility tree already publishes names, roles, bounds, enabled/focused/selected state, values, and hierarchy. This is read first and becomes typed elements with `source: uia`. Missing optional dependency: none (ctypes + COM).
+2. **OCR (Layer 2)** — reads visible text UIA cannot expose (canvas apps, browsers, images). Every result carries text, bounds, and a per-run confidence. Region-based OCR is preferred whenever a window/region is known. Backend: the local `tesseract` engine via `pytesseract` or the CLI (both optional).
+3. **Image processing (Layer 3)** — OpenCV/numpy for screenshots, regions, change/difference detection, and coarse color/shape localization. A pure-Python PNG encoder keeps capture working even without OpenCV; image processing simply no-ops if it is absent.
+4. **Local VLM (Layer 4)** — a local multimodal model (e.g. an Ollama vision model) is consulted **only** when deterministic perception cannot adequately answer a structured question such as "what application is visible?", "where is the search box?", "where is the button labeled Continue?", or "what changed between these screens?". The VLM **proposes observations/targets**; it never executes actions, and Atlas validates and executes them. Results are always tagged `source: vlm` and below-threshold proposals are dropped.
+
+### VisualState
+`computer/vision/models.py` defines a typed representation (`VisualState`) with `screen` (dimensions, monitors, scale), `active_window`, `windows`, `elements` (`id`, `type`, `name`, `bounds`, `confidence`, `source`, enabled/visible/focused/selected/value, `observation_id`, `application`, relationships), `text` (OCR/UIA runs with bounds and confidence), `sources` (which layers contributed), `vlm_interpretation`, `detected_application`, `screenshot_metadata`, `region`, and `timestamp`/`observation_id` — all JSON-serializable via `to_dict()`.
+
+### Tool contracts
+| Capability | Risk | Purpose |
+| --- | --- | --- |
+| `computer.observe` | read-only | Observe the active/named application; with `full_screen`/`region`/`include_ocr`/`allow_vlm` it returns the full structured visual state, otherwise the window/control observation |
+| `computer.vision_observe` | read-only | Capture + analyze the screen into a `VisualState` (UIA + OCR + image + optional VLM) |
+| `computer.find` | read-only | Find a visual/UI element by label, semantic description, or type; returns candidates with bounds and confidence |
+| `computer.click` / `computer.double_click` / `computer.right_click` / `computer.move` / `computer.drag` / `computer.type` / `computer.keypress` / `computer.scroll` / `computer.focus` | permission-gated | Interact with observed elements |
+
+The interaction tools accept a target as an `element_id` from the latest observation, a visible `description`, and (only deliberately) explicit `x`/`y`. They are registered through the same `ToolRegistry`/`CapabilityRegistry` and are permission-gated like other consequential actions (`computer.type` is high risk; clicks/keypress are medium; move/scroll/focus are low).
+
+### Coordinate safety
+A model is never allowed to issue raw screen coordinates that Atlas executes blindly. Every visual action is validated (`computer/vision/actions.py`) against the observation that produced the target:
+
+1. The referenced observation must still be valid (not stale — `VISION_OBSERVATION_MAX_AGE_SECONDS`).
+2. The target element must still be present, visible, and enabled.
+3. Explicit coordinates must fall inside the target element's bounds.
+4. The active window/application must match the observation's, when the action declares one.
+5. Significant UI change means re-observe first; a rejected target is never acted on.
+
+### Closed-loop control
+Visual actions are added to the executor's `UI_STATEFUL_CAPABILITIES`, so the existing `OBSERVE → ACT → OBSERVE → VERIFY` loop re-observes after each one. The verifier reports a visual action as `unverified` unless the tool itself confirmed an effect (a scheduled input event is not proof), and the executor's completion check and subsequent observation remain the authority on whether the intended effect occurred. Recovery for a visual failure is deterministic and bounded: re-observe with a longer wait (target missing), then allow the local VLM to help locate a stubborn element, then widen the acceptable observation age once — always for the *same* capability, never a new one.
+
+### VLM provider architecture
+
+The vision model is not hard-coded. `computer/vision/providers.py` defines an injectable `VisionProvider` (`OllamaVisionProvider` → local Ollama multimodal model; `NullVisionProvider` when unavailable), built from configuration and degradable. The provider answers structured JSON questions and returns untrusted data; it never executes anything. Reuse of the existing LLM provider injection pattern is deliberate, but the vision boundary is separate because it takes an image and returns structured data rather than `ask(system_prompt, user_prompt) -> str`.
+
+### Graceful degradation
+Each layer is optional and the system never hard-depends on a model:
+
+| Present | Still works |
+| --- | --- |
+| UIA + OCR + image + VLM | Full layered perception with model enrichment |
+| UIA + OCR + image (no VLM) | Deterministic perception; VLM calls are skipped honestly |
+| UIA + image (no OCR) | Window/control/text structure from UIA |
+| OCR + image (no UIA) | Text and region perception |
+| No vision extras at all | Existing Atlas functionality is unchanged; `computer.observe` returns the window-only observation |
+
+### Screenshot efficiency
+Capture is region/active-window scoped by default (full screen only when asked), downscaled to `VISION_MAX_IMAGE_SIZE`, cached as the last observation, and change-detected so an expensive VLM call is spent only on a real difference. VLM calls are budgeted per request (`VISION_MAX_VLM_CALLS`).
 
 ## Sources and evidence
 
@@ -178,6 +253,8 @@ Answers distinguish direct model knowledge from retrieved evidence, include sour
 | `filesystem.list/read/metadata/search/search_content` | Bounded local inspection and text/PDF lookup |
 | `filesystem.write/create_folder/move/copy` | Root-bounded mutations, permission-gated in default confirm mode |
 | `applications.list`, `applications.launch`, `applications.launch_named`, `applications.write_text` | Installed-app inspection, non-shell launch, and targeted Windows text entry |
+| `computer.windows`, `computer.observe`, `computer.vision_observe`, `computer.find` | Read-only UI perception: window inventory, window/control observation, layered visual-state observation, and element search |
+| `computer.click`, `computer.double_click`, `computer.right_click`, `computer.move`, `computer.drag`, `computer.type`, `computer.keypress`, `computer.scroll`, `computer.focus` | Permission-gated visual interaction, validated against the current observation |
 | `system.info`, `processes.list`, process inspection tools | Registered read-only machine/process information |
 | `powershell.execute` | Documented, validated read-only inspection, not arbitrary shell access |
 | `web.search`, `web.fetch`, `web.research` | Read-only public search/page evidence and task-aware multi-page retrieval with source ranking, content-type detection, validation, and query reformulation |
@@ -188,7 +265,7 @@ Answers distinguish direct model knowledge from retrieved evidence, include sour
 
 In the default `confirm` mode, consequential registered actions pause for approval through `/approve` or the task-specific API endpoint. Denial stops the paused action. Resumption keeps completed steps instead of regenerating their outputs. `safe` permits read-only tools; `autonomous` changes low/medium-risk confirmation behavior and should not be mistaken for a safety guarantee. Critical operations are denied by default, subject to explicit policy overrides.
 
-Application text entry resolves a target and attempts window/control-based delivery, with clipboard/focus fallbacks. It is not unrestricted mouse/keyboard automation and can fail with incompatible applications or ambiguous windows.
+Application text entry (`applications.write_text`) resolves a target and attempts window/control-based delivery, with clipboard/focus fallbacks. Mouse/keyboard interaction is available separately through the observation-validated `computer.*` interaction tools. Both can fail with incompatible applications or ambiguous windows; visual interaction is validated against the current observation but is not a general guarantee that every window can be observed or driven.
 
 The verifier records `verified`, `unverified`, or `failed` according to capability contracts. Many checks inspect returned output shape or tool-reported values (for example, a PID or character count), **not an independent observation of the intended effect**. Bounded recovery can adjust arguments for the same capability, with per-step and plan-wide limits; it is not arbitrary replanning.
 
@@ -218,6 +295,16 @@ npm --prefix frontend install
 ```
 
 `requirements.txt` includes `chromadb`, `sentence-transformers`, `pypdf`, `ollama`, `fastapi`, `uvicorn`, and `httpx`. Ollama must be installed separately and serving the configured model. Initial embedding-model loading may require a download. Knowledge PDFs are optional for general model answers; place documents in `knowledge/` for local retrieval.
+
+### Local vision ("Eyes") setup
+Vision is **optional and layered**; the base install already captures the screen and reads the Win32 window/control state. To enable each extra layer:
+
+- **UI Automation** works out of the box on Windows (ctypes + COM, no extra package).
+- **Local OCR** needs the `tesseract` engine installed and on `PATH`, plus the optional Python extras: `pip install pytesseract pillow` (or just the `tesseract` binary — the CLI is used as a fallback).
+- **Image processing** uses `opencv-python` and `numpy` when present: `pip install opencv-python numpy`. Without them, capture still works (pure-Python PNG) and image analysis no-ops.
+- **Local VLM** needs a local multimodal model already present in Ollama, e.g. `ollama pull llava:7b`, and `VISION_PROVIDER=ollama` with `VISION_MODEL=llava:7b`. Models are **not** auto-downloaded; Atlas never selects a multi-gigabyte model on its own. There is no cloud vision provider.
+
+Nothing above requires an API key. The vision subsystem is local-first: capture, window detection, UIA, OCR, image processing, element detection, mouse/keyboard, and observation/verification all run on the machine. If a layer is missing, Atlas degrades honestly (see [Local computer vision](#local-computer-vision-eyes)) rather than failing.
 
 ## Running
 
@@ -281,6 +368,16 @@ Most runtime settings are Python constants in `config.py`; there is no backend `
 | `LOG_RETRIEVAL` / `DEBUG_PIPELINE` | `True` / `False` | Retrieval diagnostics and structured pipeline tracing |
 | `REDACT_KEYS` | `password`, `token`, `api_key`, `secret` | Diagnostic key redaction, not comprehensive content redaction |
 | `ENABLE_COMPUTER_OBSERVATION` | `True` | Read-only Windows UI observation (window inventory, application matching, control text reading) before and after computer actions, so Atlas can verify effects it caused instead of trusting tool-reported success alone |
+| `VISION_ENABLED` | `True` | Master switch for the screenshot/OCR/image/VLM perception path; when false, the vision tools report that they are disabled and existing functionality is unaffected |
+| `VISION_PROVIDER` | `ollama` | Local vision provider: `ollama` (local multimodal model) or `none` (deterministic perception only). No cloud provider exists |
+| `VISION_MODEL` | `llava:7b` | Local multimodal model used for VLM enrichment; must already exist in the local Ollama instance (never auto-downloaded) |
+| `VISION_MAX_IMAGE_SIZE` | `1280` | Longest-edge pixel cap for downscaling captures before OCR/VLM |
+| `VISION_TIMEOUT` | `60.0` | Transport timeout (seconds) for one local VLM call |
+| `VISION_CONFIDENCE_THRESHOLD` | `0.5` | Minimum confidence for a VLM-proposed target to be a candidate |
+| `VISION_OBSERVATION_MAX_AGE_SECONDS` | `30.0` | Observation age (seconds) after which a visual action referencing it is rejected as stale |
+| `VISION_MAX_VLM_CALLS` | `2` | Maximum VLM enrichment calls per request |
+| `VISION_OCR_LANGUAGES` | `eng` | OCR language(s) for the optional tesseract backend |
+| `VISION_PREFER_REGION_OCR` | `True` | Run OCR on a known region instead of the whole screen |
 
 The frontend reads `VITE_ATLAS_API_URL` through Vite, defaulting to `http://127.0.0.1:8000/api`. This is a frontend build/dev setting, not a Python `.env` setting.
 
@@ -329,8 +426,9 @@ The suite uses `unittest` and covers these categories:
 - Readable-main-content extraction: main-region preference and dropping of navigation/header/footer/cookie/ad/share chrome, scripts/styles, and media alt text.
 - Task-aware web retrieval: retrieval-goal and content-type inference, source ranking before chunk ranking (a page describing the subject scores below the subject's own document), content-type detection (including document-store/listing pages rejected as `document_host`), task-aware validation and rejection reasons, query reformulation, and a bounded retry loop — including the artifact-vs-information, reference-page, review, media, YouTube and Scribd-listing cases.
 - API contracts and bounded/sanitized reasoning telemetry, including restored records.
+- Local vision perception: `VisualState` model geometry, UIA tree parsing and control-type mapping, OCR parsing (`pytesseract` DICT and `tesseract` TSV) with confidence normalization, region filtering, VLM result coercion/proposal extraction, target validation/coordinate safety (element id, description, explicit coordinates, stale observation, wrong active window, disabled element, out-of-bounds point), vision tool contracts, registration, permissions (observation read-only vs. interaction confirmation-gated), visual verification, visual recovery, and the closed-loop re-observe after a visual action. All use injected fake UIA/OCR/VLM/capture/input providers, so no GUI session is required.
 
-Most contract tests use fakes/mocks; a passing suite does not prove live web freshness, model quality, broad Windows app compatibility, or independently verified computer effects. Some platform smoke paths require Windows/PowerShell. Keep full-suite runs serialized when using shared runtime files. No fixed passing-test total is maintained here; use the current command output and report skips/failures for the exact revision tested.
+Most contract tests use fakes/mocks; a passing suite does not prove live web freshness, model quality, broad Windows app compatibility, OCR accuracy, local VLM quality, or independently verified computer effects. Some platform smoke paths require Windows/PowerShell. Keep full-suite runs serialized when using shared runtime files. No fixed passing-test total is maintained here; use the current command output and report skips/failures for the exact revision tested.
 
 Manual smoke checks should separately confirm local Ollama availability, one general answer, one current question with provenance, a root-permitted file read, capability introspection, session persistence, and approval/denial for a harmless supported action. Do not run live mutating app/file tests without explicit approval. Main integration validation is separate from this documentation consolidation.
 
@@ -341,9 +439,12 @@ Manual smoke checks should separately confirm local Ollama availability, one gen
 - **Transport is not wall-clock preemption:** Ollama has a transport timeout, not a hard absolute generation deadline. PDF extraction can block within one page. Reasoning source/tool budgets do not globally meter every internal provider request, retrieval subquery, or legacy executor operation.
 - **Web boundary gaps:** initial/final URLs and redirects check public IPv4/IPv6 destinations, but DNS re-resolution and proxy behavior leave DNS-rebinding/TOCTOU risk. This is not a network sandbox.
 - **Approval gaps:** task-specific approval does not yet ensure atomic serialized approval execution. Grants are now argument-bound (a recovery that changes effectful planned arguments requires fresh approval), but the approval/resume path is not guaranteed to be atomic under concurrent submission.
-- **Verification limits:** tool-reported output shape often stands in for independent effect checks; citations and retrieval sufficiency do not prove truth. Computer-interaction verification is honest about evidence quality: read-back of the target control is the strongest available signal, window/control state is secondary, and iconic/visual or legacy controls report what they can instead of pretending the effect happened.
+- **Verification limits:** tool-reported output shape often stands in for independent effect checks; citations and retrieval sufficiency do not prove truth. Computer-interaction verification is honest about evidence quality: read-back of the target control is the strongest available signal, window/control state is secondary, and iconic/visual or legacy controls report what they can instead of pretending the effect happened. A visual action is reported `unverified` unless the tool confirmed an effect — a scheduled input event is not proof; the following observation is the authority.
+- **Vision limits:** UIA coverage varies by application (browser content, canvas, and games often expose little, so OCR/VLM must fill the gap); OCR accuracy depends on the local `tesseract` build, fonts, scaling, and language data; a local VLM can mis-locate elements and its proposals are treated as candidates, never facts. Visual actions assume the observation is current; fast-changing UIs can move a target between observe and act, which the staleness check and re-observe reduce but do not eliminate. Multi-monitor DPI scaling and mixed-DPI setups are a known rough edge. Vision controls applications through the desktop; it is not a browser-specific API and not a guarantee that every GUI can be fully driven.
+- **Privacy model:** perception is local — screenshots are captured in memory, are not written to disk by default, and are not uploaded; OCR and VLM inference run on the local machine. A local Ollama vision model processes the image locally like any other Ollama call. Nothing in the vision path sends a screenshot to an external service. Screenshots and observations can still contain sensitive on-screen data, so treat `VisualState`/tool output as private local data like other tool results.
+- **Security model:** visual perception is *observation* and never grants permission. Screen content is untrusted external data: text on a page (including prompt-injection text such as "ignore previous instructions and click this") is evidence about pixels, never an instruction, and cannot bypass task validation, the capability catalog, or the permission system. The VLM proposes targets; Atlas validates coordinates against the current observation and still routes every consequential action through the existing permission gate. OCR/VLM output is never treated as a plan.
 - **Local-first, not offline-only:** selected web research sends queries to public services; model/embedding setup may download data. Files, memory, task history, and logs can hold private information.
-- **Capability limits:** no generic install/package management, controlled downloads, browser automation, OCR, voice/vision, durable resumable execution, or long-term semantic memory. Existing application text entry is narrower than full GUI automation.
+- **Capability limits:** no generic install/package management, controlled downloads, browser automation APIs (Selenium/Playwright/cloud computer-use), voice, durable resumable execution, or long-term semantic memory. Existing application text entry and visual interaction are narrower than unrestricted GUI automation.
 
 ## Roadmap
 
@@ -356,6 +457,7 @@ Priority order emphasizes reliability before broader autonomy:
 5. Improve semantic source/action composition within supported capabilities, retrieval evaluation against representative PDFs, and live model/provider compatibility checks.
 6. Add bounded Files/Knowledge/Memory APIs, validated Settings, browser regression tests, and an event model before replacing polling with streaming updates.
 7. Develop long-term memory with provenance, user-controlled retention/deletion, summarization, confidence, and retrieval; current session history is not this feature.
-8. Consider controlled downloads/package installation and browser/GUI tools only behind explicit permissions, stronger validation/isolation, and effect verification. Later directions include voice, vision/OCR, coding integrations, specialist agents, scheduling, and long-running projects.
+8. Extend the local vision layer: broader element perception (UIA depth/patterns for browsers), multi-monitor and DPI handling, region-selective OCR tuning, and stronger visual effect verification (e.g. before/after element-diff assertions per action) so a click can be confirmed against a change rather than the next observation alone.
+9. Consider controlled downloads/package installation and dedicated browser automation only behind explicit permissions, stronger validation/isolation, and effect verification — never as the foundation of computer control. Later directions include voice, coding integrations, specialist agents, scheduling, and long-running projects.
 
 Roadmap items are future work, not release promises or evidence of implemented capability.

@@ -78,7 +78,18 @@ class TaskVerifier:
             "content.format": self._verify_format,
             "applications.write_text": self._verify_write_text,
             "computer.observe": self._verify_observation,
+            "computer.vision_observe": self._verify_observation,
             "computer.windows": self._verify_window_list,
+            "computer.find": self._verify_find,
+            "computer.click": self._verify_visual_action,
+            "computer.double_click": self._verify_visual_action,
+            "computer.right_click": self._verify_visual_action,
+            "computer.move": self._verify_visual_action,
+            "computer.drag": self._verify_visual_action,
+            "computer.type": self._verify_visual_action,
+            "computer.keypress": self._verify_visual_action,
+            "computer.scroll": self._verify_visual_action,
+            "computer.focus": self._verify_visual_action,
             "filesystem.write": self._verify_path_written,
             "filesystem.create_folder": self._verify_folder,
             "filesystem.move": self._verify_move,
@@ -178,6 +189,74 @@ class TaskVerifier:
             False,
             "unverified",
             "The application's UI state could not be observed.",
+        )
+
+    @staticmethod
+    def _verify_find(output: Any) -> VerificationOutcome:
+        # A find is verified when it actually located candidates; locating none
+        # is honest information, not a success.
+        if isinstance(output, dict):
+            candidates = output.get("candidates")
+            if isinstance(candidates, list):
+                if candidates:
+                    return VerificationOutcome(
+                        "computer.find",
+                        True,
+                        "verified",
+                        f"Located {len(candidates)} candidate(s).",
+                    )
+                return VerificationOutcome(
+                    "computer.find",
+                    False,
+                    "unverified",
+                    str(output.get("summary") or "No matching element was found."),
+                )
+        return VerificationOutcome(
+            "computer.find", False, "unverified", "No element candidates were returned."
+        )
+
+    @staticmethod
+    def _verify_visual_action(output: Any) -> VerificationOutcome:
+        """Verify a visual action by the target it actually acted on.
+
+        A scheduled input event is not proof the intended effect occurred: the
+        success signal is that the action carried a validated target bound to an
+        observation. Because the true effect needs a *subsequent* observation,
+        this reports ``unverified`` unless the tool itself confirmed an effect
+        (e.g. a focus that was confirmed), so the executor's post-action
+        observation and completion check remain the authority.
+        """
+        if not isinstance(output, dict):
+            return VerificationOutcome(
+                "computer.interaction", False, "unverified", "No visual action result was returned."
+            )
+        status = str(output.get("status") or "")
+        target = output.get("target") if isinstance(output.get("target"), dict) else {}
+        if output.get("verified") is True:
+            return VerificationOutcome(
+                "computer.interaction",
+                True,
+                "verified",
+                str(output.get("status") or "The action reported a confirmed effect."),
+            )
+        if target:
+            label = target.get("name") or target.get("element_id") or f"({target.get('x')}, {target.get('y')})"
+            return VerificationOutcome(
+                "computer.interaction",
+                False,
+                "unverified",
+                f"Acted on {label} via {target.get('source', 'an element')}; the effect "
+                "needs a follow-up observation to confirm.",
+            )
+        if status:
+            return VerificationOutcome(
+                "computer.interaction",
+                False,
+                "unverified",
+                f"The action reported '{status}' but returned no validated target.",
+            )
+        return VerificationOutcome(
+            "computer.interaction", False, "unverified", "The action returned no usable evidence."
         )
 
     @staticmethod

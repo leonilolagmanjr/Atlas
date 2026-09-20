@@ -18,12 +18,14 @@ from computer.perception import (
 from computer.runtime import register_read_only_tools
 from computer.system import SystemInfoTool
 from computer.text_entry import ApplicationTextEntryTool
-
+from computer.vision_tools import VisionFindTool, VisionObserveTool
 __all__ = [
     "ApplicationLaunchTool",
     "ApplicationTextEntryTool",
     "ComputerObserveTool",
     "ComputerObserver",
+    "VisionObserveTool",
+    "VisionFindTool",
     "InstalledApplicationSearchTool",
     "InstalledApplicationsTool",
     "OpenWindowsTool",

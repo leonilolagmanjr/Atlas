@@ -41,6 +41,16 @@ UI_STATEFUL_CAPABILITIES: frozenset[str] = frozenset(
         "applications.launch",
         "applications.launch_named",
         "applications.write_text",
+        # Visual interaction changes the screen, so Atlas re-observes after it.
+        "computer.click",
+        "computer.double_click",
+        "computer.right_click",
+        "computer.drag",
+        "computer.type",
+        "computer.keypress",
+        "computer.scroll",
+        "computer.move",
+        "computer.focus",
     }
 )
 #: How long to wait for a window to appear when observing after a launch.
