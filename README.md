@@ -43,6 +43,7 @@ Atlas separates request interpretation, source selection, evidence evaluation, a
 CLI / FastAPI + React
   -> Brain: request context and conversation history
   -> Semantic Task Interpreter: natural language -> Task IR
+  -> Intent Engine 2.0: goal / desired outcome / references / capability requirements
   -> Task Validator: registry, parameters, dependencies, references, risk
   -> ReasoningEngine
        -> QueryRouter + SourceSelector: ordered information sources
@@ -67,6 +68,26 @@ An action identifies a registered capability, parameters, dependencies, and opti
 
 The model proposes structure, not shell execution. Validation checks capability existence, required parameters/types, dependency identifiers, and output references. Planning orders dependencies, but cycle validation and order-independent reference validation remain incomplete. The generated-text handoff works; generic `$name` output resolution still has legacy gaps and must not be treated as reliable arbitrary dataflow.
 
+### Intent Engine 2.0
+Between the interpreter and the validator, the **Intent Engine 2.0** (`reasoning/intent_engine.py`) augments the Task IR with an explicit *understanding* of the request, so a small local model does not have to decide every tool call itself:
+
+```text
+USER LANGUAGE -> INTENT -> DESIRED OUTCOME -> STRUCTURED TASK -> PLAN
+```
+
+It is one component with several deterministic passes — not a swarm of agents — and it never plans, executes, or calls the model:
+
+- **Goal vs operation vs desired outcome.** `goal` is *why* (`research_and_deliver`); `operations` are *how* (`search`, `transform`, `write`); `desired_outcome` is the end state that must be true when Atlas finishes (“a useful Avatar summary exists in Notepad”). An operation is never mistaken for the goal.
+- **Context / reference resolution** (`reasoning/reference_resolver.py`). Follow-ups resolve against the previous Task IR and a bounded slice of recent output — never by stuffing the whole conversation into a prompt. “Make it shorter”, “put that in Notepad”, “which one is best?”, and “do the same thing for Interstellar” resolve deterministically (`previous_output`, `previous_task`, ordinal, transformation); an unresolvable reference is surfaced, not hallucinated.
+- **Intent hypotheses.** Ambiguous requests produce a small set (1–3) of scored readings; one is selected after validation. Scores are internal — never shown to the user.
+- **Two-pass understanding.** Pass 1 reads goal/object/operations/references; pass 2 (`_critique`) repairs the specific mistakes a small model makes: topic-vs-destination (“Notepad” is not the topic), retrieval-vs-action, spurious web for creative tasks, and a transformation mistaken for a new research task. Only concise structured notes are emitted, never chain-of-thought.
+- **Capability-aware reasoning.** The reading proposes *semantic* requirements (`web.research`, `content.generate`, `applications.write_text`); Atlas — not the model — confirms each against the live `CapabilityRegistry` (`validate_capabilities`). The model never decides whether a tool exists.
+- **Tool necessity.** `needs_web` / `needs_files` / `needs_application` are set from the *outcome*, not from nouns, so Atlas does not search the web because a topic is nameable or open an app because an application was mentioned.
+- **Confidence as certainty.** Confidence reflects interpretation certainty, not model confidence theater: an under-specified target (“Get me some videos”) lowers it and raises an ambiguity, while a named entity (“Find MrBeast videos”) resolves it.
+- **Memory of corrections** (`reasoning/correction_memory.py`). Reusable, high-confidence structured lessons (JSONL under `memory/`) can override a reading for a class of phrasings. Only curated lessons are stored — never every turn, never an uncontrolled vector dump.
+
+The engine is model-agnostic: it consumes the interpreter's Task IR and works with any local model (or none, on the deterministic fast path). The `PipelineTrace` (`reasoning/diagnostics.py`) records the intent reading for observability.
+
 ### Module map
 
 | Path | Responsibility |
@@ -75,6 +96,7 @@ The model proposes structure, not shell execution. Validation checks capability 
 | `brain.py` | Request lifecycle, interpretation/validation, reasoning integration, action delegation, early-answer persistence |
 | `models_task.py`, `models.py` | Task IR, execution contexts, plans, steps, lifecycle and result models |
 | `reasoning/task_interpreter.py`, `reasoning/prompts.py`, `reasoning/json_llm.py` | Semantic interpretation and structured model output handling |
+| `reasoning/intent_engine.py`, `reasoning/reference_resolver.py`, `reasoning/correction_memory.py` | Intent Engine 2.0: goal/outcome/capability understanding, conversation reference resolution, and structured interpretation lessons |
 | `reasoning/reasoning_engine.py` | Bounded source orchestration and answer/delegation decision |
 | `reasoning/query_router.py`, `reasoning/source_selector.py` | Routing signals and ordered source plans |
 | `reasoning/evidence_manager.py`, `evidence_models.py` | Evidence collection, provenance and sufficiency checks |
@@ -416,6 +438,7 @@ The frontend build is **`tsc -b && vite build`**, so it includes TypeScript chec
 The suite uses `unittest` and covers these categories:
 
 - Semantic Task/source fields, malformed model output, instructional-question versus action behavior, clarification and parameter preservation.
+- **Intent Engine 2.0** (`tests/test_intent_engine.py`): answer-vs-research, creation-without-web, research+transformation+delivery, follow-up reference resolution (“make it shorter”, “put that in Notepad”, “do the same for Interstellar”), application-vs-information, local-file-vs-web, ambiguity and its resolution, multi-step composition, and the negative cases — no spurious web, no spurious application, no lost context, no invented capability, and malformed model output never reaching the executor.
 - Registry-derived capability availability/introspection, task validation, dependency ordering, generated-text handoff, action delegation and end-to-end execution with fake models/tools. This coverage does not establish complete cycle/reference correctness.
 - General/current/local-file/system/memory source routing, accepted versus rejected evidence, answer provenance, per-call budgets and cooperative deadline/cancellation behavior.
 - General-purpose routing regressions: personal-document lookups staying local, create-text-file actions, hybrid search-then-write composition, transformation-versus-artifact separation, search-results-saved-to-file and transform-then-save composition, generation-without-destination, named-file pronoun resolution, ambiguous requests clarifying instead of guessing, and the read-only-research-versus-mutation delegation split.

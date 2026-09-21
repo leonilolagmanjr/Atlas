@@ -45,6 +45,7 @@ class PipelineTrace:
 
     user_input: str
     intent: dict[str, Any] = field(default_factory=dict)
+    intent_reading: dict[str, Any] = field(default_factory=dict)
     task: dict[str, Any] = field(default_factory=dict)
     validation: dict[str, Any] = field(default_factory=dict)
     plan: list[dict[str, Any]] = field(default_factory=list)
@@ -54,6 +55,10 @@ class PipelineTrace:
 
     def record_task(self, task: dict[str, Any]) -> None:
         self.task = task
+    def record_intent_reading(self, reading: dict[str, Any]) -> None:
+        """Record the Intent Engine's structured reading (never chain-of-thought)."""
+
+        self.intent_reading = reading
     def record_validation(self, validation: dict[str, Any]) -> None:
         self.validation = validation
     def record_intent(self, structured: StructuredIntent) -> None:
@@ -103,6 +108,8 @@ class PipelineTrace:
         """Emit the whole trace as one structured, redacted block."""
 
         lines = ["Atlas pipeline trace", f"USER INPUT: {self.user_input}"]
+        if self.intent_reading:
+            lines.append("INTENT READING: " + _dump(self.intent_reading))
         if self.task:
             lines.append("TASK: " + _dump(self.task))
         if self.validation:

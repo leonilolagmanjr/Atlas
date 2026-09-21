@@ -218,8 +218,39 @@ Rules:
   verification, not creative content or incidental words in its topic.
 - A poem in Notepad about cars uses model and computer, not web. Do not research
   creative topics unless the user requests factual research.
+- GOAL vs OPERATION vs OUTCOME. State the user's GOAL (why) and set
+  desired_outcome to the end state that must be true when Atlas is finished.
+  Never put an implementation step where the goal belongs: "summarize Avatar in
+  Notepad" has goal=research_and_deliver, operations=[search, summarize, write],
+  and desired_outcome="a useful Avatar summary exists in Notepad" — not
+  "open Notepad" or "search Avatar".
+- OBJECT TYPE: name what the user acts upon (information, document, file, video,
+  website, application, code, image, previous_answer, conversation).
+- REQUIRED CAPABILITIES: list the SEMANTIC capabilities the outcome needs
+  (e.g. web.research, content.generate, content.format, applications.write_text).
+  Never invent capability names and never name a tool that is not in the list.
+- SET needs_web / needs_files / needs_application from the OUTCOME, not from
+  nouns: "a poem about cars in Notepad" needs model + application, not web.
+- REFERENCES: record conversation references in "references" (previous_output,
+  previous_result, previous_task, ordinal:N) and set replace_subject=true when
+  the request reuses a previous task's structure with a new subject.
 - Emit actual JSON booleans, never strings such as "false".
 - confidence is your own 0..1 certainty.
+
+SEMANTIC EXAMPLES (behavior, not syntax):
+- "write a poem about cars in notepad" -> goal=create, object_type=content,
+  operations=[generate, write], destination=Notepad, needs_web=false,
+  needs_application=true.
+- "find popular youtube videos about cars" -> goal=research, object_type=video,
+  operations=[search], source=youtube/web, needs_web=true.
+- "search car reviews and summarize them in notepad" ->
+  goal=research_and_deliver, operations=[search, summarize, write],
+  destination=Notepad, needs_web=true, needs_application=true.
+- "make that shorter" -> goal=transform, reference=previous_output,
+  transformations=[shorten], needs_web=false.
+- "do the same thing for another movie" -> inherit_previous_task_structure,
+  replace_subject=true.
+- "open notepad" -> goal=execute, object_type=application, operations=[open].
 
 JSON schema:
 {
@@ -240,6 +271,16 @@ JSON schema:
       "requires_confirmation": false
     }
   ],
+  "desired_outcome": "short natural-language end state",
+  "object_type": "information | document | file | website | application | video | image | code | system | previous_answer | conversation | content | unknown",
+  "operations": ["search | retrieve | generate | transform | format | write | open | read | summarize | compare | translate | organize | execute | verify | answer"],
+  "transformations": ["shorten | expand | summarize | translate | format | improve | restyle | rewrite"],
+  "references": ["previous_output | previous_result | previous_task | ordinal:N"],
+  "required_capabilities": ["capability.name"],
+  "needs_web": false,
+  "needs_files": false,
+  "needs_application": false,
+  "ambiguities": [],
   "entities": {},
   "constraints": [],
   "confidence": 0.0,
@@ -256,19 +297,36 @@ def task_interpreter_user_prompt(
     capabilities: str,
     history: str,
     draft: Mapping[str, Any],
+    prior_task: Mapping[str, Any] | None = None,
 ) -> str:
-    """Build the task-interpreter user prompt from live runtime state."""
+    """Build the task-interpreter user prompt from live runtime state.
 
-    return (
+    The previous task (when present) is included so the model can resolve
+    references and task continuation without repeating the whole conversation.
+    """
+
+    parts = [
         "AVAILABLE CAPABILITIES (name, description, parameters; select only these):\n"
-        f"{capabilities or '(none registered)'}\n\n"
+        f"{capabilities or '(none registered)'}",
         "Conversation history (may be empty):\n"
-        f"{history or '(empty)'}\n\n"
-        f"User request:\n{request}\n\n"
-        "A deterministic draft task (may be wrong; use only as a hint):\n"
-        f"{json.dumps(draft, ensure_ascii=False)}\n\n"
-        "Return the corrected structured task JSON now."
+        f"{history or '(empty)'}",
+    ]
+    if prior_task:
+        parts.append(
+            "Previous structured task (resolve references and continuation against it):\n"
+            f"{json.dumps(prior_task, ensure_ascii=False)}"
+        )
+    parts.extend(
+        [
+            f"User request:\n{request}",
+            "A deterministic draft task (may be wrong; use only as a hint):\n"
+            f"{json.dumps(draft, ensure_ascii=False)}",
+            "Return the corrected structured task JSON now.",
+        ]
     )
+    return "\n\n".join(parts)
+
+
 RETRIEVAL_VALIDATOR_SYSTEM = """You are Atlas's retrieval validator.
 
 A user asked for something on the web and Atlas retrieved candidate content. Your

@@ -245,7 +245,9 @@ class SemanticTaskInterpreter:
         if not self._enabled or self._ask is None or heuristic.confidence >= INTERPRETER_CONFIDENCE_THRESHOLD:
             return self._reasoning_fields(self._with_context(heuristic, context))
 
-        llm_task = self._llm_task(prompt, heuristic=heuristic, history=history)
+        llm_task = self._llm_task(
+            prompt, heuristic=heuristic, history=history, prior_task=context
+        )
         if llm_task is None:
             return self._reasoning_fields(self._with_context(heuristic, context))
         return self._reasoning_fields(self._with_context(self._reconcile(llm_task, heuristic), context))
@@ -359,9 +361,15 @@ class SemanticTaskInterpreter:
 
             # -- LLM path ----------------------------------------------------------------
 
-    def _llm_task(self, text: str, *, heuristic: Task, history: str) -> Optional[Task]:
+    def _llm_task(
+        self,
+        text: str,
+        *,
+        heuristic: Task,
+        history: str,
+        prior_task: Task | None = None,
+    ) -> Optional[Task]:
         from reasoning.prompts import TASK_INTERPRETER_SYSTEM, task_interpreter_user_prompt
-
         data = safe_reasoning_call(
             system_prompt=TASK_INTERPRETER_SYSTEM,
             user_prompt=task_interpreter_user_prompt(
@@ -369,6 +377,7 @@ class SemanticTaskInterpreter:
                 capabilities=self._capability_catalog,
                 history=history,
                 draft=heuristic.to_dict(),
+                prior_task=prior_task.to_dict() if prior_task is not None else None,
             ),
             ask=self._ask,
         )

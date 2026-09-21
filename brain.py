@@ -28,6 +28,7 @@ from models_task import Task
 from planner import Planner
 from reasoning.diagnostics import PipelineTrace
 from reasoning.answer_generator import AnswerGenerator
+from reasoning.intent_engine import IntentEngine
 from reasoning.interpreter import classify_category
 from reasoning.reasoning_engine import ReasoningEngine
 from reasoning.recovery import RecoveryManager
@@ -79,6 +80,10 @@ class Brain:
             capabilities=self._capabilities,
             capability_catalog=catalog,
         )
+        # Intent Engine 2.0: context-aware goal/intent understanding layer. It is
+        # deterministic and runs after interpretation, before validation, so the
+        # planner consumes a semantically complete Task IR.
+        self._intent_engine = IntentEngine(capabilities=self._capabilities)
         self._task_validator = TaskValidator(self._capabilities)
         self._task_planner = TaskPlanner(capabilities=self._capabilities)
         self._recovery = recovery or RecoveryManager(ask=self._ask)
@@ -135,6 +140,15 @@ class Brain:
                 context=self._active_task,
                 history=history,
             )
+            # 1b. Intent Engine 2.0: derive goal, desired outcome, references,
+            # and required capabilities, then validate the requirements against
+            # the live registry (the model proposes meaning; Atlas checks tools).
+            task = self._intent_engine.understand(
+                task, prior_task=self._active_task, history=history
+            )
+            context.metadata["intent_reading"] = task.context.get("intent_reading", {})
+            context.metadata["capability_check"] = self._intent_engine.validate_capabilities(task)
+            trace.record_intent_reading(task.context.get("intent_reading", {}))
             # 2. Deterministic validation against the capability registry.
             task_validation = self._task_validator.validate(task)
             context.metadata["task"] = task.to_dict()

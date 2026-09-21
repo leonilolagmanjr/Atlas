@@ -41,6 +41,50 @@ TASK_TYPES: frozenset[str] = frozenset(
 )
 
 #: Canonical risk levels mirroring tools.base.RiskLevel values.
+#: Canonical high-level goals the Intent Engine understands. These describe
+#: *what the user ultimately wants*, never how Atlas implements it. A goal is
+#: deliberately distinct from the operations that achieve it (see OPERATIONS).
+INTENT_GOALS: frozenset[str] = frozenset(
+    {
+        "answer",
+        "research",
+        "find",
+        "create",
+        "modify",
+        "summarize",
+        "transform",
+        "compare",
+        "execute",
+        "organize",
+        "inspect",
+        "communicate",
+        "research_and_deliver",
+        "create_and_deliver",
+        "converse",
+        "unknown",
+    }
+)
+
+#: Canonical object categories a goal can act upon.
+OBJECT_TYPES: frozenset[str] = frozenset(
+    {
+        "information", "document", "file", "website", "application", "video",
+        "image", "code", "system", "previous_answer", "conversation", "content",
+        "unknown",
+    }
+)
+
+#: Canonical primitive operations a plan is built from. Operations are HOW;
+#: the goal is WHY. Keeping them separate stops Atlas mistaking an operation for
+#: the user's actual desired outcome.
+INTENT_OPERATIONS: frozenset[str] = frozenset(
+    {
+        "search", "retrieve", "generate", "transform", "format", "write",
+        "open", "read", "summarize", "compare", "translate", "organize",
+        "execute", "verify", "answer",
+    }
+)
+
 RISK_LEVELS: tuple[str, ...] = ("read_only", "low_risk", "medium_risk", "high_risk", "critical")
 REQUEST_TYPES = frozenset({"unknown", "question", "self_query", "memory_query", "action", "hybrid", "clarification"})
 SOURCE_TYPES = frozenset({"self", "conversation", "memory", "knowledge", "model", "files", "web", "computer", "system"})
@@ -344,7 +388,67 @@ class Task:
     current_information_required: bool = False
     #: True when the executed result should be verified where practical.
     requires_verification: bool = True
+    # -- Intent Engine 2.0 fields (additive; empty by default) -------------------
+    #: The desired end state in plain language: what should be true when Atlas is
+    #: finished. This is the single most important field for correctness; it is
+    #: deliberately separate from the requested operation (goal vs operation).
+    desired_outcome: str = ""
+    #: The kind of thing the user is acting upon (information, document, video...).
+    object_type: str = "unknown"
+    #: Ordered primitive operations the plan will perform (search/transform/write).
+    operations: list[str] = field(default_factory=list)
+    #: Transformations the user requested (shorten, expand, translate, format...).
+    transformations: list[str] = field(default_factory=list)
+    #: Conversation references the request depends on (it, that, the summary...).
+    #: Named ``context_references`` to avoid colliding with the existing
+    #: :meth:`references` method that discovers ``$name`` action references.
+    context_references: list[str] = field(default_factory=list)
+    #: Capabilities the *desired outcome* requires, proposed semantically before
+    #: validation. Atlas (not the model) confirms each against the registry.
+    required_capabilities: list[str] = field(default_factory=list)
+    #: Explicit "is this needed?" flags describing the desired outcome, so the
+    #: planner never searches or opens an app merely because a noun appeared.
+    needs_web: bool = False
+    needs_files: bool = False
+    needs_application: bool = False
+    #: Unresolved ambiguities the engine could not settle from context.
+    ambiguities: list[str] = field(default_factory=list)
+    #: Short, inspectable reasons for the interpretation (never chain-of-thought).
+    interpretation_notes: list[str] = field(default_factory=list)
 
+    def apply_intent(self, intent: Any) -> "Task":
+        """Write an Intent Engine reading back onto this task.
+
+        The intent layer extends the IR rather than competing with it, so the
+        planner and executor consume one object. Attribute access is used so
+        ``models_task`` stays independent of the reasoning package.
+        """
+
+        def value(name: str, default: Any) -> Any:
+            found = getattr(intent, name, default)
+            return found.value if isinstance(found, Enum) else found
+        goal = _text(value("goal", ""))
+        if goal:
+            self.goal = goal
+        self.desired_outcome = _text(value("desired_outcome", self.desired_outcome)) or self.desired_outcome
+        self.object_type = _enum(value("object_type", self.object_type), OBJECT_TYPES, self.object_type)
+        self.operations = [
+            op for op in _string_list(value("operations", self.operations))
+            if op.casefold() in INTENT_OPERATIONS
+        ] or self.operations
+        self.transformations = _string_list(value("transformations", self.transformations))
+        self.context_references = _string_list(
+            value("context_references", value("references", self.context_references))
+        )
+        self.required_capabilities = _string_list(
+            value("required_capabilities", self.required_capabilities)
+        )
+        for name in ("needs_web", "needs_files", "needs_application"):
+            setattr(self, name, _boolean(value(name, getattr(self, name)), getattr(self, name)))
+        self.ambiguities = _string_list(value("ambiguities", self.ambiguities))
+        notes = _string_list(value("interpretation_notes", self.interpretation_notes))
+        self.interpretation_notes = list(dict.fromkeys([*self.interpretation_notes, *notes]))
+        return self
     def apply_decision(self, decision: Any) -> "Task":
         """Write a reasoning decision's fields back onto this task.
 
@@ -402,6 +506,18 @@ class Task:
             "requires_model_knowledge": self.requires_model_knowledge,
             "current_information_required": self.current_information_required,
             "requires_verification": self.requires_verification,
+            # Intent Engine 2.0 fields
+            "desired_outcome": self.desired_outcome,
+            "object_type": self.object_type,
+            "operations": list(self.operations),
+            "transformations": list(self.transformations),
+            "references": list(self.context_references),
+            "required_capabilities": list(self.required_capabilities),
+            "needs_web": self.needs_web,
+            "needs_files": self.needs_files,
+            "needs_application": self.needs_application,
+            "ambiguities": list(self.ambiguities),
+            "interpretation_notes": list(self.interpretation_notes),
             # Enhanced fields
             "task_state": self.task_state,
             "evidence_state": self.evidence_state.to_dict() if self.evidence_state else None,
@@ -463,6 +579,24 @@ class Task:
             response_mode=_enum(data.get("response_mode"), RESPONSE_MODES, "unknown"),
             reason=_text(data.get("reason")) or "",
             **{name: _boolean(data.get(name), name == "requires_verification") for name in REASONING_FLAGS},
+            # Intent Engine 2.0 fields: accepted from structured model output too,
+            # validated by construction (unknown goals/objects fall back safely).
+            desired_outcome=_text(data.get("desired_outcome")) or "",
+            object_type=_enum(data.get("object_type"), OBJECT_TYPES, "unknown"),
+            operations=[
+                op for op in _string_list(data.get("operations"))
+                if op.casefold() in INTENT_OPERATIONS
+            ],
+            transformations=_string_list(data.get("transformations")),
+            context_references=_string_list(
+                data.get("context_references") or data.get("references")
+            ),
+            required_capabilities=_string_list(data.get("required_capabilities")),
+            needs_web=_boolean(data.get("needs_web")),
+            needs_files=_boolean(data.get("needs_files")),
+            needs_application=_boolean(data.get("needs_application")),
+            ambiguities=_string_list(data.get("ambiguities")),
+            interpretation_notes=_string_list(data.get("interpretation_notes")),
         )
 
 
