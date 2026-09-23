@@ -42,6 +42,10 @@ PERCEPTION_SOURCE = "win32_ui"
 
 #: Control class names that accept text. Covers classic Win32 edit controls and
 #: the modern rich-edit controls used by Windows 11 apps (Notepad, WordPad).
+#: ``notepadtextbox`` is included deliberately: it is a *container* that wraps the
+#: real rich-edit surface, so understanding its role (see
+#: :func:`find_text_control`) is what stops Atlas writing into the wrapper and
+#: then failing to read the text back from the document.
 TEXT_CONTROL_CLASSES: frozenset[str] = frozenset(
     {
         "edit",
@@ -51,6 +55,7 @@ TEXT_CONTROL_CLASSES: frozenset[str] = frozenset(
         "richedit50w",
         "richeditd2dpt",
         "textbox",
+        "notepadtextbox",
         "scintilla",
     }
 )
@@ -485,22 +490,56 @@ def find_text_control(user32_lib: Any, window: Any) -> Any:
     Modern applications nest the edit control several levels deep, so the whole
     subtree is searched. Returning the window is deliberate: messages then still
     reach the application even when no classic text control exists.
+
+    Selection is *not* simply "the first control whose class looks editable".
+    Windows 11 Notepad nests a container (``NotepadTextBox``) around the real
+    document surface (``RichEditD2DPT``), and writing to the container sets the
+    window title instead of the document - the text appears to succeed while the
+    read-back legitimately finds nothing. Preferring a genuinely editable class
+    over a container class removes that whole failure mode.
     """
 
-    found = [0]
+    candidates: list[tuple[Any, str]] = []
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     def find_child(handle: wintypes.HWND, _param: wintypes.LPARAM) -> bool:
-        if class_name_of(user32_lib, handle).casefold() in TEXT_CONTROL_CLASSES:
-            found[0] = _hwnd_value(handle)
-            return False
+        name = class_name_of(user32_lib, handle).casefold()
+        if name in TEXT_CONTROL_CLASSES:
+            candidates.append((_hwnd_value(handle), name))
+        # Keep enumerating: the first match is not necessarily the best one.
         return True
 
     try:
         user32_lib.EnumChildWindows(window, find_child, 0)
     except Exception:  # noqa: BLE001 - fall back to the parent window
         return window
-    return found[0] or window
+    if not candidates:
+        return window
+    # Rank by how directly the class is a text surface.
+    preferred = min(candidates, key=lambda item: _control_class_rank(item[1]))
+    return preferred[0]
+
+
+#: Lower is better. Rich edit controls are the actual document surface; a plain
+#: ``edit`` is the classic text box; ``textbox``/``notepadtextbox`` are usually
+#: wrappers whose WM_SETTEXT sets the window title rather than the document.
+_CONTROL_CLASS_PREFERENCE: dict[str, int] = {
+    "richeditd2dpt": 0,
+    "richedit50w": 0,
+    "richedit20w": 0,
+    "richedit20a": 0,
+    "richedit": 0,
+    "edit": 1,
+    "scintilla": 1,
+    "textbox": 3,
+    "notepadtextbox": 4,
+}
+
+
+def _control_class_rank(class_name: str) -> int:
+    """Rank a control class by how likely it is to be the real text surface."""
+
+    return _CONTROL_CLASS_PREFERENCE.get(class_name.casefold(), 2)
 
 
 class _GuiThreadInfo(ctypes.Structure):
@@ -543,6 +582,7 @@ def find_target_window(
     *,
     timeout: float = 5.0,
     image_name: Callable[[int], str] | None = None,
+    exclude: frozenset[int] | None = None,
 ) -> Any:
     """Find the window of a just-launched process.
 
@@ -550,31 +590,62 @@ def find_target_window(
     launched pid is only one of three signals: pid first, then process image
     name, then window class name. The window can take a moment to appear, so
     discovery is retried until the timeout. Returns 0 when nothing matched.
+
+    ``exclude`` is essential for packaged apps: Windows 11 Notepad redirects a
+    fresh ``notepad.exe`` launch into the *already running* instance, so the
+    launched pid owns no window at all. Without excluding the windows that
+    existed before the launch, the fallback would return a previously open
+    document, and Atlas would write into (and then verify) the wrong window.
+    ``list_windows`` returns windows in z-order, newest first, so the first
+    remaining match is the window the launch actually caused to appear.
     """
 
     stem = str(executable_name).rsplit(".", 1)[0].casefold()
     image = str(executable_name).casefold()
+    excluded = exclude or frozenset()
     deadline = time.time() + max(0.0, timeout)
     while True:
         windows = list_windows(
             user32_lib=user32_lib, titled_only=True, image_name=image_name
         )
-        by_pid = next((window for window in windows if window.pid == int(pid)), None)
+        # Consider only windows that did not already exist before this launch.
+        fresh = [window for window in windows if window.hwnd not in excluded]
+        candidates = fresh or windows
+        by_pid = next((window for window in candidates if window.pid == int(pid)), None)
         if by_pid is not None:
             return by_pid.hwnd
         by_image = next(
-            (window for window in windows if window.executable.casefold() == image), None
+            (window for window in candidates if window.executable.casefold() == image), None
         )
         if by_image is not None:
             return by_image.hwnd
         by_class = next(
-            (window for window in windows if window.class_name.casefold() == stem), None
+            (window for window in candidates if window.class_name.casefold() == stem), None
         )
         if by_class is not None:
             return by_class.hwnd
         if time.time() >= deadline:
             return 0
         time.sleep(0.25)
+
+
+def list_titled_window_handles(
+    *, user32_lib: Any | None = None, image_name: Callable[[int], str] | None = None
+) -> frozenset[int]:
+    """Snapshot the handles of currently open titled windows.
+
+    Called immediately before a launch so the newly created window can be told
+    apart from windows that were already open. This is what makes the packaged-
+    app redirect (launched pid owns nothing) safe instead of a coin flip.
+    """
+
+    try:
+        windows = list_windows(
+            user32_lib=user32_lib or user32(), titled_only=True, image_name=image_name
+        )
+    except Exception:  # noqa: BLE001 - an empty snapshot only weakens the filter
+        return frozenset()
+    return frozenset(window.hwnd for window in windows)
 
 
 # -- observations ---------------------------------------------------------------

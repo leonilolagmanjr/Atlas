@@ -26,6 +26,7 @@ from computer.perception import TEXT_CONTROL_CLASSES as _TEXT_CONTROL_CLASSES
 from computer.perception import class_name_of as _class_name
 from computer.perception import find_target_window as _find_target_window
 from computer.perception import find_text_control as _find_text_control
+from computer.perception import list_titled_window_handles as _list_window_handles
 from computer.perception import read_control_text as _control_text
 from computer.perception import send_message as _send_message
 from computer.perception import window_text as _window_text
@@ -48,21 +49,42 @@ def _bounded_seconds(value: Any, *, default: int, low: int, high: int) -> int:
     return max(low, min(high, number))
 
 
-def _text_present(current: str, submitted: str) -> bool:
-    """Return True when ``submitted`` is readable inside a control's text."""
+def _normalize_newlines(value: str) -> str:
+    """Collapse CRLF/CR/LF to a single LF so line endings never decide equality.
 
-    # Check exact substring first (handles whitespace differences)
-    if submitted in current:
-        return True
-    # Fallback: check stripped versions
-    needle = submitted.strip()
-    haystack = current.strip()
-    if not needle or not haystack:
-        return False
+    Windows text controls convert ``\n`` to ``\r\n`` on write, so a byte-exact
+    substring test against the submitted text always fails even though the write
+    plainly succeeded. Normalizing both sides removes that false negative
+    without weakening the check: the *characters* still have to match.
+    """
+
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _text_present(current: str, submitted: str) -> bool:
+    """Return True when ``submitted`` is readable inside a control's text.
+
+    Comparison is done on newline-normalized text because the control may have
+    stored a different (but equivalent) line-ending convention than the one Atlas
+    sent. Whitespace is otherwise significant: this is a substring test, not a
+    fuzzy match, so it cannot report success for content that is not there.
+    """
+
+    haystack = _normalize_newlines(current)
+    needle = _normalize_newlines(submitted)
     if needle in haystack:
         return True
-    head, tail = needle[:200], needle[-200:]
-    return head in haystack and tail in haystack
+    # Fallback: ignore surrounding whitespace only.
+    stripped_needle = needle.strip()
+    stripped_haystack = haystack.strip()
+    if not stripped_needle or not stripped_haystack:
+        return False
+    if stripped_needle in stripped_haystack:
+        return True
+    # Last resort for very large documents bounded by the read limit: both the
+    # start and the end of the submitted text must be present.
+    head, tail = stripped_needle[:200], stripped_needle[-200:]
+    return head in stripped_haystack and tail in stripped_haystack
 
 
 def _set_text_directly(user32: Any, control: Any, text: str) -> bool:
@@ -149,6 +171,12 @@ class ApplicationTextEntryTool(Tool):
                     recoverable=True,
                 )
 
+            # Snapshot the windows that already exist BEFORE launching. Packaged
+            # apps (Windows 11 Notepad) redirect a fresh launch into the running
+            # instance, so the launched pid owns no window; without this the
+            # target window would be chosen from pre-existing documents and
+            # Atlas would write into - and then verify - the wrong one.
+            existing_windows = _list_window_handles()
             process = subprocess.Popen(
                 [str(executable)],
                 shell=False,
@@ -162,6 +190,7 @@ class ApplicationTextEntryTool(Tool):
                 executable.name,
                 delivery=delivery,
                 window_timeout=window_timeout,
+                exclude=existing_windows,
             )
             if not isinstance(observation, dict):
                 observation = {}
@@ -199,14 +228,22 @@ class ApplicationTextEntryTool(Tool):
         *,
         delivery: str = "auto",
         window_timeout: float = 5.0,
+        exclude: frozenset[int] | None = None,
     ) -> dict[str, Any]:
-        """Deliver ``text`` and observe the result. Returns an observation dict."""
+        """Deliver ``text`` and observe the result. Returns an observation dict.
+
+        ``exclude`` names windows that already existed before the launch, so the
+        target is the window the launch actually created rather than a previously
+        open document of the same application.
+        """
 
         if not hasattr(ctypes, "windll"):
             raise OSError("Direct Windows text entry requires Windows")
 
         user32 = ctypes.windll.user32
-        window = _find_target_window(user32, pid, executable_name, timeout=window_timeout)
+        window = _find_target_window(
+            user32, pid, executable_name, timeout=window_timeout, exclude=exclude
+        )
         if not window:
             raise OSError(
                 f"Application window for '{executable_name}' could not be found "
@@ -233,8 +270,11 @@ class ApplicationTextEntryTool(Tool):
 
         observed, observed_characters = cls._confirm_text(user32, control, text, method=method)
 
-        # If read-back failed but control is readable, re-detect control in case
-        # the control hierarchy changed (e.g. Notepad creates new edit control).
+        # If read-back failed but the control is readable, re-resolve the control
+        # **inside the same window**. Some applications (Notepad included) replace
+        # or re-parent their edit control, so the previous handle can go stale.
+        # The window is deliberately not re-searched: verifying a *different*
+        # window than the one written to is the failure this guards against.
         if observed is False and observed_characters is not None:
             control = _find_text_control(user32, window)
             time.sleep(0.5)
