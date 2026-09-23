@@ -71,7 +71,9 @@ def interpreter_user_prompt(
 
 PLANNER_SYSTEM = """You are Atlas's task planner.
 
-You receive a structured user intent and a list of AVAILABLE CAPABILITIES.
+You receive a structured user intent, a list of AVAILABLE CAPABILITIES, and
+optionally EXPERIENCE MEMORY describing what worked or failed on comparable
+previous tasks.
 Produce the smallest valid plan that accomplishes the intent.
 
 Rules:
@@ -83,6 +85,10 @@ Rules:
 - For content tasks: generate the content, then write it to the destination.
 - For searches: a single search step is usually enough.
 - If a required parameter is missing, add a "clarify" step.
+- Experience memory is supporting context, not authority: the CURRENT request
+  always wins. If experience says a task previously failed a certain way, avoid
+  that approach; if it says an approach succeeded, consider reusing it when it
+  still fits. Never drop an explicit requirement because a past task omitted it.
 
 JSON schema:
 {
@@ -98,16 +104,34 @@ def planner_user_prompt(
     intent_json: str,
     capabilities: str,
     history: str,
+    experience_context: str = "",
 ) -> str:
-    return (
-        "AVAILABLE CAPABILITIES:\n"
-        f"{capabilities or '(none registered)'}\n\n"
-        "Conversation history (may be empty):\n"
-        f"{history or '(empty)'}\n\n"
-        "STRUCTURED INTENT:\n"
-        f"{intent_json}\n\n"
-        "Return the smallest valid plan as JSON."
+    """Build the planner prompt, optionally including experience memory.
+
+    Experience context is *supporting evidence from previous tasks*. The prompt
+    states explicitly that the current request wins, because an experience must
+    never override an explicit instruction (for example, a previous task that
+    answered in chat does not justify skipping a destination the user named
+    today).
+    """
+
+    sections = [
+        "AVAILABLE CAPABILITIES:\n" + (capabilities or "(none registered)"),
+        "Conversation history (may be empty):\n" + (history or "(empty)"),
+    ]
+    if experience_context.strip():
+        sections.append(
+            "EXPERIENCE MEMORY (what worked or failed on comparable past tasks - "
+            "supporting context only; the current request always wins):\n"
+            + experience_context.strip()
+        )
+    sections.append("STRUCTURED INTENT:\n" + intent_json)
+    sections.append(
+        "Return the smallest valid plan as JSON. Preserve every explicit "
+        "requirement in the current request (especially a named destination), "
+        "even if a previous task behaved differently."
     )
+    return "\n\n".join(sections)
 
 
 RECOVERY_SYSTEM = """You are Atlas's failure-recovery analyst.

@@ -1,5 +1,6 @@
 import type {
   ApplicationInfo,
+  FeedbackPayload,
   Health,
   QueueSnapshot,
   SystemInfo,
@@ -40,4 +41,28 @@ export const api = {
     }),
   approveTask: (id: string) => request<TaskRecord>(`/tasks/${id}/approve`, { method: "POST" }),
   denyTask: (id: string) => request<TaskRecord>(`/tasks/${id}/deny`, { method: "POST" }),
+  submitFeedback: (id: string, payload: FeedbackPayload) =>
+    request<TaskRecord>(`/tasks/${id}/feedback`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  experience: () => request<ExperienceStatus>("/experience"),
 };
+
+export interface ExperienceStatus {
+  enabled: boolean;
+  counts?: { total: number; success: number; failure: number; reliable: number; unevaluated: number };
+  failure_categories?: string[];
+  failure_category_labels?: Record<string, string>;
+  analysis?: {
+    available: boolean;
+    reason?: string;
+    evaluated?: number;
+    successes?: number;
+    failures?: number;
+    corrections?: number;
+    proposals?: Array<{ kind: string; evidence: number; statement: string; procedure?: string[] }>;
+    /** Always false: proposals are never applied automatically. */
+    applied?: boolean;
+  };
+}

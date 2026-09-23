@@ -21,6 +21,7 @@ from config import (
 )
 from executor import Executor, UNKNOWN_RESPONSE
 from computer.runtime import build_computer_observer
+from experience.service import ExperienceService
 from knowledge_search import retrieve as retrieve_knowledge
 from llm import ask
 from models import ExecutionContext, PlanStatus, StructuredIntent, TaskStatus
@@ -60,6 +61,7 @@ class Brain:
         recovery: RecoveryManager | None = None,
         llm_ask: object | None = None,
         reasoning_engine: ReasoningEngine | None = None,
+        experience_service: ExperienceService | None = None,
     ) -> None:
         self._memory_manager = memory_manager
         self._ask = llm_ask or ask
@@ -87,6 +89,11 @@ class Brain:
         self._task_validator = TaskValidator(self._capabilities)
         self._task_planner = TaskPlanner(capabilities=self._capabilities)
         self._recovery = recovery or RecoveryManager(ask=self._ask)
+        # Experience memory: the persistent feedback -> experience -> retrieval
+        # loop. It is a separate memory from factual RAG and never overrides an
+        # explicit instruction; it only supplies supporting context to planning.
+        self._experience = experience_service or ExperienceService()
+        self._last_experience_context = None
         self._executor = executor or Executor(
             vector_store=vector_store,
             system_prompt=system_prompt,
@@ -254,10 +261,25 @@ class Brain:
                 trace.record_response(context.final_response)
                 return self._complete(context, started_at, trace)
 
+            # 3b. Experience memory: retrieve supporting context from comparable
+            # past tasks for sufficiently complex requests. This NEVER overrides
+            # the current request — it is context the reasoning model may use. It
+            # is also skipped for trivial single-step requests, so a simple
+            # action does not pay for retrieval.
+            experience_context = self._retrieve_experience_context(task, user_input)
+            if experience_context.items:
+                context.metadata["experience_context"] = experience_context.to_dict()
+                logger.info(
+                    "Experience context supplied: %d item(s) for goal=%s",
+                    len(experience_context.items),
+                    task.goal,
+                )
+
             planner_decision = self._task_planner.create_plan(
                 task,
                 user_question=context.normalized_input or user_input,
                 legacy_planner=self._planner.create_plan,
+                experience_context=experience_context.text,
             )
             context.intent = structured.intent
             context.execution_plan = planner_decision.plan
@@ -298,6 +320,10 @@ class Brain:
                 self._active_task = task
                 self._active_intent = structured
             trace.record_execution(context)
+            # 5b. Experience memory: record a compact, unevaluated experience for
+            # a meaningful completed task so the user's Success/Failed answer has
+            # something durable to attach to. Casual conversation is skipped.
+            self._record_experience(context, experience_context)
             return self._complete(context, started_at, trace)
 
         except Exception as exc:
@@ -334,6 +360,87 @@ class Brain:
 
         from reasoning.task_interpreter import task_to_intent_shim
         return StructuredIntent.from_mapping(task_to_intent_shim(task), source=task.source)
+
+    # -- experience memory -------------------------------------------------------
+
+    def _retrieve_experience_context(self, task: Task, user_input: str):
+        """Retrieve bounded experience context for a non-trivial request.
+
+        Experience retrieval is skipped when the request is a single simple step
+        with no delivery/composition, so a trivial action does not pay for a
+        lookup it cannot benefit from. The retrieval itself lives in
+        :class:`experience.service.ExperienceService` and is bounded; it never
+        scans the whole store and never calls a model.
+        """
+
+        from experience.memory import ExperienceContext
+
+        if not self._experience.enabled:
+            return ExperienceContext()
+        if not self._is_experience_eligible(task):
+            return ExperienceContext()
+        context = self._experience.retrieve_for_planning(user_input, task=task)
+        self._last_experience_context = context
+        return context
+
+    @staticmethod
+    def _is_experience_eligible(task: Task) -> bool:
+        """True when a request is complex enough for experience to help.
+
+        A single read-only lookup gains nothing from history; a multi-step,
+        delivery, research, or hybrid task is exactly where a past workflow (or a
+        past failure) is useful.
+        """
+
+        actions = list(task.actions)
+        if len(actions) > 1:
+            return True
+        if task.goal in {"research_and_deliver", "create_and_deliver", "organize"}:
+            return True
+        if task.needs_application or task.request_type == "hybrid":
+            return True
+        for action in actions:
+            if action.capability.startswith(("applications.", "computer.", "filesystem.write")):
+                return True
+            if action.capability in {"web.research", "content.format"}:
+                return True
+        return False
+
+    def _record_experience(self, context: ExecutionContext, experience_context) -> None:
+        """Persist a compact experience for a meaningful completed task.
+
+        Recording is deliberately cheap and never raises into the request; it
+        only stores an *unevaluated* candidate, so the user's later answer is
+        what turns it into a learning signal.
+        """
+
+        try:
+            retrieved_ids = (
+                self._experience.retrieved_ids(experience_context)
+                if experience_context is not None
+                else []
+            )
+            conversation_id = ""
+            if self._memory_manager is not None:
+                conversation_id = self._memory_manager.get_active_session_id() or ""
+            outcome = self._experience.record_task_outcome(
+                context,
+                record_id=context.metadata.get("record_id", "") or "",
+                conversation_id=conversation_id,
+                retrieved_experience_ids=retrieved_ids,
+            )
+            context.metadata["experience_recorded"] = outcome.recorded
+            context.metadata["experience_id"] = outcome.experience_id
+            context.metadata["feedback_eligible"] = outcome.meaningful
+            if outcome.recorded:
+                logger.info(
+                    "Experience recorded: id=%s outcome=%s meaningful=%s",
+                    outcome.experience_id,
+                    outcome.outcome,
+                    outcome.meaningful,
+                )
+        except Exception:  # noqa: BLE001 - the loop must never break a request
+            logger.exception("Recording the experience failed")
 
     @staticmethod
     def _interruption_message(task: Task, validation) -> str | None:

@@ -32,6 +32,7 @@ Atlas is a local-first Python assistant with local Ollama generation, document r
 - **Local computer vision ("Eyes")** — a layered, local-first perception subsystem (Windows UI Automation → local OCR → image processing → optional local VLM) that builds a typed structured visual state, plus permission-gated, observation-validated mouse/keyboard interaction, so Atlas can observe and act on applications and websites it has no dedicated API integration for. Screen capture, window detection, UIA, OCR, image preprocessing, element detection, mouse/keyboard, and observation/verification all work without any external API; the local VLM is optional and everything degrades gracefully.
 - Dependency-ordered action plans, named output references, sequential execution, approval pause/resume, and bounded recovery.
 - Persisted conversation sessions, durable API task snapshots, and sanitized reasoning-stage/provenance displays.
+- **Persistent experience memory** — an explicit Success/Failed feedback loop that records compact task experiences, ranks and retrieves relevant ones for later comparable requests, and supplies them to planning as *supporting context* that never overrides the current instruction. Completion criteria come from deterministic verification, not a model's claim; feedback and experiences survive a restart; failures and user corrections are retained as reusable lessons.
 
 These are implemented paths, not a guarantee that arbitrary natural-language requests work. Model interpretation, search-provider availability, application/window resolution, OCR/VLM quality, and evidence quality affect results. Generic software installation, downloads, unrestricted GUI automation, and voice are not implemented. Local vision generalizes to applications without a dedicated integration only insofar as the layered perception can see them; it is not a claim that every GUI is fully automatable.
 
@@ -45,6 +46,7 @@ CLI / FastAPI + React
   -> Semantic Task Interpreter: natural language -> Task IR
   -> Intent Engine 2.0: goal / desired outcome / references / capability requirements
   -> Task Validator: registry, parameters, dependencies, references, risk
+  -> Experience Memory: retrieve bounded, ranked context from comparable past tasks
   -> ReasoningEngine
        -> QueryRouter + SourceSelector: ordered information sources
        -> EvidenceManager: collect and evaluate usable evidence
@@ -54,6 +56,7 @@ CLI / FastAPI + React
   -> Executor -> ToolRouter -> PermissionEngine -> registered tool
        -> observations / verifier / bounded recovery
   -> response, memory, task state, API snapshot
+  -> user feedback (Success / Failed) -> experience record -> experience memory
 ```
 
 `Brain` invokes the reasoning engine for eligible validated tasks when enabled. The engine can finish an informational request without building an execution plan. It serves a task directly when its actions are **all read-only research** (`web.search`/`web.fetch`, and non-mutating `filesystem.list/search/read/metadata/search_content`) and answers from the retrieved evidence; any task that mutates state or controls applications—including a hybrid such as "search the web for X and write it into Notepad"—is preserved and delegated to the existing validator/planner/executor path rather than consumed as an answer-only request. Invalid tasks are not given a source-execution bypass.
@@ -114,6 +117,7 @@ The engine is model-agnostic: it consumes the interpreter's Task IR and works wi
 | `computer/vision_tools.py`, `computer/interaction.py` | `computer.observe`/`computer.find` observation tools and the permission-gated visual interaction tools |
 | `web_content.py`, `web_research.py`, `web_task.py` | Main-content extraction, task-aware multi-attempt retrieval pipeline, and retrieval task/goal/content-type/scoring/validation models |
 | `memory/`, `task_store.py` | Conversation storage and durable API task snapshots |
+| `experience/` | Human feedback loop: experience records, durable store, bounded retrieval/ranking, completion evaluation, and planning context |
 | `api.py`, `frontend/` | Local HTTP adapter and polling control room |
 | `config.py`, `logger.py`, `prompts/` | Runtime constants, logging and prompt templates |
 
@@ -299,7 +303,37 @@ New API task submissions use a single FIFO worker, but approval resolution has k
 
 CLI session commands include `/new [title]`, `/list`, `/open <id>`, `/delete <id>`, `/rename <id> <title>`, `/history`, `/export <id> [path]`, `/import <path>`, `/clear`, and `/help`. `/approve` and `/deny` resolve paused actions.
 
-API task snapshots are stored in `database/tasks.json` using atomic replacement. They are history, **not live execution checkpoints**. Restarted pending/running/approval-paused tasks are marked interrupted rather than resumed with missing context. Long-term semantic memory, learned preferences, reflection, and automatic conversation summarization remain future work.
+API task snapshots are stored in `database/tasks.json` using atomic replacement. They are history, **not live execution checkpoints**. Restarted pending/running/approval-paused tasks are marked interrupted rather than resumed with missing context. Automatic conversation summarization remains future work.
+
+### Experience memory (human feedback loop)
+
+Atlas accumulates **verified experience** from explicit user feedback and uses it as supporting context for later planning. This is behavioural improvement, not model training: the local model stays the reasoning engine, no weights are modified, and no source code is ever rewritten by Atlas.
+
+```text
+USER REQUEST -> INTENT -> PLAN -> EXECUTION -> VERIFICATION -> RESULT
+   -> USER FEEDBACK (Success / Failed) -> EXPERIENCE RECORD
+   -> EXPERIENCE MEMORY -> FUTURE RETRIEVAL -> BETTER PLANNING
+```
+
+`experience/` is a **separate memory** from factual RAG. Atlas keeps four categories apart and does not merge them: KNOWLEDGE (what is true), EXPERIENCE (what worked or failed on a task), USER MEMORY (preferences), and REASONING KNOWLEDGE (principles). Experience embeddings, when available, live in their own Chroma collection (`atlas_experience`) tagged `memory_type: "experience"`, so they can never contaminate a factual answer; when the embedder is unavailable, retrieval falls back to deterministic lexical similarity and the store remains fully usable.
+
+| Path | Responsibility |
+| --- | --- |
+| `experience/models.py` | Record schema, completion criteria, failure vocabulary, credential scrubbing |
+| `experience/store.py` | Append-only JSONL durability (`database/experiences.jsonl`, `database/feedback.jsonl`) |
+| `experience/memory.py` | Bounded retrieval + ranking over similarity, trust, and metadata |
+| `experience/builder.py` | Execution evidence -> compact experience record |
+| `experience/service.py` | The façade Brain and the API use: record, evaluate, retrieve, analyse |
+
+**Feedback controls.** After a task that actually *did* something — tool execution, research, an application action, a multi-step task, a generated deliverable — the control room shows `✓ Success` / `✗ Failed` attached to that specific result. A pure conversational answer shows no controls. Failure is optional to justify: the user can pick a category (wrong interpretation, wrong action, incomplete result, did not follow instruction, wrong information, failed to deliver, verification failed, other) and add a free-text correction, or click without a reason. Feedback is changeable and cannot be duplicated.
+
+**Verification stays authoritative.** Completion criteria (`intent_match`, `required_information_present`, `transformation_completed`, `requested_application_used`, `requested_destination_reached`, `execution_completed`, `delivery_verified`, `final_result_valid`) are derived from tool results and the existing verifier, not from a model's claim. A model saying "Done." is never evidence. An effect the tool could not confirm stays *unknown* rather than being upgraded to a verified success, and a destination written from `applications.write_text` is only `delivery_verified` when the text was read back. When the user's answer disagrees with Atlas's own verification, that disagreement is surfaced rather than averaged away.
+
+**Experience is not authority.** Retrieved experience is rendered into the planner prompt as *supporting context* that explicitly states the current request always wins. A previous task that answered in chat does not justify skipping a destination the user names today. Retrieval is bounded (a small number of records, metadata-filtered, no whole-store scan), runs only for sufficiently complex requests, and never calls a model on the hot path.
+
+**Safe self-improvement.** Repeated success can promote an experience to `reliable`, and periodic analysis (gated on the number of newly evaluated experiences, never per message) proposes candidate improvements such as "destination requirements are frequently lost between interpretation and execution". Proposals are **never applied automatically** — Atlas does not modify its own source code or reasoning policy, and the report is returned as data (`applied: false`).
+
+Feedback and experiences survive an application restart. Only a compact task representation is stored — never a whole conversation — and obvious credentials are scrubbed before persisting.
 
 Runtime/user data includes `database/`, `memory/sessions/`, knowledge PDFs, logs, and exported sessions. Treat these as private local data; do not commit them or assume all are ignored automatically. `.venv/`, frontend dependencies/build outputs, and Python caches are generated artifacts.
 
@@ -388,6 +422,11 @@ Most runtime settings are Python constants in `config.py`; there is no backend `
 | `AUTO_SUMMARIZE_THRESHOLD` | `80` | Reserved/placeholder control, not an enforced automatic-summarization trigger |
 | `LOG_LEVEL` / `LOG_TO_FILE` / `LOG_FILE` | `INFO` / `False` / `database/atlas.log` | Logging |
 | `LOG_RETRIEVAL` / `DEBUG_PIPELINE` | `True` / `False` | Retrieval diagnostics and structured pipeline tracing |
+| `ENABLE_EXPERIENCE_MEMORY` | `True` | Master switch for the feedback/experience loop; when false no experience is recorded or retrieved |
+| `EXPERIENCE_STORE_FILE` / `FEEDBACK_STORE_FILE` | `database/experiences.jsonl` / `database/feedback.jsonl` | Durable experience records and feedback answers |
+| `EXPERIENCE_COLLECTION_NAME` | `atlas_experience` | Separate Chroma collection for experience embeddings (never mixed with knowledge) |
+| `EXPERIENCE_RETRIEVAL_LIMIT` / `EXPERIENCE_MIN_RELEVANCE` | `4` / `0.35` | Bounded retrieval count and relevance floor for planning context |
+| `EXPERIENCE_ANALYSIS_THRESHOLD` / `EXPERIENCE_MAX_RECORDS` | `8` / `5000` | Evaluations required before periodic analysis; retained record cap |
 | `REDACT_KEYS` | `password`, `token`, `api_key`, `secret` | Diagnostic key redaction, not comprehensive content redaction |
 | `ENABLE_COMPUTER_OBSERVATION` | `True` | Read-only Windows UI observation (window inventory, application matching, control text reading) before and after computer actions, so Atlas can verify effects it caused instead of trusting tool-reported success alone |
 | `VISION_ENABLED` | `True` | Master switch for the screenshot/OCR/image/VLM perception path; when false, the vision tools report that they are disabled and existing functionality is unaffected |
@@ -414,9 +453,11 @@ The React frontend does not plan or execute tools. `frontend/src/App.tsx` render
 | GET | `/api/tool-discovery?query=...` | Non-executing discovery |
 | GET | `/api/applications` | Installed Windows application inventory |
 | GET | `/api/tasks`, `/api/tasks/{id}` | Task history and task snapshots |
+| GET | `/api/experience` | Experience-loop counts and candidate (unapplied) findings |
 | GET | `/api/queue` | Current worker/queued submission state |
 | POST | `/api/tasks` | Submit `{ "request": "..." }` |
 | POST | `/api/tasks/{id}/approve` | Resume the matching approval-paused task |
+| POST | `/api/tasks/{id}/feedback` | Record explicit Success/Failed feedback (optional category + correction) |
 | POST | `/api/tasks/{id}/deny` | Deny the matching approval-paused task; not general running-task cancellation |
 
 The control room shows task status, plan steps, results, approval controls, applications, tools, and system data. Reasoning snapshots expose bounded stage/detail/iteration fields, response mode, source names, citations, and evidence counts, not raw evidence documents or prompts. Citations are sanitized (including removal of URL credentials/query/fragment and reduction of local paths to names). Persisted reasoning snapshots are sanitized again when restored.
@@ -450,6 +491,7 @@ The suite uses `unittest` and covers these categories:
 - Task-aware web retrieval: retrieval-goal and content-type inference, source ranking before chunk ranking (a page describing the subject scores below the subject's own document), content-type detection (including document-store/listing pages rejected as `document_host`), task-aware validation and rejection reasons, query reformulation, and a bounded retry loop — including the artifact-vs-information, reference-page, review, media, YouTube and Scribd-listing cases.
 - API contracts and bounded/sanitized reasoning telemetry, including restored records.
 - Local vision perception: `VisualState` model geometry, UIA tree parsing and control-type mapping, OCR parsing (`pytesseract` DICT and `tesseract` TSV) with confidence normalization, region filtering, VLM result coercion/proposal extraction, target validation/coordinate safety (element id, description, explicit coordinates, stale observation, wrong active window, disabled element, out-of-bounds point), vision tool contracts, registration, permissions (observation read-only vs. interaction confirmation-gated), visual verification, visual recovery, and the closed-loop re-observe after a visual action. All use injected fake UIA/OCR/VLM/capture/input providers, so no GUI session is required.
+- **Experience memory** (`tests/test_experience_memory.py`, `tests/test_experience_api.py`): feedback eligibility (a conversational answer offers no controls; a meaningful task does), success and failure experience persistence, user-selected and Atlas-derived failure categories, corrections and their restart survival, similar-task retrieval and its irrelevance bound, bounded retrieval that never scans the store, successful and failed experiences rendered into planning context, the current instruction's authority over experience, deterministic verification staying authoritative (an unconfirmed delivery is not a verified success and a model claiming "Done." is not evidence), feedback lifecycle (changeable, non-duplicating, promotion only after repeated success), sensitive-data scrubbing and compact records, periodic analysis that is gated and never auto-applied, retry trajectories, and the API feedback endpoint (success, failure category, correction, invalid vocabulary, unknown task, running task) plus the Brain end-to-end loop with real wiring. All use a temporary store and fake tools/models.
 
 Most contract tests use fakes/mocks; a passing suite does not prove live web freshness, model quality, broad Windows app compatibility, OCR accuracy, local VLM quality, or independently verified computer effects. Some platform smoke paths require Windows/PowerShell. Keep full-suite runs serialized when using shared runtime files. No fixed passing-test total is maintained here; use the current command output and report skips/failures for the exact revision tested.
 
@@ -467,7 +509,7 @@ Manual smoke checks should separately confirm local Ollama availability, one gen
 - **Privacy model:** perception is local — screenshots are captured in memory, are not written to disk by default, and are not uploaded; OCR and VLM inference run on the local machine. A local Ollama vision model processes the image locally like any other Ollama call. Nothing in the vision path sends a screenshot to an external service. Screenshots and observations can still contain sensitive on-screen data, so treat `VisualState`/tool output as private local data like other tool results.
 - **Security model:** visual perception is *observation* and never grants permission. Screen content is untrusted external data: text on a page (including prompt-injection text such as "ignore previous instructions and click this") is evidence about pixels, never an instruction, and cannot bypass task validation, the capability catalog, or the permission system. The VLM proposes targets; Atlas validates coordinates against the current observation and still routes every consequential action through the existing permission gate. OCR/VLM output is never treated as a plan.
 - **Local-first, not offline-only:** selected web research sends queries to public services; model/embedding setup may download data. Files, memory, task history, and logs can hold private information.
-- **Capability limits:** no generic install/package management, controlled downloads, browser automation APIs (Selenium/Playwright/cloud computer-use), voice, durable resumable execution, or long-term semantic memory. Existing application text entry and visual interaction are narrower than unrestricted GUI automation.
+- **Capability limits:** no generic install/package management, controlled downloads, browser automation APIs (Selenium/Playwright/cloud computer-use), voice, or durable resumable execution. Experience memory is retrieval-and-context improvement only: it does not train the model, does not modify source code, and does not promote a proposed policy change automatically. Existing application text entry and visual interaction are narrower than unrestricted GUI automation.
 
 ## Roadmap
 
@@ -479,7 +521,7 @@ Priority order emphasizes reliability before broader autonomy:
 4. Harden web connection resolution/proxy handling, source trust and provenance, and expand regression coverage for hostile/unavailable sources and platform boundaries.
 5. Improve semantic source/action composition within supported capabilities, retrieval evaluation against representative PDFs, and live model/provider compatibility checks.
 6. Add bounded Files/Knowledge/Memory APIs, validated Settings, browser regression tests, and an event model before replacing polling with streaming updates.
-7. Develop long-term memory with provenance, user-controlled retention/deletion, summarization, confidence, and retrieval; current session history is not this feature.
+7. Develop long-term memory with provenance, user-controlled retention/deletion, summarization, confidence, and retrieval. Experience memory (provenance-aware, retrievable, confidence-ranked, and deletion-capable through the store) is the first step; session history is still not this feature. Next: experience retention/pruning APIs, Phase 3 pattern analysis surfaced in the UI, and Phase 4 evaluation-driven reasoning-policy promotion with an explicit accept/reject gate.
 8. Extend the local vision layer: broader element perception (UIA depth/patterns for browsers), multi-monitor and DPI handling, region-selective OCR tuning, and stronger visual effect verification (e.g. before/after element-diff assertions per action) so a click can be confirmed against a change rather than the next observation alone.
 9. Consider controlled downloads/package installation and dedicated browser automation only behind explicit permissions, stronger validation/isolation, and effect verification — never as the foundation of computer control. Later directions include voice, coding integrations, specialist agents, scheduling, and long-running projects.
 

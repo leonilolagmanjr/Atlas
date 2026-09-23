@@ -36,12 +36,27 @@ class TaskPlanner:
         *,
         user_question: str,
         legacy_planner: Callable[..., PlannerDecision] | None = None,
+        experience_context: str = "",
     ) -> PlannerDecision:
+        """Build the smallest execution plan that accomplishes a validated task.
+
+        ``experience_context`` is optional supporting context rendered from
+        comparable past experiences. When present it is forwarded to the legacy
+        (model-assisted) planner path and recorded on the decision, so a
+        successful past workflow can guide planning. It is never applied to the
+        deterministic action list, because a past interaction must not override
+        an explicit instruction in the current request.
+        """
+
         if not task.actions:
             # Informational / conversational: reuse the existing retrieval plan.
             if legacy_planner is not None:
-                decision = legacy_planner(user_question, intent="UNKNOWN")
+                decision = legacy_planner(
+                    user_question, intent="UNKNOWN", experience_context=experience_context
+                )
                 decision.metadata["planned_by"] = "task_informational"
+                if experience_context:
+                    decision.metadata["experience_context_used"] = True
                 return decision
             return PlannerDecision(
                 plan=ExecutionPlan(user_question=user_question, steps=[]),
@@ -85,6 +100,8 @@ class TaskPlanner:
                 "step_count": len(steps),
                 "task_type": task.task_type,
                 "goal": task.goal,
+                # Experience is supporting context, recorded for observability.
+                "experience_context_supplied": bool(experience_context),
             },
         )
 

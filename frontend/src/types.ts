@@ -145,4 +145,35 @@ export interface TaskRecord {
   citations?: string[];
   response_mode?: string | null;
   evidence?: EvidenceSummary | null;
+  feedback_available?: boolean;
+  feedback_outcome?: FeedbackOutcome;
+  feedback_category?: string;
+  feedback_category_label?: string;
+  feedback_reason?: string;
+  feedback_correction?: string;
+  experience_id?: string;
 }
+
+/** Task outcome feedback. "unknown" means the user has not answered yet. */
+export type FeedbackOutcome = "success" | "failure" | "unknown";
+
+export interface FeedbackPayload {
+  outcome: "success" | "failure";
+  reason?: string;
+  failure_category?: string;
+  correction?: string;
+  expected_behavior?: string;
+  response_quality?: "positive" | "negative" | "";
+}
+
+/** The canonical failure categories, mirrored from the backend vocabulary. */
+export const FAILURE_CATEGORIES: Array<{ value: string; label: string }> = [
+  { value: "wrong_interpretation", label: "Wrong interpretation" },
+  { value: "wrong_action", label: "Wrong action" },
+  { value: "incomplete_result", label: "Incomplete result" },
+  { value: "did_not_follow_instruction", label: "Did not follow instruction" },
+  { value: "wrong_information", label: "Wrong information" },
+  { value: "delivery_not_completed", label: "Failed to deliver to requested application" },
+  { value: "verification_failed", label: "Verification failed" },
+  { value: "other", label: "Other" },
+];

@@ -152,3 +152,24 @@ kbd { padding: 2px 4px; border: 1px solid #35434c; color: #9aabb5; font: 9px var
 .queue-request { flex: 1; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .queue-item small { color: #64747e; font: 9px var(--mono); text-transform: uppercase; }
 .queue-waiting { display: flex; align-items: center; gap: 6px; margin-top: 10px; color: var(--amber); font: 10px var(--mono); }
+
+/* Task feedback (human-in-the-loop experience memory).
+   Kept visually consistent with the existing dark control room: no new palette,
+   no layout redesign, just an inline control block belonging to the result. */
+.feedback-panel { margin-top: 18px; padding: 13px; border: 1px solid var(--line); background: #10181f; }
+.feedback-head { display: flex; align-items: baseline; gap: 10px; justify-content: space-between; }
+.feedback-head small { color: var(--muted); font: 10px var(--mono); }
+.feedback-actions { display: flex; gap: 8px; margin-top: 11px; }
+.feedback-button { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--line); background: transparent; color: var(--soft); padding: 8px 12px; font-size: 11px; transition: color .18s, border-color .18s, background .18s; }
+.feedback-button:hover:not(:disabled) { background: #16222a; }
+.feedback-success:hover:not(:disabled) { border-color: #3f7773; color: var(--cyan); }
+.feedback-failure:hover:not(:disabled) { border-color: #76464b; color: var(--red); }
+.feedback-success.feedback-selected { border-color: #3f7773; background: #122a2b; color: var(--cyan); }
+.feedback-failure.feedback-selected { border-color: #76464b; background: #2a1a1d; color: var(--red); }
+.feedback-summary { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; color: var(--amber); font: 10px var(--mono); }
+.feedback-detail { display: grid; gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.feedback-field { display: grid; gap: 5px; }
+.feedback-field span { color: #71818b; font: 10px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+.feedback-field select, .feedback-field input, .feedback-field textarea { width: 100%; border: 1px solid var(--line); background: #0d151b; color: var(--text); padding: 8px 9px; font-size: 12px; resize: vertical; }
+.feedback-field select:focus, .feedback-field input:focus, .feedback-field textarea:focus { outline: none; border-color: #3a5960; }
+.feedback-detail-actions { display: flex; gap: 8px; justify-content: flex-end; }

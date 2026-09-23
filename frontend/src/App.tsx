@@ -34,12 +34,14 @@ import {
   Settings2,
   ShieldCheck,
   SquareTerminal,
+  ThumbsDown,
   X,
   Zap,
 } from "lucide-react";
 import { api } from "./services/api";
 import type {
   ApplicationInfo,
+  FeedbackPayload,
   Health,
   QueueSnapshot,
   SystemInfo,
@@ -49,6 +51,7 @@ import type {
   ToolKnowledge,
   WebSearchResult,
 } from "./types";
+import { FAILURE_CATEGORIES } from "./types";
 import "./styles.css";
 
 type Section = "command" | "tasks" | "files" | "knowledge" | "applications" | "tools" | "memory" | "system" | "settings";
@@ -100,6 +103,8 @@ function App() {
   const [toolsLoading, setToolsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  // Which task is currently submitting feedback, to block duplicate clicks.
+  const [feedbackPendingId, setFeedbackPendingId] = useState<string | null>(null);
 
   const refreshTasks = () => api.tasks().then((result) => setTasks(result.tasks)).catch(() => undefined);
 
@@ -209,6 +214,24 @@ function App() {
   const approveTask = () => resolveTask("approve");
   const denyTask = () => resolveTask("deny");
 
+  async function submitFeedback(taskId: string, payload: FeedbackPayload) {
+    // Guard against accidental duplicate feedback: ignore clicks while one is
+    // in flight for the same task. The backend is idempotent and lets the user
+    // change an earlier answer, so a deliberate re-click still works.
+    if (feedbackPendingId === taskId) return;
+    setFeedbackPendingId(taskId);
+    setError(null);
+    try {
+      const task = await api.submitFeedback(taskId, payload);
+      setActiveTask((current) => (current && current.id === task.id ? task : current));
+      setTasks((current) => current.map((item) => (item.id === task.id ? task : item)));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not store feedback");
+    } finally {
+      setFeedbackPendingId(null);
+    }
+  }
+
   const changeSection = (nextSection: Section) => {
     setSection(nextSection);
     setMobileNavOpen(false);
@@ -252,7 +275,7 @@ function App() {
         {error ? <div className="error-strip"><CircleAlert size={15} /> {error}<button onClick={() => setError(null)}><X size={14} /></button></div> : null}
 
         <div className="content-wrap">
-          {section === "command" ? <CommandWorkspace activeTask={activeTask} queue={queue} tasks={tasks} request={request} setRequest={setRequest} loading={loading} phase={phase} resolvingId={resolvingId} onSubmit={submitTask} onApprove={approveTask} onDeny={denyTask} onSelect={setActiveTask} completedCount={completedCount} /> : null}
+          {section === "command" ? <CommandWorkspace activeTask={activeTask} queue={queue} tasks={tasks} request={request} setRequest={setRequest} loading={loading} phase={phase} resolvingId={resolvingId} feedbackPendingId={feedbackPendingId} onSubmit={submitTask} onApprove={approveTask} onDeny={denyTask} onSelect={setActiveTask} onFeedback={submitFeedback} completedCount={completedCount} /> : null}
           {section === "tasks" ? <TasksView tasks={tasks} activeTask={activeTask} onSelect={setActiveTask} /> : null}
           {section === "applications" ? <ApplicationsView applications={applications} loading={appsLoading} /> : null}
           {section === "tools" ? <ToolsView tools={tools} knowledge={toolKnowledge} loading={toolsLoading} /> : null}
@@ -273,10 +296,12 @@ function CommandWorkspace({
   loading,
   phase,
   resolvingId,
+  feedbackPendingId,
   onSubmit,
   onApprove,
   onDeny,
   onSelect,
+  onFeedback,
   completedCount,
 }: {
   activeTask: TaskRecord | null;
@@ -287,10 +312,12 @@ function CommandWorkspace({
   loading: boolean;
   phase: string | null;
   resolvingId: string | null;
+  feedbackPendingId: string | null;
   onSubmit: (event: FormEvent) => void;
   onApprove: () => void;
   onDeny: () => void;
   onSelect: (task: TaskRecord) => void;
+  onFeedback: (taskId: string, payload: FeedbackPayload) => void;
   completedCount: number;
 }) {
   const queuedTasks = queue.pending
@@ -314,7 +341,7 @@ function CommandWorkspace({
           <button onClick={() => setRequest("Find all PDF files in the project")}>Find project PDFs <ArrowUpRight size={13} /></button>
           <button onClick={() => setRequest("Search my knowledge base for the latest project status")}>Search knowledge <ArrowUpRight size={13} /></button>
         </div>
-        {activeTask ? <TaskPanel task={activeTask} phase={phase} resolving={resolvingId === activeTask.id} onApprove={onApprove} onDeny={onDeny} /> : <EmptyTaskState completedCount={completedCount} />}
+        {activeTask ? <TaskPanel task={activeTask} phase={phase} resolving={resolvingId === activeTask.id} feedbackPending={feedbackPendingId === activeTask.id} onApprove={onApprove} onDeny={onDeny} onFeedback={onFeedback} /> : <EmptyTaskState completedCount={completedCount} />}
       </section>
       <aside className="right-rail">
         <div className="rail-header"><span>Runtime telemetry</span><Activity size={15} /></div>
@@ -377,7 +404,7 @@ function QueuePanel({
   );
 }
 
-function TaskPanel({ task, phase, resolving, onApprove, onDeny }: { task: TaskRecord; phase: string | null; resolving: boolean; onApprove: () => void; onDeny: () => void }) {
+function TaskPanel({ task, phase, resolving, feedbackPending, onApprove, onDeny, onFeedback }: { task: TaskRecord; phase: string | null; resolving: boolean; feedbackPending: boolean; onApprove: () => void; onDeny: () => void; onFeedback: (taskId: string, payload: FeedbackPayload) => void }) {
   const waiting = task.status === "WAITING_FOR_CONFIRMATION";
   const running = task.status === "RUNNING" || task.status === "PENDING";
   return (
@@ -389,11 +416,116 @@ function TaskPanel({ task, phase, resolving, onApprove, onDeny }: { task: TaskRe
       {task.plan ? <div className="plan-list"><div className="plan-label">Execution plan</div>{task.plan.steps.map((step) => <div className="plan-step-group" key={step.id}><div className="plan-step"><span className={`step-icon ${step.status.toLowerCase()}`}><StepIcon status={step.status} /></span><span>{step.name}</span><small>{step.status.replaceAll("_", " ").toLowerCase()}</small></div>{typeof step.metadata.capability === "string" ? <div className="plan-detail"><strong>{step.metadata.capability}</strong>{Array.isArray(step.metadata.candidates) ? <span> Candidates: {step.metadata.candidates.join(", ")}</span> : null}{typeof step.metadata.command === "string" ? <code>{step.metadata.command}</code> : null}</div> : null}</div>)}</div> : null}
       <ReasoningPanel task={task} />
       {task.response ? <div className="result-box"><span>Atlas result</span><p>{task.response}</p></div> : null}
+      <FeedbackControls task={task} pending={feedbackPending} onFeedback={onFeedback} />
       {task.tool_calls.length ? <div className="tool-results"><div className="plan-label">Tool output</div>{task.tool_calls.map((call, index) => <details key={`${call.tool ?? "tool"}-${index}`}><summary>{call.tool ?? "Tool"} <span>{call.status ?? "unknown"}</span></summary><pre>{formatToolOutput(call.output, call.status)}</pre></details>)}</div> : null}
       <WebResults calls={task.tool_calls} webResults={task.web_results} />
       {task.web_sources.length ? <div className="source-list"><div className="plan-label">Sources</div>{task.web_sources.map((source) => <a key={source} href={source} target="_blank" rel="noreferrer">{source}</a>)}</div> : null}
       {task.errors.length ? <div className="failure-box"><CircleAlert size={15} /> {task.errors.join(" ")}</div> : null}
     </section>
+  );
+}
+
+function FeedbackControls({
+  task,
+  pending,
+  onFeedback,
+}: {
+  task: TaskRecord;
+  pending: boolean;
+  onFeedback: (taskId: string, payload: FeedbackPayload) => void;
+}) {
+  // Feedback is offered only where the backend decided the task is meaningful
+  // (tool execution, research, application actions, multi-step work, generated
+  // deliverables). A casual conversation shows nothing here at all.
+  const [showFailureDetail, setShowFailureDetail] = useState(false);
+  const [category, setCategory] = useState(task.feedback_category || "");
+  const [reason, setReason] = useState(task.feedback_reason || "");
+  const [correction, setCorrection] = useState(task.feedback_correction || "");
+
+  if (!task.feedback_available) return null;
+
+  const settled = task.feedback_outcome === "success" || task.feedback_outcome === "failure";
+  const outcome = task.feedback_outcome ?? "unknown";
+
+  function send(next: "success" | "failure", extra: Partial<FeedbackPayload> = {}) {
+    onFeedback(task.id, {
+      outcome: next,
+      failure_category: next === "failure" ? category : "",
+      reason: next === "failure" ? reason : "",
+      correction: next === "failure" ? correction : "",
+      ...extra,
+    });
+  }
+
+  return (
+    <div className="feedback-panel" aria-label="Task feedback">
+      <div className="feedback-head">
+        <span className="plan-label">How did Atlas do?</span>
+        {settled ? <small>Feedback stored as experience — you can change it.</small> : <small>Your answer teaches Atlas this task type.</small>}
+      </div>
+      <div className="feedback-actions">
+        <button
+          type="button"
+          className={`feedback-button feedback-success ${outcome === "success" ? "feedback-selected" : ""}`}
+          aria-pressed={outcome === "success"}
+          disabled={pending}
+          onClick={() => send("success")}
+        >
+          {pending && outcome !== "failure" ? <Loader2 size={15} className="spin" /> : <Check size={15} />}
+          {outcome === "success" ? "Success recorded" : "Success"}
+        </button>
+        <button
+          type="button"
+          className={`feedback-button feedback-failure ${outcome === "failure" ? "feedback-selected" : ""}`}
+          aria-pressed={outcome === "failure"}
+          disabled={pending}
+          onClick={() => setShowFailureDetail((open) => !open)}
+        >
+          <ThumbsDown size={15} />
+          {outcome === "failure" ? "Failed recorded" : "Failed"}
+        </button>
+      </div>
+      {task.feedback_category_label && outcome === "failure" ? (
+        <div className="feedback-summary">
+          <span>{task.feedback_category_label}</span>
+          {task.feedback_correction ? <span>“{task.feedback_correction}”</span> : null}
+        </div>
+      ) : null}
+      {showFailureDetail ? (
+        <div className="feedback-detail">
+          <label className="feedback-field">
+            <span>What went wrong? (optional)</span>
+            <select value={category} onChange={(event) => setCategory(event.target.value)}>
+              <option value="">No specific reason</option>
+              {FAILURE_CATEGORIES.map((item) => (
+                <option key={item.value} value={item.value}>{item.label}</option>
+              ))}
+            </select>
+          </label>
+          <label className="feedback-field">
+            <span>Anything else? (optional)</span>
+            <input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Short note" />
+          </label>
+          <label className="feedback-field">
+            <span>Correction (optional — what should Atlas have done?)</span>
+            <textarea
+              rows={2}
+              value={correction}
+              onChange={(event) => setCorrection(event.target.value)}
+              placeholder="e.g. I specifically asked you to put the summary in Notepad."
+            />
+          </label>
+          <div className="feedback-detail-actions">
+            <button type="button" className="button-muted" onClick={() => setShowFailureDetail(false)} disabled={pending}>
+              Cancel
+            </button>
+            <button type="button" className="button-primary" onClick={() => { send("failure"); setShowFailureDetail(false); }} disabled={pending}>
+              {pending ? <><Loader2 size={15} className="spin" /> Saving...</> : <><ThumbsDown size={15} /> Save failure</>}
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 

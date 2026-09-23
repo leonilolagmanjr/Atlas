@@ -47,16 +47,25 @@ class Planner:
         *,
         intent: str | None = None,
         structured: StructuredIntent | None = None,
+        experience_context: str = "",
     ) -> PlannerDecision:
         """Create an execution plan.
 
         Backward compatible: callers that only have a coarse ``intent`` string
-        still work exactly as before.
+        still work exactly as before. ``experience_context`` is optional
+        supporting context from comparable past tasks; it is forwarded to the
+        model-assisted path and is never allowed to override the current request.
         """
 
+        self._experience_context = experience_context or ""
         if structured is not None:
             return self._plan_structured(user_question, structured)
         return self._plan_legacy(user_question, intent or "UNKNOWN")
+
+    #: Experience context for the current plan request. Kept on the instance
+    #: because the legacy planner returns synchronously and its helpers do not
+    #: take extra arguments; it is cleared on every ``create_plan`` call.
+    _experience_context: str = ""
 
     # -- structured planning -----------------------------------------------------
 
@@ -236,6 +245,7 @@ class Planner:
                 intent_json=json.dumps(structured.to_dict(), ensure_ascii=False),
                 capabilities=catalog,
                 history=history,
+                experience_context=self._experience_context,
             ),
             ask=self._ask,
         )
@@ -269,7 +279,11 @@ class Planner:
             plan=plan,
             strategy="llm_assisted_plan",
             confidence=float(data.get("confidence") or 0.6),
-            metadata={"step_count": len(steps), "intent": structured.intent},
+            metadata={
+                "step_count": len(steps),
+                "intent": structured.intent,
+                "experience_context_supplied": bool(self._experience_context),
+            },
         )
 
     # -- legacy deterministic planning (kept for compatibility) ------------------

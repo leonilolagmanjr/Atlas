@@ -149,6 +149,28 @@ VISION_OCR_LANGUAGES: str = "eng"
 # Run region-based OCR instead of full-screen OCR whenever a region is known.
 VISION_PREFER_REGION_OCR: bool = True
 
+# ---- Experience memory (human feedback -> experience -> retrieval -> planning) ----
+# Master switch for the feedback/experience loop. When False, Atlas records no
+# experiences and never retrieves them; every other subsystem is unaffected.
+ENABLE_EXPERIENCE_MEMORY: bool = True
+# Append-only JSONL of durable experience records (survives restart).
+EXPERIENCE_STORE_FILE: Path = PROJECT_ROOT / "database" / "experiences.jsonl"
+# Where the pending-feedback queue and feedback answers live, so a click of
+# Success/Failed is durable even before the experience is evaluated.
+FEEDBACK_STORE_FILE: Path = PROJECT_ROOT / "database" / "feedback.jsonl"
+# Maximum experiences retrieved for planning context per request (bounded).
+EXPERIENCE_RETRIEVAL_LIMIT: int = 4
+# Minimum relevance score for a retrieved experience to be offered to planning.
+EXPERIENCE_MIN_RELEVANCE: float = 0.35
+# Number of "meaningful" evaluated experiences after which periodic pattern
+# analysis becomes eligible (never run per-message).
+EXPERIENCE_ANALYSIS_THRESHOLD: int = 8
+# Cap on the number of stored experiences so the store stays a bounded history.
+EXPERIENCE_MAX_RECORDS: int = 5000
+# Chroma collection used when experience embeddings are available. The
+# experience store works without it (deterministic lexical retrieval fallback).
+EXPERIENCE_COLLECTION_NAME: str = "atlas_experience"
+
 # ---- API task history ----
 TASK_STORE_FILE: Path = PROJECT_ROOT / "database" / "tasks.json"
 

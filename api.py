@@ -25,6 +25,8 @@ from computer.applications import InstalledApplicationsTool
 from computer.runtime import register_read_only_tools
 from computer.system import SystemInfoTool
 from config import COMPUTER_ROOT, EXECUTION_MODE, OLLAMA_MODEL, TASK_STORE_FILE
+from experience.models import FAILURE_CATEGORIES, FAILURE_CATEGORY_LABELS
+from experience.service import ExperienceService, FeedbackRequest
 from indexer import index_knowledge_base
 from llm import ask
 from memory.memory_manager import MemoryManager
@@ -41,6 +43,34 @@ logger = logging.getLogger(__name__)
 
 class TaskRequest(BaseModel):
     request: str = Field(min_length=1, max_length=4000)
+
+
+class FeedbackPayload(BaseModel):
+    """Explicit Success/Failed feedback for one task record.
+
+    Only ``outcome`` is required: the user is never forced to justify a click.
+    ``failure_category`` is validated against the canonical vocabulary so the
+    frontend cannot invent a category that pattern analysis does not understand.
+    """
+
+    outcome: str = Field(min_length=1, max_length=32)
+    reason: str = Field(default="", max_length=500)
+    failure_category: str = Field(default="", max_length=64)
+    correction: str = Field(default="", max_length=2000)
+    expected_behavior: str = Field(default="", max_length=1000)
+    response_quality: str = Field(default="", max_length=32)
+
+    @model_validator(mode="after")
+    def validate_vocabulary(self) -> "FeedbackPayload":
+        normalized = self.outcome.strip().casefold()
+        if normalized not in {"success", "failure"}:
+            raise ValueError("outcome must be 'success' or 'failure'")
+        object.__setattr__(self, "outcome", normalized)
+        category = self.failure_category.strip().casefold()
+        if category and category not in FAILURE_CATEGORIES:
+            raise ValueError("unrecognized failure_category")
+        object.__setattr__(self, "failure_category", category)
+        return self
 
 
 def _bounded_text(value: Any, limit: int) -> str:
@@ -157,6 +187,18 @@ class TaskRecord(BaseModel):
     citations: list[str] = Field(default_factory=list)
     response_mode: str | None = None
     evidence: dict[str, Any] | None = None
+    # -- human feedback / experience linkage -------------------------------
+    #: Whether this task should show Success/Failed controls at all. Casual
+    #: conversation stays False so feedback UI never appears for a plain answer.
+    feedback_available: bool = False
+    #: "success" | "failure" | "unknown"; persisted so the answer survives restart.
+    feedback_outcome: str = "unknown"
+    feedback_category: str = ""
+    feedback_category_label: str = ""
+    feedback_reason: str = ""
+    feedback_correction: str = ""
+    #: The experience this feedback was attached to, for traceability.
+    experience_id: str = ""
 
     @model_validator(mode="before")
     @classmethod
@@ -175,6 +217,8 @@ class AtlasService:
 
     brain: Brain | None = None
     registry: ToolRegistry | None = None
+    #: Experience loop: feedback capture, durable experience records, retrieval.
+    experience: ExperienceService = field(default_factory=ExperienceService)
     _tasks: dict[str, TaskRecord] = field(default_factory=dict)
     _task_store: TaskStore = field(default_factory=lambda: TaskStore(path=TASK_STORE_FILE))
     _executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=1))
@@ -228,6 +272,7 @@ class AtlasService:
                 memory_manager=memory_manager,
                 tool_router=router,
                 llm_ask=ask,
+                experience_service=self.experience,
             )
 
     def submit(self, request: str) -> TaskRecord:
@@ -284,6 +329,7 @@ class AtlasService:
                 record.web_sources = list(context.web_sources) if context is not None else []
                 record.web_results = list(getattr(context, "metadata", {}).get("web_results", [])) if context is not None else []
                 self._capture_reasoning(record, context)
+                self._capture_feedback_state(record, context)
                 record.updated_at = time.time()
                 self._persist()
         except Exception as exc:
@@ -338,6 +384,7 @@ class AtlasService:
                 record.web_sources = list(context.web_sources) if context is not None else []
                 record.web_results = list(getattr(context, "metadata", {}).get("web_results", [])) if context is not None else []
                 self._capture_reasoning(record, context)
+                self._capture_feedback_state(record, context)
                 record.updated_at = time.time()
                 self._persist()
             return record
@@ -373,6 +420,84 @@ class AtlasService:
 
     def _persist(self) -> None:
         self._task_store.save(self._tasks)
+
+    # -- human feedback / experience loop -------------------------------------
+
+    def _capture_feedback_state(self, record: TaskRecord, context: Any) -> None:
+        """Decide whether this task shows feedback controls, and record why.
+
+        The decision lives in the experience service so the rule (feedback for
+        tool execution/research/application/multi-step/deliverables, not for
+        casual conversation) has exactly one home. Nothing here calls a model.
+        """
+
+        if context is None:
+            record.feedback_available = False
+            return
+        try:
+            record.feedback_available = self.experience.should_offer_feedback(context)
+            metadata = getattr(context, "metadata", {}) or {}
+            recorded = bool(metadata.get("experience_recorded"))
+            experience_id = str(metadata.get("experience_id") or "")
+            if recorded:
+                record.experience_id = experience_id
+            elif record.feedback_available:
+                # The task is eligible for feedback but the Brain did not record
+                # it (for example the loop was disabled). Record it now so the
+                # user's answer still has something durable to attach to.
+                outcome = self.experience.record_task_outcome(context, record_id=record.id)
+                record.experience_id = outcome.experience_id
+        except Exception:  # noqa: BLE001 - feedback plumbing never breaks a task
+            logger.exception("Could not evaluate feedback availability")
+            record.feedback_available = False
+
+    def submit_feedback(self, record_id: str, payload: FeedbackPayload) -> TaskRecord:
+        """Attach explicit Success/Failed feedback to one task record.
+
+        Feedback is changeable: submitting again updates the same experience
+        rather than creating a duplicate, and the click itself is persisted first
+        so the answer survives even if promotion is skipped.
+        """
+
+        self.ensure_runtime()
+        with self._lock:
+            record = self._tasks.get(record_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail="Task not found")
+            if record.status in {TaskStatus.PENDING.value, TaskStatus.RUNNING.value}:
+                raise HTTPException(status_code=409, detail="Task is still running")
+        request = FeedbackRequest.from_payload(
+            record_id,
+            {
+                "outcome": payload.outcome,
+                "reason": payload.reason,
+                "failure_category": payload.failure_category,
+                "correction": payload.correction,
+                "expected_behavior": payload.expected_behavior,
+                "response_quality": payload.response_quality,
+            },
+        )
+        result = self.experience.apply_feedback(request)
+        if not result.ok:
+            raise HTTPException(status_code=409, detail=result.detail or "Feedback was not accepted")
+        with self._lock:
+            record.feedback_outcome = result.feedback
+            record.feedback_category = result.failure_category
+            record.feedback_category_label = result.failure_category_label or FAILURE_CATEGORY_LABELS.get(result.failure_category, "")
+            record.feedback_reason = payload.reason
+            record.feedback_correction = result.user_correction
+            if result.experience_id:
+                record.experience_id = result.experience_id
+            record.updated_at = time.time()
+            self._persist()
+            return record
+
+    def experience_status(self) -> dict[str, Any]:
+        """Expose bounded experience-loop counts (no task content)."""
+
+        status = self.experience.status()
+        status["analysis"] = self.experience.analysis_report()
+        return status
 
 
 def _read_prompt(name: str) -> str:
@@ -512,6 +637,25 @@ def task(record_id: str) -> TaskRecord:
 @app.post("/api/tasks/{record_id}/approve")
 def approve_task(record_id: str) -> TaskRecord:
     return service.approve(record_id)
+
+
+@app.post("/api/tasks/{record_id}/feedback")
+def submit_feedback(record_id: str, payload: FeedbackPayload) -> TaskRecord:
+    """Record explicit Success/Failed feedback for a completed task.
+
+    This is what turns a task into a learning signal: the answer is persisted
+    durably, attached to the specific task result, and used to promote or correct
+    the corresponding experience.
+    """
+
+    return service.submit_feedback(record_id, payload)
+
+
+@app.get("/api/experience")
+def experience_status() -> dict[str, Any]:
+    """Expose bounded experience-loop counts and candidate (unapplied) findings."""
+
+    return service.experience_status()
 
 
 @app.post("/api/tasks/{record_id}/deny")
