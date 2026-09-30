@@ -7,6 +7,23 @@ export type TaskStatus =
   | "UNCERTAIN"
   | "WAITING_FOR_CONFIRMATION";
 
+// Conversation types live in their own module (they are a separate subsystem
+// from the task API) and are re-exported here so UI code has one import site.
+export type {
+  Conversation,
+  ConversationAttachment,
+  ConversationMessage,
+  ConversationSearchHit,
+  ConversationStreamEvent,
+  ExecutionState,
+  MemoryKind,
+  MemoryRecord,
+  MemoryStatus,
+  ResponseKind,
+  TurnResult,
+} from "./conversationTypes";
+export { MEMORY_KINDS } from "./conversationTypes";
+
 export interface Health {
   status: string;
   model: string;

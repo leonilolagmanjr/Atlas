@@ -24,6 +24,7 @@ import {
   LockKeyhole,
   MemoryStick,
   Menu,
+  MessageSquare,
   MonitorCog,
   Play,
   Plus,
@@ -39,6 +40,7 @@ import {
   Zap,
 } from "lucide-react";
 import { api } from "./services/api";
+import { ChatWorkspace, MemoryView } from "./ChatWorkspace";
 import type {
   ApplicationInfo,
   FeedbackPayload,
@@ -54,7 +56,7 @@ import type {
 import { FAILURE_CATEGORIES } from "./types";
 import "./styles.css";
 
-type Section = "command" | "tasks" | "files" | "knowledge" | "applications" | "tools" | "memory" | "system" | "settings";
+type Section = "chat" | "command" | "tasks" | "files" | "knowledge" | "applications" | "tools" | "memory" | "system" | "settings";
 
 interface NavItem {
   id: Section;
@@ -64,6 +66,7 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
+  { id: "chat", label: "Chat", icon: MessageSquare },
   { id: "command", label: "Command", icon: Command },
   { id: "tasks", label: "Tasks", icon: Layers3, live: true },
   { id: "files", label: "Files", icon: FolderOpen },
@@ -85,7 +88,7 @@ const statusLabels: Record<TaskStatus, string> = {
 };
 
 function App() {
-  const [section, setSection] = useState<Section>("command");
+  const [section, setSection] = useState<Section>("chat");
   const [health, setHealth] = useState<Health | null>(null);
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [tools, setTools] = useState<ToolInfo[]>([]);
@@ -247,7 +250,7 @@ function App() {
             <small>LOCAL OPERATING LAYER</small>
           </div>
         </div>
-        <button className="new-task" onClick={() => changeSection("command")}><Plus size={16} /> New task</button>
+        <button className="new-task" onClick={() => changeSection("chat")}><Plus size={16} /> New chat</button>
         <div className="nav-label">Workspace</div>
         <nav>
           {navItems.map(({ id, label, icon: Icon, live }) => (
@@ -275,12 +278,14 @@ function App() {
         {error ? <div className="error-strip"><CircleAlert size={15} /> {error}<button onClick={() => setError(null)}><X size={14} /></button></div> : null}
 
         <div className="content-wrap">
+          {section === "chat" ? <ChatWorkspace modelLabel={health?.model ?? "Qwen local model"} /> : null}
           {section === "command" ? <CommandWorkspace activeTask={activeTask} queue={queue} tasks={tasks} request={request} setRequest={setRequest} loading={loading} phase={phase} resolvingId={resolvingId} feedbackPendingId={feedbackPendingId} onSubmit={submitTask} onApprove={approveTask} onDeny={denyTask} onSelect={setActiveTask} onFeedback={submitFeedback} completedCount={completedCount} /> : null}
           {section === "tasks" ? <TasksView tasks={tasks} activeTask={activeTask} onSelect={setActiveTask} /> : null}
           {section === "applications" ? <ApplicationsView applications={applications} loading={appsLoading} /> : null}
           {section === "tools" ? <ToolsView tools={tools} knowledge={toolKnowledge} loading={toolsLoading} /> : null}
           {section === "system" ? <SystemView system={system} health={health} /> : null}
-          {section === "files" || section === "knowledge" || section === "memory" || section === "settings" ? <UnavailableView section={section} /> : null}
+          {section === "memory" ? <MemoryView /> : null}
+          {section === "files" || section === "knowledge" || section === "settings" ? <UnavailableView section={section} /> : null}
         </div>
       </main>
     </div>

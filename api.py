@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from queue import Queue
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import PureWindowsPath
@@ -18,18 +19,21 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from brain import Brain
 from computer.applications import InstalledApplicationsTool
 from computer.runtime import register_read_only_tools
 from computer.system import SystemInfoTool
-from config import COMPUTER_ROOT, EXECUTION_MODE, OLLAMA_MODEL, TASK_STORE_FILE
+from config import COMPUTER_ROOT, ENABLE_CONVERSATION_STREAMING, EXECUTION_MODE, OLLAMA_MODEL, TASK_STORE_FILE
 from experience.models import FAILURE_CATEGORIES, FAILURE_CATEGORY_LABELS
 from experience.service import ExperienceService, FeedbackRequest
 from indexer import index_knowledge_base
 from llm import ask
+from memory.conversation_runtime import CancellationToken, ConversationRuntime
 from memory.memory_manager import MemoryManager
+from memory.user_memory import MEMORY_KINDS, UserMemoryStore
 from models import TaskStatus
 from reasoning.reasoning_models import ReasoningStage, ResponseMode, SourceType
 from task_store import TaskStore
@@ -43,6 +47,46 @@ logger = logging.getLogger(__name__)
 
 class TaskRequest(BaseModel):
     request: str = Field(min_length=1, max_length=4000)
+
+
+class MessagePayload(BaseModel):
+    """One conversational turn submitted by the UI."""
+
+    message: str = Field(min_length=1, max_length=8000)
+    conversation_id: str | None = Field(default=None, max_length=128)
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
+    #: Request the SSE endpoint's live token events. Ignored by POST /messages.
+    stream: bool = False
+
+
+class ConversationRenamePayload(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+
+class MemoryPayload(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+    kind: str = Field(default="preference", max_length=32)
+
+    @model_validator(mode="after")
+    def validate_kind(self) -> "MemoryPayload":
+        if self.kind not in MEMORY_KINDS:
+            raise ValueError("unrecognized memory kind")
+        return self
+
+
+class MemoryUpdatePayload(BaseModel):
+    text: str | None = Field(default=None, max_length=2000)
+    kind: str | None = Field(default=None, max_length=32)
+
+    @model_validator(mode="after")
+    def validate_kind(self) -> "MemoryUpdatePayload":
+        if self.kind is not None and self.kind not in MEMORY_KINDS:
+            raise ValueError("unrecognized memory kind")
+        return self
+
+
+class MemoryTogglePayload(BaseModel):
+    enabled: bool
 
 
 class FeedbackPayload(BaseModel):
@@ -217,6 +261,11 @@ class AtlasService:
 
     brain: Brain | None = None
     registry: ToolRegistry | None = None
+    #: The conversation runtime ABOVE the Brain. It owns conversation state and
+    #: turn routing; it never plans or executes on its own.
+    runtime: ConversationRuntime | None = None
+    #: Long-term user memory, exposed for the memory-management API.
+    user_memory: UserMemoryStore | None = None
     #: Experience loop: feedback capture, durable experience records, retrieval.
     experience: ExperienceService = field(default_factory=ExperienceService)
     _tasks: dict[str, TaskRecord] = field(default_factory=dict)
@@ -228,6 +277,9 @@ class AtlasService:
     _running_id: str | None = None
     # Records currently being approved/denied, to reject double submissions.
     _resolving: set[str] = field(default_factory=set)
+    # Live conversation turns (turn_id -> CancellationToken). Used for real
+    # cancellation of an in-flight conversational turn.
+    _turn_tokens: dict[str, CancellationToken] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         persisted = self._task_store.load()
@@ -274,6 +326,155 @@ class AtlasService:
                 llm_ask=ask,
                 experience_service=self.experience,
             )
+            # The conversation runtime sits above the Brain and shares the SAME
+            # memory manager, so a conversation and a delegated task see one
+            # history rather than two divergent ones.
+            self.user_memory = UserMemoryStore()
+            self.runtime = ConversationRuntime(
+                memory_manager=memory_manager,
+                brain=self.brain,
+                user_memory=self.user_memory,
+                model_name=OLLAMA_MODEL,
+                # Attachment reading reuses the registry's own file tools, so an
+                # attachment cannot bypass the root check, size bounds or
+                # permission engine.
+                tool_runner=router.execute,
+            )
+
+    # -- conversational API ------------------------------------------------------
+
+    def conversations(self) -> list[dict[str, Any]]:
+        self.ensure_runtime()
+        assert self.runtime is not None
+        return [
+            {**item, "message_count": item.get("message_count", 0)}
+            for item in self.runtime.list_conversations()
+        ]
+
+    def new_conversation(self, title: str | None = None) -> dict[str, Any]:
+        self.ensure_runtime()
+        assert self.runtime is not None
+        return self.runtime.new_conversation(title=title)
+
+    def conversation_messages(self, conversation_id: str) -> list[dict[str, Any]]:
+        self.ensure_runtime()
+        assert self.runtime is not None
+        return self.runtime.get_messages(conversation_id)
+
+    def search_conversations(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
+        self.ensure_runtime()
+        assert self.runtime is not None
+        return self.runtime.search(query, limit=min(max(limit, 1), 100))
+
+    def rename_conversation(self, conversation_id: str, title: str) -> dict[str, Any]:
+        self.ensure_runtime()
+        assert self.runtime is not None
+        self.runtime.rename_conversation(conversation_id, title)
+        return self.runtime.open_conversation(conversation_id)
+
+    def delete_conversation(self, conversation_id: str) -> None:
+        self.ensure_runtime()
+        assert self.runtime is not None
+        self.runtime.delete_conversation(conversation_id)
+
+    def send_message(
+        self,
+        *,
+        message: str,
+        conversation_id: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+        events: Any | None = None,
+        stream_model: bool = False,
+        turn_id: str | None = None,
+        stream: Any | None = None,
+        token: CancellationToken | None = None,
+    ) -> dict[str, Any]:
+        """Serve one conversational turn and return the real turn result.
+
+        ``stream`` and ``token`` are injectable so a caller (the SSE endpoint, or
+        a test) can supply the real streaming boundary and the real cancellation
+        token. When ``stream_model`` is set without an injected boundary, the
+        configured provider's streaming call is used.
+        """
+
+        self.ensure_runtime()
+        assert self.runtime is not None
+        if token is None:
+            token = CancellationToken()
+        if turn_id:
+            with self._lock:
+                self._turn_tokens[turn_id] = token
+        try:
+            result = self.runtime.handle_message(
+                message,
+                conversation_id=conversation_id,
+                attachments=attachments,
+                events=events,
+                token=token,
+                stream=stream if stream is not None else (_streaming_model() if stream_model else None),
+            )
+            return result.to_dict()
+        finally:
+            if turn_id:
+                with self._lock:
+                    self._turn_tokens.pop(turn_id, None)
+
+    def cancel_turn(self, turn_id: str) -> bool:
+        """Cancel an in-flight conversational turn (real cooperative token)."""
+
+        with self._lock:
+            token = self._turn_tokens.get(turn_id)
+        if token is None:
+            return False
+        token.cancel()
+        return True
+
+    # -- long-term user memory ---------------------------------------------------
+
+    def memory_records(self) -> list[dict[str, Any]]:
+        self.ensure_runtime()
+        assert self.user_memory is not None
+        return self.user_memory.list()
+
+    def memory_status(self) -> dict[str, Any]:
+        self.ensure_runtime()
+        assert self.user_memory is not None
+        return {
+            "enabled": self.user_memory.enabled,
+            "count": len(self.user_memory.list()),
+            "kinds": sorted(MEMORY_KINDS),
+        }
+
+    def set_memory_enabled(self, enabled: bool) -> dict[str, Any]:
+        self.ensure_runtime()
+        assert self.user_memory is not None
+        self.user_memory.set_enabled(enabled)
+        return self.memory_status()
+
+    def search_memory(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
+        self.ensure_runtime()
+        assert self.user_memory is not None
+        return self.user_memory.search(query, limit=min(max(limit, 1), 100))
+
+    def update_memory(self, memory_id: str, *, text: str | None = None, kind: str | None = None) -> dict[str, Any]:
+        self.ensure_runtime()
+        assert self.user_memory is not None
+        updated = self.user_memory.update(memory_id, text=text, kind=kind)
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Memory not found")
+        return updated
+
+    def delete_memory(self, memory_id: str) -> None:
+        self.ensure_runtime()
+        assert self.user_memory is not None
+        if not self.user_memory.delete(memory_id):
+            raise HTTPException(status_code=404, detail="Memory not found")
+
+    def clear_memory(self) -> dict[str, Any]:
+        self.ensure_runtime()
+        assert self.user_memory is not None
+        removed = self.user_memory.clear()
+        return {"removed": removed, **self.memory_status()}
 
     def submit(self, request: str) -> TaskRecord:
         self.ensure_runtime()
@@ -504,6 +705,37 @@ def _read_prompt(name: str) -> str:
     return (COMPUTER_ROOT / "prompts" / name).read_text(encoding="utf-8")
 
 
+def _sse(event: str, data: dict[str, Any]) -> str:
+    """Encode one Server-Sent Event.
+
+    The payload is JSON on a single ``data:`` line, so the client never has to
+    parse a multi-line frame and a partial write cannot corrupt a frame.
+    """
+
+    import json as _json
+
+    return f"event: {event}\ndata: {_json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _streaming_model():
+    """Return the real streaming model boundary, or ``None`` when unavailable.
+
+    Streaming is only offered when the configured provider can actually stream.
+    Returning ``None`` is honest: the turn is still served, just without live
+    tokens, rather than showing progress that did not come from the model.
+    """
+
+    try:
+        from llm import STREAMING_BOUNDARY
+
+        if not STREAMING_BOUNDARY.supports_streaming():
+            return None
+        return STREAMING_BOUNDARY
+    except Exception:  # noqa: BLE001 - no streaming is a supported state
+        logger.exception("Streaming model unavailable; serving without token events")
+        return None
+
+
 def _plan_snapshot(context: Any) -> dict[str, Any] | None:
     if context is None or context.execution_plan is None:
         return None
@@ -661,3 +893,212 @@ def experience_status() -> dict[str, Any]:
 @app.post("/api/tasks/{record_id}/deny")
 def deny_task(record_id: str) -> TaskRecord:
     return service.deny(record_id)
+
+
+# ---------------------------------------------------------------------------
+# Conversational API
+#
+# These endpoints expose the Conversation Runtime. They deliberately do NOT
+# duplicate planning, retrieval or execution: a conversational turn is served by
+# the runtime, which delegates anything consequential to the same Brain the task
+# endpoints already use.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/conversations")
+def conversations() -> dict[str, Any]:
+    return {"conversations": service.conversations()}
+
+
+@app.post("/api/conversations", status_code=201)
+def create_conversation(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    title = None
+    if isinstance(payload, dict):
+        raw = payload.get("title")
+        if isinstance(raw, str) and raw.strip():
+            title = raw.strip()[:200]
+    return service.new_conversation(title=title)
+
+
+@app.get("/api/conversations/search")
+def search_conversations(query: str, limit: int = 20) -> dict[str, Any]:
+    if not query.strip():
+        return {"results": []}
+    return {"results": service.search_conversations(query.strip(), limit=limit)}
+
+
+@app.get("/api/conversations/{conversation_id}/messages")
+def conversation_messages(conversation_id: str) -> dict[str, Any]:
+    return {"messages": service.conversation_messages(conversation_id)}
+
+
+@app.patch("/api/conversations/{conversation_id}")
+def rename_conversation(conversation_id: str, payload: ConversationRenamePayload) -> dict[str, Any]:
+    return service.rename_conversation(conversation_id, payload.title.strip())
+
+
+@app.delete("/api/conversations/{conversation_id}", status_code=204)
+def delete_conversation(conversation_id: str) -> None:
+    service.delete_conversation(conversation_id)
+
+
+@app.post("/api/messages", status_code=202)
+def send_message(payload: MessagePayload) -> dict[str, Any]:
+    """Serve one conversational turn without streaming.
+
+    Streaming clients use ``POST /api/messages/stream`` and receive the same
+    turn as real Server-Sent Events.
+    """
+
+    return service.send_message(
+        message=payload.message.strip(),
+        conversation_id=payload.conversation_id,
+        attachments=payload.attachments,
+    )
+
+
+@app.post("/api/messages/stream")
+def stream_message(payload: MessagePayload) -> StreamingResponse:
+    """Serve one conversational turn as a real Server-Sent Event stream.
+
+    Every event corresponds to something that actually happened: a streamed
+    token from the model, a real tool invocation, a real execution state. The
+    final ``assistant_completed``/``cancelled``/``error`` event carries the
+    persisted turn, so a reconnecting client never has to guess what occurred.
+    """
+
+    if not ENABLE_CONVERSATION_STREAMING:
+        raise HTTPException(status_code=503, detail="Conversation streaming is disabled")
+
+    turn_id = str(uuid4())
+    token = CancellationToken()
+    # Register before the generator starts so an immediate cancel can find it.
+    service._turn_tokens[turn_id] = token  # noqa: SLF001 - same service instance
+
+    def events():
+        events_queue: "Queue[Any]" = Queue()
+        finished = object()
+        outcome: dict[str, Any] = {}
+
+        def sink(event: Any) -> None:
+            events_queue.put(event.to_dict())
+
+        def run_turn() -> None:
+            try:
+                outcome["result"] = service.send_message(
+                    message=payload.message.strip(),
+                    conversation_id=payload.conversation_id,
+                    attachments=payload.attachments,
+                    events=sink,
+                    stream_model=True,
+                    turn_id=turn_id,
+                    token=token,
+                )
+            except Exception as exc:  # noqa: BLE001 - reported to the client honestly
+                logger.exception("Conversational turn failed")
+                outcome["error"] = exc
+            finally:
+                events_queue.put(finished)
+
+        worker = threading.Thread(target=run_turn, name=f"atlas-turn-{turn_id[:8]}", daemon=True)
+        worker.start()
+
+        yield _sse("open", {"turn_id": turn_id})
+        try:
+            while True:
+                event = events_queue.get()
+                if event is finished:
+                    break
+                # Forwarded the moment it was produced: a token or a tool call
+                # reaches the client while Atlas is still working.
+                yield _sse(event.get("type", "event"), event.get("data", {}))
+        finally:
+            with service._lock:  # noqa: SLF001 - same service instance
+                service._turn_tokens.pop(turn_id, None)  # noqa: SLF001
+            # A client that disconnects mid-turn stops reading. The token is
+            # raised so the worker stops at its next safe checkpoint instead of
+            # finishing work nobody is waiting for.
+            token.cancel("client disconnected")
+
+        if "error" in outcome:
+            yield _sse("error", {"detail": str(outcome["error"]), "turn_id": turn_id})
+            return
+        result = outcome.get("result", {})
+        state = result.get("execution_state")
+        terminal = {
+            "completed": "assistant_completed",
+            "cancelled": "cancelled",
+            "failed": "error",
+        }.get(str(state), "assistant_completed")
+        yield _sse(terminal, {"turn_id": turn_id, **result})
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/turns/{turn_id}/cancel")
+def cancel_turn(turn_id: str) -> dict[str, Any]:
+    """Cancel an in-flight conversational turn.
+
+    This raises a real cooperative token that the streaming answer loop, the
+    reasoning engine, the Brain (after interpretation and after planning), and
+    the executor (before every step) all consult; the remaining steps are
+    skipped and the turn is persisted as ``cancelled``. A turn that had already
+    finished is still reported as completed. An in-flight blocking call is not
+    force-killed, which is stated honestly rather than claimed.
+    """
+
+    cancelled = service.cancel_turn(turn_id)
+    if not cancelled:
+        raise HTTPException(status_code=404, detail="No such running turn")
+    return {"turn_id": turn_id, "cancelled": True}
+
+
+# ---------------------------------------------------------------------------
+# Long-term memory API (view / search / edit / delete / clear / disable)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/memory")
+def memory_records(query: str = "", limit: int = 50) -> dict[str, Any]:
+    if query.strip():
+        return {"memories": service.search_memory(query.strip(), limit=limit), **service.memory_status()}
+    return {"memories": service.memory_records(), **service.memory_status()}
+
+
+@app.post("/api/memory", status_code=201)
+def create_memory(payload: MemoryPayload) -> dict[str, Any]:
+    service.ensure_runtime()
+    assert service.user_memory is not None
+    record = service.user_memory.create(text=payload.text, kind=payload.kind, source="user_explicit")
+    if record is None:
+        raise HTTPException(status_code=400, detail="That memory was not stored")
+    return record.to_dict()
+
+
+@app.get("/api/memory/status")
+def memory_status() -> dict[str, Any]:
+    return service.memory_status()
+
+
+@app.post("/api/memory/enabled")
+def set_memory_enabled(payload: MemoryTogglePayload) -> dict[str, Any]:
+    return service.set_memory_enabled(payload.enabled)
+
+
+@app.patch("/api/memory/{memory_id}")
+def update_memory(memory_id: str, payload: MemoryUpdatePayload) -> dict[str, Any]:
+    return service.update_memory(memory_id, text=payload.text, kind=payload.kind)
+
+
+@app.delete("/api/memory/{memory_id}", status_code=204)
+def delete_memory(memory_id: str) -> None:
+    service.delete_memory(memory_id)
+
+
+@app.post("/api/memory/clear")
+def clear_memory() -> dict[str, Any]:
+    return service.clear_memory()

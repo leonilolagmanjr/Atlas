@@ -60,6 +60,8 @@ class _Run:
     selected_tool: str | None = None
     notes: list[str] = field(default_factory=list)
     observations: list[dict[str, Any]] = field(default_factory=list)
+    #: Optional listener for real progress, supplied by the conversation stream.
+    on_event: Callable[[str, dict[str, Any]], None] | None = None
 
     def active(self) -> bool:
         if self.cancelled():
@@ -69,6 +71,16 @@ class _Run:
             self.notes.append("reasoning deadline reached")
             return False
         return True
+
+    def emit(self, event_type: str, **payload: Any) -> None:
+        """Report real activity to an interested client, never failing the run."""
+
+        if self.on_event is None:
+            return
+        try:
+            self.on_event(event_type, payload)
+        except Exception:  # noqa: BLE001 - progress reporting is not reasoning
+            logger.exception("Reasoning event listener failed: %s", event_type)
 
 
 _run: ContextVar[_Run | None] = ContextVar("atlas_reasoning_run", default=None)
@@ -110,9 +122,10 @@ class ReasoningEngine:
     def handle_request(
         self, *, question: str, task: Task, prior_task: Task | None = None,
         history: str = "", cancelled: Callable[[], bool] | None = None,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> Answer | None:
         run = _Run(time.monotonic() + self._timeout_seconds, cancelled or (lambda: False),
-                   ReasoningTrace(), self._max_tool_calls)
+                   ReasoningTrace(), self._max_tool_calls, on_event=on_event)
         token = _run.set(run)
         try:
             return self._handle(question, task, prior_task, history, run)
@@ -773,10 +786,17 @@ class ReasoningEngine:
         run.tool_calls += 1
         run.trace.record(ReasoningStage.RETRIEVING, name)
         run.selected_tool = name
+        run.emit("tool_started", tool=name, parameters=sorted(str(key) for key in parameters))
         try:
             result = self._run_tool(name, parameters)
             success = bool(result is not None and getattr(result, "success", False))
             run.observations.append({"tool": name, "success": success})
+            run.emit(
+                "tool_completed",
+                tool=name,
+                status=str(getattr(result, "status", "") or ("completed" if success else "failed")),
+                success=success,
+            )
             if not success:
                 run.notes.append(name + ": " + str(getattr(result, "error", "failed"))[:300])
                 return None

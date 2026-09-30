@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
-from typing import Callable
+from typing import Any, Callable
 
 from knowledge_search import retrieve
 from llm import ask
@@ -86,6 +87,10 @@ class Executor:
         self._observer = observer
         from reasoning.verifier import TaskVerifier
         self._verifier = TaskVerifier()
+        #: Per-thread event sink. The executor is shared by the task queue and
+        #: the conversation stream, so live progress belongs to the thread that
+        #: is running this plan rather than to the instance.
+        self._local = threading.local()
         self._handlers: dict[str, Callable[[ExecutionContext, ExecutionStep], None]] = {
             "retrieve_knowledge": self._retrieve_knowledge,
             "generate_response": self._generate_response,
@@ -97,9 +102,41 @@ class Executor:
 
 
 
-    def execute(self, plan: ExecutionPlan, context: ExecutionContext) -> ExecutionContext:
-        """Execute a plan sequentially and update the shared context."""
+    def execute(
+        self,
+        plan: ExecutionPlan,
+        context: ExecutionContext,
+        cancel: Callable[[], bool] | None = None,
+        on_event: Callable[[str, dict], None] | None = None,
+    ) -> ExecutionContext:
+        """Execute a plan sequentially and update the shared context.
 
+        ``cancel`` is a real cooperative cancellation check, consulted *before*
+        each step and before any recovery attempt. When it reports True the
+        remaining steps are marked SKIPPED, the plan and context are recorded as
+        cancelled, and no further tool runs. It is cooperative by nature: a step
+        already inside a blocking model or tool call is not preempted mid-call,
+        and the next check happens as soon as that call returns.
+
+        ``on_event`` receives ``(event_type, payload)`` for real activity as it
+        happens: tool start/completion, post-action observation, and
+        verification. It is how a streaming client sees progress instead of a
+        single result at the end.
+        """
+
+        previous_sink = getattr(self._local, "on_event", None)
+        self._local.on_event = on_event
+        try:
+            return self._execute_plan(plan, context, cancel)
+        finally:
+            self._local.on_event = previous_sink
+
+    def _execute_plan(
+        self,
+        plan: ExecutionPlan,
+        context: ExecutionContext,
+        cancel: Callable[[], bool] | None,
+    ) -> ExecutionContext:
         started_at = time.perf_counter()
         context.execution_plan = plan
         context.status = TaskStatus.RUNNING
@@ -133,19 +170,27 @@ class Executor:
                     step.action,
                 )
                 continue
+            if cancel is not None and cancel():
+                self._cancel_execution(plan, context, step)
+                break
             self._execute_step(context, step)
             if step.status == StepStatus.FAILED and self._recovery is not None and recovery_budget > 0:
                 # One bounded, observable recovery attempt per failed step.
                 # Recovery may only rewrite arguments for the same capability.
                 # A plan-wide budget prevents runaway retry loops when several
                 # steps fail in sequence.
+                if cancel is not None and cancel():
+                    self._cancel_execution(plan, context, step)
+                    break
                 if self._recovery.attempt_recovery(context, step):
                     recovery_budget -= 1
                     self._execute_step(context, step)
                     self._record_replan(context, step)
 
         # Verify completion if plan completed without errors
-        if plan.status not in {PlanStatus.FAILED, PlanStatus.WAITING_FOR_CONFIRMATION}:
+        if context.status == TaskStatus.CANCELLED:
+            pass
+        elif plan.status not in {PlanStatus.FAILED, PlanStatus.WAITING_FOR_CONFIRMATION}:
             plan.status = PlanStatus.COMPLETED
             context.status = TaskStatus.COMPLETED
             
@@ -167,6 +212,52 @@ class Executor:
             context.execution_time,
         )
         return context
+
+    def _emit(self, event_type: str, **payload: Any) -> None:
+        """Publish one real execution event to this plan's listener, if any.
+
+        Only what actually happened is reported. A listener failure is logged
+        and swallowed: progress reporting must never break execution.
+        """
+
+        sink = getattr(self._local, "on_event", None)
+        if sink is None:
+            return
+        try:
+            sink(event_type, payload)
+        except Exception:  # noqa: BLE001 - progress reporting is not execution
+            logger.exception("Execution event listener failed: %s", event_type)
+
+    def _cancel_execution(
+        self,
+        plan: ExecutionPlan,
+        context: ExecutionContext,
+        current_step: ExecutionStep,
+    ) -> None:
+        """Record a real cancellation instead of continuing the plan.
+
+        The step that was about to run, and every later step, are recorded as
+        SKIPPED so the persisted plan shows truthfully what did and did not run.
+        """
+
+        started = False
+        for step in plan.steps:
+            if step is current_step:
+                started = True
+            if started and step.status in {StepStatus.PENDING, StepStatus.RUNNING}:
+                step.status = StepStatus.SKIPPED
+                step.metadata["skipped_reason"] = "cancelled by user"
+        plan.status = PlanStatus.SKIPPED
+        context.status = TaskStatus.CANCELLED
+        context.metadata["cancelled"] = True
+        # The user-facing response must say the work was stopped. Whatever a
+        # completed step left behind is not a finished result.
+        context.final_response = "Cancelled before the remaining steps ran."
+        logger.info(
+            "Executor cancelled plan: plan_id=%s completed_steps=%d",
+            plan.plan_id,
+            sum(1 for step in plan.steps if step.status == StepStatus.COMPLETED),
+        )
 
     def _execute_step(self, context: ExecutionContext, step: ExecutionStep) -> None:
         plan_id = context.execution_plan.plan_id if context.execution_plan else "unknown"
@@ -269,10 +360,26 @@ class Executor:
             # included), before $reference resolution, so it matches the grant.
             planned = step.metadata.get("parameters") or {}
             approved = approval_signature(tool_name, planned) in approved_signatures
+        # Report the capability and its argument *names* before the call, so a
+        # client following the turn sees the real action start. Values are not
+        # published: they can hold file content or private paths.
+        self._emit(
+            "tool_started",
+            tool=tool_name,
+            step=step.id,
+            parameters=sorted(key for key in parameters),
+        )
         result = self._tool_router.execute(
             tool_name,
             parameters,
             approved=approved,
+        )
+        self._emit(
+            "tool_completed",
+            tool=tool_name,
+            step=step.id,
+            status=result.status,
+            success=result.success,
         )
         context.tool_calls.append(
             {
@@ -606,6 +713,12 @@ class Executor:
             {"tool": tool_name, "status": outcome.status, "detail": outcome.detail}
         )
         context.verification_results.append(outcome.to_dict())
+        self._emit(
+            "verification",
+            tool=tool_name,
+            status=outcome.status,
+            detail=str(outcome.detail or "")[:280],
+        )
         if context.working_state is not None:
             context.working_state.verification_status[tool_name] = outcome.status
         return outcome
@@ -644,6 +757,13 @@ class Executor:
 
         context.metadata["last_ui_observation"] = observation
         context.metadata.setdefault("ui_observations", []).append(observation)
+        self._emit(
+            "observation",
+            tool=tool_name,
+            application=application or "",
+            status=str(observation.get("status") or "unknown"),
+            summary=str(observation.get("summary") or "")[:280],
+        )
         context.observations.append(
             {
                 "source": ObservationSource.APPLICATION_STATE.value,

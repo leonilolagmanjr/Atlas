@@ -1,0 +1,82 @@
+[
+  {
+    "id": "29cd06d1-0476-4f10-b3a8-193c90ab6350",
+    "role": "user",
+    "content": "what is skyrim?",
+    "timestamp": "2026-09-30T10:47:45.016683+00:00",
+    "turn_number": 1,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
+    "metadata": {
+      "response_kind": ""
+    }
+  },
+  {
+    "id": "7fe3fd8b-5fee-493f-9a1c-fded63ec62ab",
+    "role": "assistant",
+    "content": "Skyrim, also known as The Elder Scrolls V: Skyrim, is an action role-playing game developed by Bethesda Game Studios and published by Bethesda Softworks. It was released in 2011 for Microsoft Windows, PlayStation 3, Xbox 360, and later received numerous ports and remasters for various platforms.\n\nIn the game, players take on the role of a Dragonborn who can explore the open world of Skyrim, engaging in quests, combat, character development through skills and perks, and interaction with non-playable characters. The game features a rich fantasy setting inspired by Norse mythology and is set 200 years after the events of \"The Elder Scrolls IV: Oblivion.\"\n\nSkyrim is renowned for its vast, detailed world, immersive gameplay, and the ability to save anywhere, which contributed significantly to its popularity and influence on the RPG genre.",
+    "timestamp": "2026-09-30T10:47:51.116364+00:00",
+    "turn_number": 2,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
+    "metadata": {
+      "response_kind": "conversation",
+      "used_model": true
+    }
+  },
+  {
+    "id": "2ce51de4-9f83-4ef1-94da-29f792759b9e",
+    "role": "user",
+    "content": "open notepad for me",
+    "timestamp": "2026-09-30T10:47:54.377981+00:00",
+    "turn_number": 3,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
+    "metadata": {
+      "response_kind": ""
+    }
+  },
+  {
+    "id": "c5500965-f2ad-461f-b8c8-1a5a04e78ff5",
+    "role": "assistant",
+    "content": "This action requires your confirmation before Atlas can continue.",
+    "timestamp": "2026-09-30T10:47:55.331156+00:00",
+    "turn_number": 4,
+    "attachments": [],
+    "tool_calls": [
+      {
+        "tool": "applications.launch_named",
+        "status": "confirmation_required",
+        "success": false,
+        "parameters": {
+          "application": "notepad for me"
+        }
+      }
+    ],
+    "tool_results": [
+      {
+        "tool": "applications.launch_named",
+        "output": null,
+        "error": "user confirmation required for consequential operation"
+      }
+    ],
+    "citations": [],
+    "execution_state": "waiting_for_confirmation",
+    "metadata": {
+      "response_kind": "computer",
+      "task_id": "d5afbba5-a100-4bb4-8580-c8a9d4cbce65",
+      "activity": [
+        "Opened application \u2014 confirmation required"
+      ]
+    }
+  }
+]

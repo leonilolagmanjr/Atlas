@@ -2,10 +2,13 @@
 
 Atlas is a local-first Python assistant with local Ollama generation, document retrieval, conversation memory, read-only research, and permission-aware Windows tools. A FastAPI adapter and React/Vite control room expose the same runtime. It is not a general autonomous computer agent or a security sandbox.
 
+**Atlas is conversational.** You talk to it in plain language and it decides internally whether your message is ordinary conversation, retrieval, research, a task, a computer action, or a combination — using its existing reasoning, RAG, planning, tools, computer-use, verification, memory, and execution systems. You never have to think about `intent`, `task`, `planner`, `tool`, `RAG`, or `executor`; those remain internal implementation details.
+
 **Documentation authority:** This README is the current architecture, installation, configuration, testing, and roadmap reference. The other architecture/setup/status documents link here rather than maintaining competing descriptions. [SECURITY.md](SECURITY.md) retains detailed security policy and limitations. [CLEANUP_REPORT.md](CLEANUP_REPORT.md) records the last codebase cleanup pass (what was removed/consolidated/optimized), not current capability or test-status guarantees.
 
 ## Contents
 
+- [Conversations](#conversations)
 - [Current capabilities](#current-capabilities)
 - [Architecture](#architecture)
 - [Local computer vision ("Eyes")](#local-computer-vision-eyes)
@@ -20,6 +23,124 @@ Atlas is a local-first Python assistant with local Ollama generation, document r
 - [Limitations and security](#limitations-and-security)
 - [Roadmap](#roadmap)
 
+## Conversations
+
+A **conversation is not a task**. One conversation can hold questions, research, tasks, computer actions, follow-ups, and several unrelated topics, and it survives a restart.
+
+```text
+User
+ ↓
+Talks naturally to Atlas
+ ↓
+Atlas understands conversation/context
+ ↓
+Atlas decides whether this is:
+   ├── normal conversation
+   ├── retrieval
+   ├── research
+   ├── task
+   ├── computer action
+   └── hybrid
+ ↓
+Atlas assembles relevant context (recent turns, summary, topic, relevant
+older turns, user memory, attachments) and uses existing Atlas systems
+ ↓
+Atlas responds (streaming, as real events)
+ ↓
+Atlas persists the interaction
+ ↓
+Atlas offers durable facts to long-term memory
+```
+
+### Conversation Runtime
+
+`memory/conversation_runtime.py` sits **above** the existing agent and does not replace any of it:
+
+```text
+Conversation Runtime
+        ↓
+ existing Brain → Intent Engine → Validator → Planner → Executor → Tools
+```
+
+It never plans, executes, or selects tools itself. For anything that is not a plain answer it calls `Brain.process`, so there is still exactly one execution path, one capability registry, and one permission gate.
+
+The routing decision is **deterministic and conservative**, and it is deliberately biased: a *missed answer* is recoverable, a *missed action* is not. Plain conversation is only answered directly when the text can be positively shown not to be an instruction. Anything that would act on the computer is delegated to the existing permission-gated path. Research is delegated rather than answered from model memory, so a research request still goes through source selection, retrieval, and citations.
+
+| Request | Path |
+| --- | --- |
+| "What is Docker?" | Conversational answer through the existing answer generator |
+| "Explain that more simply." | Conversational answer using conversation context |
+| "Research the latest Docker changes." | Delegated to the existing reasoning engine (real sources and citations) |
+| "Open Chrome." | Delegated to the existing application/computer capabilities |
+| "Research X and put the important points into Notepad." | Delegated as a hybrid: existing research + content + application capabilities |
+| "Install it." | Delegated; the existing agent resolves the referent and applies the permission gate |
+
+A turn records the kind that **actually occurred**, derived from the tools that actually ran — not the kind that was predicted.
+
+### Context Manager
+
+Long conversations are not handled by growing the message window. `memory/context_manager.py` assembles context from relevance and bounds it before it reaches a model:
+
+```text
+current message
+  + recent turns            (the live working set)
+  + conversation summary    (what the whole conversation is about)
+  + current topic           (what we are on right now)
+  + relevant older turns    (semantic recall over this and other conversations)
+  + relevant user memory    (durable preferences/facts)
+  + active task state       (what Atlas last actually did)
+  + attachments             (read through the existing file tools)
+  → ranked, deduplicated, budgeted → model context
+```
+
+Whatever does not fit the character budget is **dropped from the prompt and reported**, and it remains stored and retrievable. Old messages stay reachable even when they are not in the immediate context.
+
+### Conversation search and summarization
+
+`memory/conversation_index.py` reuses the **existing** ChromaDB persistence directory and the existing embedding model, in a **separate collection** (`atlas_conversation`) tagged `memory_type="conversation"`, so conversation history never mixes with knowledge or experience. Embeddings are optional by design: when Chroma or the embedder is unavailable, a deterministic lexical search over the stored conversations is used instead, so search keeps working with no model at all.
+
+`memory/summarizer.py` produces a real summary. It keeps decisions, requirements, technical details, unresolved questions, actions, and current task state, and drops small talk. It prefers the injected model boundary and always has a deterministic extractive fallback, so a summary is never fabricated and never silently empty. The summary is persisted on the conversation and appears in the context as `CONVERSATION SUMMARY`.
+
+### Long-term user memory
+
+`memory/user_memory.py` is a **fourth, separate** memory, distinct from conversation history, factual knowledge, and experience:
+
+| Memory | Question it answers | Store |
+| --- | --- | --- |
+| Knowledge | What is true? | `atlas_knowledge` |
+| Experience | What worked or failed? | `atlas_experience` |
+| **User memory** | **What does this user durably want?** | `database/user_memory.jsonl` + `atlas_user_memory` |
+| Conversation | What was said? | `memory/sessions/` + `atlas_conversation` |
+
+Nothing is remembered automatically. Only *structurally durable* statements become candidates — an explicit "remember that…", a first-person preference or instruction, or a named project. "Tell me about Docker" is not a memory; "remember that I prefer local-first architecture" is. One statement produces exactly one record. Sensitive-looking values are refused. Memory is local by default and fully user-controlled: view, search, add, edit, delete, clear, and disable.
+
+### Streaming and cancellation
+
+Streaming is **real**, not simulated. `POST /api/messages/stream` serves genuine Server-Sent Events, and a `token` event carries an actual token from the model's stream:
+
+```text
+conversation_started · assistant_started · token · tool_started ·
+tool_completed · observation · verification · assistant_completed ·
+error · cancelled · attachment
+```
+
+`OllamaProvider.stream` reads the client's actual chunk shape (`ChatResponse` objects *and* plain dicts — reading only one shape silently drops every token, which was a real bug found by running it). A stream that yields nothing falls back to one blocking call rather than reporting an empty answer.
+
+Events are forwarded **as they happen**, not replayed at the end: the SSE endpoint runs the turn on a worker thread and forwards each event the moment it is produced, so a token or a tool call reaches the client while Atlas is still working. `tool_started`, `tool_completed`, `observation`, and `verification` come from the executor and the reasoning engine themselves, so delegated turns stream real activity (with parameter *names* only — values such as file content are never published). A turn that the early-answer reasoning path served still reports the read-only tools it ran, so a conversation never shows an empty activity list for a turn that really searched or read files.
+
+Cancellation is a real cooperative token that now travels the whole path:
+
+```text
+Stop button → POST /api/turns/{id}/cancel → runtime token
+  → AnswerGenerator.stream stops pulling tokens
+  → ReasoningEngine stops at its next run check
+  → Brain stops after interpretation and after planning
+  → Executor skips every remaining step (recorded as SKIPPED)
+  → persisted execution state = cancelled
+```
+
+A client that simply disconnects raises the same token, so a turn nobody is reading stops at its next safe checkpoint. Cancellation remains *cooperative*: an in-flight blocking model, file, or network call is not preempted mid-call, and a turn that had already finished is reported as `completed` rather than rewritten as `cancelled`. Both limits are stated rather than claimed away (see [Limitations and security](#limitations-and-security)).
+
 ## Current capabilities
 
 - Structured semantic request interpretation using local Qwen, with deterministic fast paths and fallback.
@@ -32,6 +153,7 @@ Atlas is a local-first Python assistant with local Ollama generation, document r
 - **Local computer vision ("Eyes")** — a layered, local-first perception subsystem (Windows UI Automation → local OCR → image processing → optional local VLM) that builds a typed structured visual state, plus permission-gated, observation-validated mouse/keyboard interaction, so Atlas can observe and act on applications and websites it has no dedicated API integration for. Screen capture, window detection, UIA, OCR, image preprocessing, element detection, mouse/keyboard, and observation/verification all work without any external API; the local VLM is optional and everything degrades gracefully.
 - Dependency-ordered action plans, named output references, sequential execution, approval pause/resume, and bounded recovery.
 - Persisted conversation sessions, durable API task snapshots, and sanitized reasoning-stage/provenance displays.
+- **Conversational, persistent, local-first interaction** — a Conversation Runtime above the existing agent that routes each message to normal conversation, retrieval, research, a task, a computer action, or a hybrid; persistent conversations with list/create/rename/delete and full transcript reconstruction; a Context Manager that assembles relevance-ranked, budgeted context (recent turns, summary, topic, semantically recalled older turns, user memory, attachments); semantic conversation search in a separate collection; real summarization; streaming of genuine execution events over Server-Sent Events with real cooperative cancellation; and a fourth, separate long-term user memory that is fully user-controlled and local by default.
 - **Persistent experience memory** — an explicit Success/Failed feedback loop that records compact task experiences, ranks and retrieves relevant ones for later comparable requests, and supplies them to planning as *supporting context* that never overrides the current instruction. Completion criteria come from deterministic verification, not a model's claim; feedback and experiences survive a restart; failures and user corrections are retained as reusable lessons.
 
 These are implemented paths, not a guarantee that arbitrary natural-language requests work. Model interpretation, search-provider availability, application/window resolution, OCR/VLM quality, and evidence quality affect results. Generic software installation, downloads, unrestricted GUI automation, and voice are not implemented. Local vision generalizes to applications without a dedicated integration only insofar as the layered perception can see them; it is not a claim that every GUI is fully automatable.
@@ -42,6 +164,10 @@ Atlas separates request interpretation, source selection, evidence evaluation, a
 
 ```text
 CLI / FastAPI + React
+  -> Conversation Runtime: conversation state, turn routing, persistence
+       -> conversation | retrieval | research | task | computer | hybrid
+       -> Context Manager: recent turns + summary + topic + recalled older
+          turns + user memory + task state + attachments
   -> Brain: request context and conversation history
   -> Semantic Task Interpreter: natural language -> Task IR
   -> Intent Engine 2.0: goal / desired outcome / references / capability requirements
@@ -57,6 +183,16 @@ CLI / FastAPI + React
        -> observations / verifier / bounded recovery
   -> response, memory, task state, API snapshot
   -> user feedback (Success / Failed) -> experience record -> experience memory
+  -> Conversation Runtime persists the turn (content, tool calls, citations,
+     execution state) and offers durable facts to long-term user memory
+```
+
+The Conversation Runtime is an *additive* layer above everything below it. A conversational message is answered through the existing answer generator; every other kind of message reaches the same Brain, interpreter, validator, planner, and executor as before, so there is still exactly one execution path and one permission gate.
+
+```text
+Conversation Runtime   (memory/conversation_runtime.py)
+        ↓
+ existing Brain → Intent Engine → Validator → Planner → Executor → Tools
 ```
 
 `Brain` invokes the reasoning engine for eligible validated tasks when enabled. The engine can finish an informational request without building an execution plan. It serves a task directly when its actions are **all read-only research** (`web.search`/`web.fetch`, and non-mutating `filesystem.list/search/read/metadata/search_content`) and answers from the retrieved evidence; any task that mutates state or controls applications—including a hybrid such as "search the web for X and write it into Notepad"—is preserved and delegated to the existing validator/planner/executor path rather than consumed as an answer-only request. Invalid tasks are not given a source-execution bypass.
@@ -112,7 +248,13 @@ The engine is model-agnostic: it consumes the interpreter's Task IR and works wi
 | Path | Responsibility |
 | --- | --- |
 | `atlas.py`, `cli.py` | Startup, indexing initialization, chat loop, session and approval commands |
-| `brain.py` | Request lifecycle, interpretation/validation, reasoning integration, action delegation, early-answer persistence |
+| `brain.py` | Request lifecycle, interpretation/validation, reasoning integration, action delegation, early-answer persistence, and the cooperative cancellation + live-event hooks passed down to the reasoning engine and executor |
+| `memory/conversation_runtime.py` | **Conversation Runtime**: the layer above the agent — conversation state, deterministic turn routing (conversation/retrieval/research/task/computer/hybrid), delegation to the existing Brain, turn persistence, real execution events and cancellation |
+| `memory/context_manager.py` | **Context Manager**: relevance-ranked, budgeted context assembly from recent turns, summary, topic, recalled older turns, user memory, task state, and attachments |
+| `memory/conversation_index.py` | Semantic conversation recall — a separate Chroma collection reusing the existing database and embedder, with a deterministic lexical fallback |
+| `memory/user_memory.py` | Long-term user memory: conservative extraction of durable statements, bounded retrieval, and full view/search/add/edit/delete/clear/disable control |
+| `memory/attachments.py` | Attachment input, read through the existing permission-gated file tools (no second PDF or text pipeline) |
+| `memory/memory_manager.py`, `memory/summarizer.py`, `memory/storage.py`, `memory/models.py` | Conversation storage, real summarization, and the first-class conversation/message models |
 | `models_task.py`, `models.py` | Task IR, execution contexts, plans, steps, lifecycle and result models |
 | `reasoning/task_interpreter.py`, `reasoning/prompts.py`, `reasoning/json_llm.py` | Semantic interpretation and structured model output handling |
 | `reasoning/topic_extraction.py` | Semantic topic decomposition and query normalization: connector/framing-noun/content-noun separation, the structured `TopicReading`, and confident (never invented) typo correction |
@@ -123,13 +265,13 @@ The engine is model-agnostic: it consumes the interpreter's Task IR and works wi
 | `reasoning/answer_generator.py`, `reasoning/synthesis.py`, `reasoning/self_introspection.py` | Answer modes, structured synthesis of retrieved evidence for web-research answers, and registry/config-derived self-description |
 | `reasoning/task_validator.py`, `reasoning/task_planner.py` | Task validation and dependency-ordered action planning |
 | `content_formatting.py`, `tools/format.py` | Content normalization, type detection, paragraph reconstruction, destination rendering, verification, and repair |
-| `executor.py`, `reasoning/verifier.py`, `reasoning/recovery.py` | Sequential execution, output publication, observations, verification and bounded recovery |
+| `executor.py`, `reasoning/verifier.py`, `reasoning/recovery.py` | Sequential execution, output publication, observations, verification and bounded recovery, plus the per-step cancellation check and the real tool/observation/verification event stream |
 | `planner.py`, `intent_classifier.py`, `reasoning/interpreter.py` | Retained deterministic/legacy planning and compatibility paths, not the primary Task IR boundary |
 | `knowledge_search.py` | Query expansion, staged retrieval, ranking and confidence decision |
 | `document_loader.py`, `chunker.py`, `indexer.py`, `vector_store.py` | PDF loading, character chunks, file-hash indexing and ChromaDB access |
 | `llm.py`, `providers/` | Injectable model-call boundary; current facade constructs the Ollama provider |
 | `tools/` | Tool contracts, actual registry, capability descriptors, router, permissions, knowledge and discovery |
-| `computer/`, `web.py` | Windows/filesystem/PowerShell providers and read-only public search/fetch/research tools |
+| `computer/`, `web.py` | Windows/filesystem/PowerShell providers and read-only public search/fetch/research tools (including `computer/launch.py`'s alias/registry resolution with bounded, unambiguous typo correction) |
 | `computer/vision/` | Local vision ("Eyes"): `models.py` (typed `VisualState`), `perception.py` (layered orchestrator), `uia.py` (UI Automation), `ocr.py` (local OCR), `imaging.py` (capture + OpenCV processing), `providers.py` (injectable `VisionProvider`), `actions.py` (target validation/coordinate safety), `input.py` (Win32 mouse/keyboard) |
 | `computer/vision_tools.py`, `computer/interaction.py` | `computer.observe`/`computer.find` observation tools and the permission-gated visual interaction tools |
 | `web_content.py`, `web_research.py`, `web_task.py` | Main-content extraction, task-aware multi-attempt retrieval pipeline, and retrieval task/goal/content-type/scoring/validation models |
@@ -435,8 +577,17 @@ Most runtime settings are Python constants in `config.py`; there is no backend `
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `500` / `100` | Character-based knowledge chunking |
 | `TOP_K` / `MIN_SIMILARITY` | `5` / `0.75` | Retrieval ranking/acceptance inputs |
 | `MEMORY_FOLDER` / `MAX_RETAINED_MESSAGES` | `memory/` / `10` | Session storage and prompt history window |
+| `CONTEXT_MAX_RECENT_TURNS` / `CONTEXT_MAX_OLDER_TURNS` | `12` / `6` | Recent turns kept verbatim and relevant older turns recalled into one context |
+| `CONTEXT_MAX_CHARS` / `CONTEXT_RELEVANCE_FLOOR` | `12000` / `0.35` | Total context character budget and the minimum relevance for a recalled older turn |
+| `CONTEXT_LEXICAL_FALLBACK` | `True` | Allow deterministic lexical recall when embeddings are unavailable |
+| `CONVERSATION_INDEX_ENABLED` / `CONVERSATION_COLLECTION_NAME` | `True` / `atlas_conversation` | Semantic conversation search and its separate Chroma collection (never mixed with knowledge) |
+| `CONVERSATION_SUMMARY_MIN_MESSAGES` | `12` | Messages after which a real conversation summary is produced |
+| `ENABLE_USER_MEMORY` / `USER_MEMORY_FILE` | `True` / `database/user_memory.jsonl` | Long-term user memory and its durable store |
+| `USER_MEMORY_COLLECTION_NAME` / `USER_MEMORY_RETRIEVAL_LIMIT` | `atlas_user_memory` / `4` | Separate embedding collection and bounded retrieval into one context |
+| `USER_MEMORY_MAX_RECORDS` | `2000` | Retained user-memory cap |
+| `ENABLE_CONVERSATION_STREAMING` | `True` | Allow Server-Sent Event streaming of real execution events |
 | `MAX_SESSIONS` / `AUTO_SAVE` | `50` / `True` | Session-count warning threshold (creation still proceeds) and autosave |
-| `AUTO_SUMMARIZE_THRESHOLD` | `80` | Reserved/placeholder control, not an enforced automatic-summarization trigger |
+| `AUTO_SUMMARIZE_THRESHOLD` | `80` | Refresh cadence for an existing conversation summary (the first summary is produced at `CONVERSATION_SUMMARY_MIN_MESSAGES`) |
 | `LOG_LEVEL` / `LOG_TO_FILE` / `LOG_FILE` | `INFO` / `False` / `database/atlas.log` | Logging |
 | `LOG_RETRIEVAL` / `DEBUG_PIPELINE` | `True` / `False` | Retrieval diagnostics and structured pipeline tracing |
 | `ENABLE_EXPERIENCE_MEMORY` | `True` | Master switch for the feedback/experience loop; when false no experience is recorded or retrieved |
@@ -461,7 +612,11 @@ The frontend reads `VITE_ATLAS_API_URL` through Vite, defaulting to `http://127.
 
 ## API and frontend
 
-The React frontend does not plan or execute tools. `frontend/src/App.tsx` renders views, `types.ts` describes API-facing data, `services/api.ts` owns HTTP calls, and `styles.css` defines the interface. Tasks are polled; there is no SSE/WebSocket execution stream.
+The React frontend does not plan or execute tools. `frontend/src/App.tsx` renders views, `ChatWorkspace.tsx` renders the conversational surface, `types.ts`/`conversationTypes.ts` describe API-facing data, `services/api.ts` owns HTTP calls (including the SSE reader), and `styles.css` defines the interface.
+
+### Task API
+
+Tasks are polled; task history is durable.
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
@@ -477,9 +632,32 @@ The React frontend does not plan or execute tools. `frontend/src/App.tsx` render
 | POST | `/api/tasks/{id}/feedback` | Record explicit Success/Failed feedback (optional category + correction) |
 | POST | `/api/tasks/{id}/deny` | Deny the matching approval-paused task; not general running-task cancellation |
 
+### Conversational API
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| GET | `/api/conversations` | List conversations (most recent first) |
+| POST | `/api/conversations` | Create a conversation (optional `title`) |
+| GET | `/api/conversations/search?query=...` | Search past conversations (semantic first, deterministic always) |
+| GET | `/api/conversations/{id}/messages` | Full stored transcript for one conversation |
+| PATCH | `/api/conversations/{id}` | Rename a conversation |
+| DELETE | `/api/conversations/{id}` | Delete a conversation (and forget it from the search index) |
+| POST | `/api/messages` | Serve one turn without streaming |
+| POST | `/api/messages/stream` | Serve one turn as real Server-Sent Events (`token`, `tool_completed`, `assistant_completed`, `cancelled`, `error`, …) |
+| POST | `/api/turns/{turn_id}/cancel` | Cancel an in-flight turn with a real cooperative token |
+| GET/POST | `/api/memory`, `/api/memory/status`, `/api/memory/enabled` | View/add/search long-term memory; enable or disable it |
+| PATCH/DELETE | `/api/memory/{id}` | Edit or forget one memory |
+| POST | `/api/memory/clear` | Clear all long-term memory |
+
+The conversational endpoints do not duplicate planning, retrieval, or execution: the runtime delegates anything consequential to the same Brain the task endpoints use.
+
+### Frontend
+
+The interface is one conversational AI. Chat is the default surface: a conversation list with search, rename, and delete; a transcript reconstructed from stored messages; live streaming with per-turn activity, tool calls, observations, and verifications; citations; and a Memory view for viewing, searching, adding, editing, deleting, clearing, and disabling long-term memory. Each message has Copy; a user message has Edit, which puts the original wording back in the composer to be changed and sent as a new turn; the latest answer has Regenerate, which asks again through the real runtime and appends the new turn rather than rewriting what Atlas already said. Stop cancels a running turn, and closing the page cancels it too. Attachments are added by path, because a browser cannot hand the server a local file: only the path is sent, and Atlas reads it with exactly the permissions and root check of any other file read. Only controls for functionality that exists are exposed.
+
 The control room shows task status, plan steps, results, approval controls, applications, tools, and system data. Reasoning snapshots expose bounded stage/detail/iteration fields, response mode, source names, citations, and evidence counts, not raw evidence documents or prompts. Citations are sanitized (including removal of URL credentials/query/fragment and reduction of local paths to names). Persisted reasoning snapshots are sanitized again when restored.
 
-This telemetry filtering is not blanket redaction of all task data: requests, responses, and existing tool outputs can still contain sensitive content. Stage snapshots may appear after a stage/answer completes rather than streaming every in-flight model operation. Files, Knowledge, Memory, and editable Settings views still need dedicated management APIs.
+This telemetry filtering is not blanket redaction of all task data: requests, responses, and existing tool outputs can still contain sensitive content. Stage snapshots may appear after a stage/answer completes rather than streaming every in-flight model operation. Files and Knowledge (and editable Settings) views still need dedicated management APIs; Memory now has full view/search/add/edit/delete/clear/disable endpoints and a management view.
 
 ## Testing
 
@@ -509,16 +687,23 @@ The suite uses `unittest` and covers these categories:
 - Task-aware web retrieval: retrieval-goal and content-type inference, source ranking before chunk ranking (a page describing the subject scores below the subject's own document), content-type detection (including document-store/listing pages rejected as `document_host`), task-aware validation and rejection reasons, query reformulation, and a bounded retry loop — including the artifact-vs-information, reference-page, review, media, YouTube and Scribd-listing cases.
 - API contracts and bounded/sanitized reasoning telemetry, including restored records.
 - Local vision perception: `VisualState` model geometry, UIA tree parsing and control-type mapping, OCR parsing (`pytesseract` DICT and `tesseract` TSV) with confidence normalization, region filtering, VLM result coercion/proposal extraction, target validation/coordinate safety (element id, description, explicit coordinates, stale observation, wrong active window, disabled element, out-of-bounds point), vision tool contracts, registration, permissions (observation read-only vs. interaction confirmation-gated), visual verification, visual recovery, and the closed-loop re-observe after a visual action. All use injected fake UIA/OCR/VLM/capture/input providers, so no GUI session is required.
+- **Conversation architecture** (`tests/test_conversation_persistence.py`, `tests/test_conversation_runtime.py`, `tests/test_conversation_api.py`): conversation create/list/rename/delete and message round-trips surviving a restart; the full stored message shape (attachments, tool calls, tool results, citations, execution state, response kind); a conversation holding questions, research, tasks and computer actions together; deterministic classification of conversation vs research vs computer vs hybrid vs ambiguous instruction; conversational turns never reaching the agent while actions always do; turn persistence with real tool calls and citations; `waiting_for_confirmation` recorded truthfully; bare anaphoric instructions escalated with context and not resolved blindly without it; first-message titling; streaming of real tokens with the persisted transcript as the authority; cancellation persisting a `cancelled` turn with its partial content; a brain failure recorded as `failed` rather than swallowed; context assembly (recent turns verbatim, older relevant turns recalled beyond the window, summary precedence, budget bounding and reported drops, topic switching, user memory in the prompt, real task state); summarization (durable notes kept, small talk dropped, model path and deterministic fallback, gating); and user memory (only durable statements captured, one record per statement, restart survival, CRUD, search, sensitive-value refusal, disable, and a durable instruction applying without word overlap).
+- **Streaming provider contract** (`tests/test_streaming_provider.py`): chunk extraction from both the installed client's `ChatResponse` objects and legacy dicts (reading only one shape silently dropped every token — a real bug found by running the live stream); an empty stream falling back to one blocking call instead of an empty answer; cancellation abandoning generation after the first token; and the base provider reporting honestly that it does not stream.
+- **Attachments** (`tests/test_attachments.py`): extension classification, untrusted-payload normalization (client-injected text is dropped), reading delegated to `filesystem.read`, a refused path reported rather than worked around, a raising tool not breaking the turn, an image described honestly instead of reported as "no text", bounded attachment text, stored documents omitting raw text, and attachment text reaching the model prompt.
+- **Cancellation and live events** (`tests/test_cancellation_propagation.py`): a cancel before the first step running nothing, a cancel mid-plan skipping later steps and their tools, the recorded `cancelled` state and a truthful response, a cancel token that is not inherited by a later approval, a runtime turn that is recorded `cancelled` with its work actually stopped, a turn that finished first still reported as `completed`, a Brain that accepts no token still working, tool/verification events emitted *while the plan runs*, parameter values never published in the event stream, and the SSE endpoint delivering a token before the turn ends (driven through the response iterator, because the in-process test client buffers whole responses).
+- **Natural language and typos** (`tests/test_application_typos.py`, `tests/test_folder_listing.py`): mistyped application names still routing to the agent, confident correction of near-miss names, correctly spelled names never "corrected", unrelated words never corrected, an ambiguous typo refused rather than guessed, a corrected name resolving to a real executable (and a typo of something uninstalled still failing), folder listings routed to `filesystem.list` for named/explicit/known folders, writing a list still being content generation, folder creation unaffected, and a listing with no resolvable folder left alone instead of guessed.
 - **Experience memory** (`tests/test_experience_memory.py`, `tests/test_experience_api.py`): feedback eligibility (a conversational answer offers no controls; a meaningful task does), success and failure experience persistence, user-selected and Atlas-derived failure categories, corrections and their restart survival, similar-task retrieval and its irrelevance bound, bounded retrieval that never scans the store, successful and failed experiences rendered into planning context, the current instruction's authority over experience, deterministic verification staying authoritative (an unconfirmed delivery is not a verified success and a model claiming "Done." is not evidence), feedback lifecycle (changeable, non-duplicating, promotion only after repeated success), sensitive-data scrubbing and compact records, periodic analysis that is gated and never auto-applied, retry trajectories, and the API feedback endpoint (success, failure category, correction, invalid vocabulary, unknown task, running task) plus the Brain end-to-end loop with real wiring. All use a temporary store and fake tools/models.
 
 Most contract tests use fakes/mocks; a passing suite does not prove live web freshness, model quality, broad Windows app compatibility, OCR accuracy, local VLM quality, or independently verified computer effects. Some platform smoke paths require Windows/PowerShell. Keep full-suite runs serialized when using shared runtime files. No fixed passing-test total is maintained here; use the current command output and report skips/failures for the exact revision tested.
 
 Manual smoke checks should separately confirm local Ollama availability, one general answer, one current question with provenance, a root-permitted file read, capability introspection, session persistence, and approval/denial for a harmless supported action. Do not run live mutating app/file tests without explicit approval. Main integration validation is separate from this documentation consolidation.
 
+`scripts/smoke_conversation.py` drives a **live** conversation through the real app with the real Brain, the real tool registry, and the real local model: a question, a context-dependent follow-up, a real read-only task, a request the root check refuses, long-term memory, conversation search, streaming, cancellation, and a restart that must find the conversation, transcript, and memory intact. It redirects the conversation store to a temporary folder, so a smoke run never touches the real conversations and never mutates anything on the machine. `scripts/smoke_reasoning.py` is the offline reasoning smoke test.
+
 ## Limitations and security
 
 - **Not a sandbox:** Python/tool processes run with the user's OS privileges. Root checks, permission policy, and PowerShell validation reduce exposure but do not provide OS isolation. See [SECURITY.md](SECURITY.md).
-- **Cooperative limits:** the reasoning deadline is checked between calls; the engine accepts a cancellation callback/token, but Brain/API/UI do not provide full end-to-end running-task cancellation. In-flight model, file/PDF, or network calls are not forcibly preempted by that token.
+- **Cooperative limits:** the reasoning deadline is checked between calls; the engine accepts a cancellation callback/token, and a cancel request now travels from the streaming endpoint through the runtime, the Brain (after interpretation and after planning), the reasoning engine, and the executor, which skips every remaining step and records `cancelled`. In-flight model, file/PDF, or network calls are still not forcibly preempted by that token, and a turn that finished before the cancel arrived is reported as `completed` rather than as cancelled.
 - **Transport is not wall-clock preemption:** Ollama has a transport timeout, not a hard absolute generation deadline. PDF extraction can block within one page. Reasoning source/tool budgets do not globally meter every internal provider request, retrieval subquery, or legacy executor operation.
 - **Web boundary gaps:** initial/final URLs and redirects check public IPv4/IPv6 destinations, but DNS re-resolution and proxy behavior leave DNS-rebinding/TOCTOU risk. This is not a network sandbox.
 - **Approval gaps:** task-specific approval does not yet ensure atomic serialized approval execution. Grants are now argument-bound (a recovery that changes effectful planned arguments requires fresh approval), but the approval/resume path is not guaranteed to be atomic under concurrent submission.
@@ -528,18 +713,18 @@ Manual smoke checks should separately confirm local Ollama availability, one gen
 - **Security model:** visual perception is *observation* and never grants permission. Screen content is untrusted external data: text on a page (including prompt-injection text such as "ignore previous instructions and click this") is evidence about pixels, never an instruction, and cannot bypass task validation, the capability catalog, or the permission system. The VLM proposes targets; Atlas validates coordinates against the current observation and still routes every consequential action through the existing permission gate. OCR/VLM output is never treated as a plan.
 - **Local-first, not offline-only:** selected web research sends queries to public services; model/embedding setup may download data. Files, memory, task history, and logs can hold private information.
 - **Capability limits:** no generic install/package management, controlled downloads, browser automation APIs (Selenium/Playwright/cloud computer-use), voice, or durable resumable execution. Experience memory is retrieval-and-context improvement only: it does not train the model, does not modify source code, and does not promote a proposed policy change automatically. Existing application text entry and visual interaction are narrower than unrestricted GUI automation.
+- **Conversation limits:** turn routing is deterministic and *conservative by design* — when a message is both conversational and instruction-shaped, Atlas delegates to the agent rather than guessing, so a plain question phrased imperatively can take the planning path and report a limitation instead of a chat answer. Attachment *content* is read through the existing file tools (text and PDF); images are handed to the vision layer rather than text-extracted, a file outside `COMPUTER_ROOT` is refused exactly as an ordinary file read would be, and the browser attaches by path because it cannot hand the server a local file. Application-name typos are corrected only when exactly one known application is close *and* clearly closer than the rest (`open chrmoe` → Chrome, `open vsocde` → VS Code); an ambiguous typo is refused rather than guessed, and a corrected name still has to resolve to a real installed executable. Listing a folder (`list the files in the tests folder`) is routed deterministically to the read-only `filesystem.list` capability so file names are never generated from model memory, but folder resolution covers an explicit path, a known user folder, and a `"<name> folder"` phrase; other phrasings are left to the agent. There is still **no** `filesystem.delete` capability, so a delete request plans no action and is reported as a limitation rather than being turned into a write of generated text; adding a destructive capability is a deliberate security decision, not something this work introduced.
 
 ## Roadmap
 
 Priority order emphasizes reliability before broader autonomy:
 
-1. Serialize approval/resume atomically through the execution queue (approval grants are already bound to exact planned step arguments, so changed recovery arguments require reapproval).
-2. Complete dependency-cycle validation, order-independent reference checks, generic output resolution, and recovery-state correctness. Add independent effect observations for file/application actions and stronger source/answer verification; test ambiguous targets and failed recovery honestly.
-3. Wire cancellation across Brain, API and UI; isolate potentially blocking model/PDF/tool work where hard deadlines are needed; add durable live checkpoints without silently replaying effects.
+1. Serialize approval/resume atomically through the execution queue (approval grants are already bound to exact planned step arguments, so changed recovery arguments require reapproval).2. Complete dependency-cycle validation, order-independent reference checks, generic output resolution, and recovery-state correctness. Add independent effect observations for file/application actions and stronger source/answer verification; test ambiguous targets and failed recovery honestly.
+3. Close the last cancellation gap: cancellation now travels from the streaming endpoint through the runtime, the Brain, the reasoning engine, and the executor (remaining steps are skipped and recorded as `cancelled`), and a disconnected client cancels its turn. What is left is isolating potentially blocking model/PDF/tool work where hard deadlines are needed, and adding durable live checkpoints without silently replaying effects.
 4. Harden web connection resolution/proxy handling, source trust and provenance, and expand regression coverage for hostile/unavailable sources and platform boundaries.
 5. Improve semantic source/action composition within supported capabilities, retrieval evaluation against representative PDFs, and live model/provider compatibility checks.
-6. Add bounded Files/Knowledge/Memory APIs, validated Settings, browser regression tests, and an event model before replacing polling with streaming updates.
-7. Develop long-term memory with provenance, user-controlled retention/deletion, summarization, confidence, and retrieval. Experience memory (provenance-aware, retrievable, confidence-ranked, and deletion-capable through the store) is the first step; session history is still not this feature. Next: experience retention/pruning APIs, Phase 3 pattern analysis surfaced in the UI, and Phase 4 evaluation-driven reasoning-policy promotion with an explicit accept/reject gate.
+6. Add bounded Files/Knowledge APIs and validated Settings. (Conversation streaming is now implemented: `POST /api/messages/stream` serves real Server-Sent Events with genuine tool and token events, so the event model precedes any further streaming work.)
+7. Extend long-term memory: provenance, confidence, and user-controlled retention/deletion are implemented for user memory and conversation summaries; next are retention/pruning APIs for experience memory and Phase 4 evaluation-driven reasoning-policy promotion with an explicit accept/reject gate.
 8. Extend the local vision layer: broader element perception (UIA depth/patterns for browsers), multi-monitor and DPI handling, region-selective OCR tuning, and stronger visual effect verification (e.g. before/after element-diff assertions per action) so a click can be confirmed against a change rather than the next observation alone.
 9. Consider controlled downloads/package installation and dedicated browser automation only behind explicit permissions, stronger validation/isolation, and effect verification — never as the foundation of computer control. Later directions include voice, coding integrations, specialist agents, scheduling, and long-running projects.
 

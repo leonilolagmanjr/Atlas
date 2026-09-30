@@ -7,9 +7,20 @@ import os
 import shutil
 import sys
 import re
+import logging
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 from tools.base import PermissionLevel, RiskLevel, Tool, ToolMetadata, ToolResult
+
+logger = logging.getLogger(__name__)
+
+#: A mistyped application name is only corrected when a known name is at least
+#: this similar, the length gap is small, and the best match beats the runner-up
+#: by a clear margin. These bound a fuzzy guess; they do not create one.
+_APPLICATION_TYPO_CUTOFF = 0.82
+_APPLICATION_TYPO_MARGIN = 0.05
+_MAX_TYPO_LENGTH_GAP = 3
 # Curated aliases mapping friendly names to real executables. This is a small
 # interoperability table (not command recognition): users say "calculator" but
 # the binary is `calc.exe`, "vscode" but the binary is `Code.exe`, and so on.
@@ -95,7 +106,45 @@ def _alias_executables(normalized: str) -> list[str]:
             aliases.extend(names)
     return aliases
 
-def resolve_application_name(name: str) -> Path | None:
+def _confident_application_correction(normalized: str) -> str:
+    """Return a confident correction for a mistyped application name, or "".
+
+    People type "open chrmoe" and "open vsocde". Rather than growing a list of
+    misspellings, the request is compared against the names Atlas already knows
+    (the alias table and the executables it maps to) and the installed
+    application list. A correction is only returned when exactly one candidate
+    is close *and* clearly closer than the rest; anything ambiguous is left
+    alone so Atlas reports "I could not find that application" instead of
+    opening the wrong program.
+    """
+
+    if not normalized or len(normalized) < 3:
+        return ""
+    vocabulary: set[str] = set()
+    for key, executables in _APPLICATION_ALIASES.items():
+        vocabulary.add(key.casefold())
+        for executable in executables:
+            vocabulary.add(executable.removesuffix(".exe").casefold())
+    scored: list[tuple[float, str]] = []
+    for candidate in vocabulary:
+        if candidate == normalized:
+            return ""  # Already spelled correctly; no correction is warranted.
+        if abs(len(candidate) - len(normalized)) > _MAX_TYPO_LENGTH_GAP:
+            continue
+        ratio = SequenceMatcher(None, normalized, candidate).ratio()
+        if ratio >= _APPLICATION_TYPO_CUTOFF:
+            scored.append((ratio, candidate))
+    if not scored:
+        return ""
+    scored.sort(reverse=True)
+    best_ratio, best = scored[0]
+    if len(scored) > 1 and best_ratio - scored[1][0] < _APPLICATION_TYPO_MARGIN:
+        # Two names are equally plausible: guessing would open the wrong app.
+        return ""
+    return best
+
+
+def resolve_application_name(name: str, *, _allow_correction: bool = True) -> Path | None:
     """Resolve an installed application name to a concrete executable."""
 
     normalized = name.strip().casefold()
@@ -193,6 +242,14 @@ def resolve_application_name(name: str) -> Path | None:
     for candidate in candidates:
         if candidate.is_file() and candidate.suffix.casefold() == ".exe":
             return candidate.resolve()
+    if _allow_correction:
+        # A near-miss name ("chrmoe", "vsocde") is retried once against a
+        # confidently corrected spelling. The correction must actually resolve,
+        # so a typo of an application that is not installed still fails here.
+        corrected = _confident_application_correction(normalized)
+        if corrected and corrected != normalized:
+            logger.info("Retrying application resolution with corrected name: %s", corrected)
+            return resolve_application_name(corrected, _allow_correction=False)
     return None
 
 

@@ -1,0 +1,11 @@
+{
+  "id": "e10741c7-f6e2-4528-99b9-2d1d5e95e404",
+  "title": "summarize the bee movie for me",
+  "created_at": "2026-09-30T10:49:06.264385+00:00",
+  "last_modified": "2026-09-30T10:49:17.740403+00:00",
+  "message_count": 2,
+  "summary": null,
+  "archived": false,
+  "model": "qwen2.5:7b",
+  "metadata": {}
+}

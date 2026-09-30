@@ -1,0 +1,33 @@
+[
+  {
+    "id": "d6330c09-4aeb-41d2-b302-55394d162410",
+    "role": "user",
+    "content": "summarize the bee movie for me",
+    "timestamp": "2026-09-30T10:49:10.978771+00:00",
+    "turn_number": 1,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
+    "metadata": {
+      "response_kind": ""
+    }
+  },
+  {
+    "id": "e07e11dc-3232-4f52-9192-3e891e832d21",
+    "role": "assistant",
+    "content": "\"Bee Movie\" is a 2007 computer-animated comedy film produced by DreamWorks Animation. The story follows Barry B. Benson, an ordinary honeybee who lives in the fictional town of Honeyford and works at the local flower shop. When his life changes after meeting a human named Vanessa, he embarks on a journey to uncover a conspiracy among humans that could endanger all bees.\n\nBarry teams up with two friends: Nick, a pesky fly, and Marla, an adventurous bee who is critical of their species' social norms. Together, they travel to New York City where Barry discovers the truth about humans using beeswax as evidence to support their belief in bee existence.\n\nUpon returning home, Barry struggles to convince his fellow bees of the danger humans pose. Eventually, he leads a group of reluctant bees to confront humanity and change public opinion. The film includes elements of comedy, action, and adventure, with characters that range from heroic to comical, including villains and sidekicks.",
+    "timestamp": "2026-09-30T10:49:17.740399+00:00",
+    "turn_number": 2,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
+    "metadata": {
+      "response_kind": "conversation",
+      "used_model": true
+    }
+  }
+]

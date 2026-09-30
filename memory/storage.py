@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 
 from memory.models import ConversationSessionMetadata, MemoryMessage
@@ -77,8 +78,39 @@ class ConversationStore:
         folder = self._session_folder(session_id)
         _ensure_dir(folder)
         messages_path = self._messages_path(session_id)
-        with messages_path.open("w", encoding="utf-8") as f:
+        # Write atomically: a message history is the conversation, so a crash
+        # mid-write must never truncate it. Atomic replace keeps the previous
+        # file intact until the new one is complete.
+        temporary = messages_path.with_suffix(".json.tmp")
+        with temporary.open("w", encoding="utf-8") as f:
             json.dump([m.to_dict() for m in messages], f, indent=2)
+        temporary.replace(messages_path)
+
+    def update_message(
+        self, session_id: str, message_id: str, **changes: Any
+    ) -> MemoryMessage | None:
+        """Apply field changes to one stored message (used for live states).
+
+        Returns the updated message, or ``None`` when it does not exist. Fields
+        not listed here are ignored rather than silently injected, so an
+        arbitrary caller cannot corrupt the stored shape.
+        """
+
+        allowed = {
+            "role", "content", "attachments", "tool_calls", "tool_results",
+            "citations", "execution_state", "metadata",
+        }
+        messages = self.load_messages(session_id)
+        for index, message in enumerate(messages):
+            if message.id != message_id:
+                continue
+            for key, value in changes.items():
+                if key in allowed and value is not None:
+                    setattr(message, key, value)
+            messages[index] = message
+            self.save_messages(session_id, messages)
+            return message
+        return None
 
     def load_summary(self, session_id: str) -> str | None:
         p = self._summary_path(session_id)

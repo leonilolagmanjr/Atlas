@@ -1402,6 +1402,21 @@ class SemanticTaskInterpreter:
             if path:
                 return [self._create_folder_action(path)]
 
+        # 1a. Listing what is in a folder. This is a read-only filesystem
+        # question; answering it by generating a "list" from model memory would
+        # invent file names, so it is resolved before any content path.
+        if not has_delete and not has_move and not has_copy and self._listing_request(lowered):
+            folder = self._listing_folder(text, entities)
+            if folder:
+                return [self._listing_action(folder)]
+
+        # 1b. A delete Atlas cannot perform. There is no delete capability in
+        # the registry, so such a request must not fall through to content
+        # generation (which would write a junk file named after the request).
+        # Returning no actions lets the honest limitation path report it.
+        if has_delete and not has_create and not has_move and not has_copy:
+            return []
+
         # 2. File search / move / copy. A bare move/copy verb only means a file
         # operation when a file context exists; otherwise ("search the web for X
         # and copy it in Notepad") the verb means "place the found text", and the
@@ -2211,6 +2226,111 @@ class SemanticTaskInterpreter:
         if folder and name:
             return f"{folder}/{name}"
         return folder or name
+
+    def _listing_request(self, text: str) -> bool:
+        """True when the user is asking what is *in* a folder.
+
+        "List the files in the tests folder" is a filesystem question, not a
+        writing task. Treating it as content generation would let the model
+        invent file names, so this is recognized deterministically.
+        """
+
+        lowered = text.casefold()
+        names_contents = bool(
+            re.search(
+                r"\b(?:files?|folders?|directories|contents?|items?|entries|"
+                r"subfolders?|directories)\b",
+                lowered,
+            )
+        )
+        asks_to_enumerate = bool(
+            re.search(
+                r"^\s*(?:please\s+|can you\s+|could you\s+)?"
+                r"(?:list|show|what(?:'s| is| are)?|which|give me|tell me)\b",
+                lowered,
+            )
+            or re.search(r"\b(?:list|show me|go through|walk through)\b", lowered)
+        )
+        return names_contents and asks_to_enumerate
+
+    def _listing_folder(self, text: str, entities: dict[str, Any]) -> Optional[str]:
+        """Resolve the folder a listing request refers to, deterministically.
+
+        Resolution is intentionally narrow: an explicit path, a known user
+        folder, or a "<name> folder" phrase. When none of those is present the
+        request is left alone rather than guessed at a path.
+        """
+
+        path = self._folder_path(entities)
+        if path:
+            return path
+        # An explicit path: absolute (C:\..., /...), UNC, or one containing a
+        # separator (".kilo", "src/tools"). A trailing period is punctuation.
+        match = re.search(r"(?:[A-Za-z]:\\[^\s\"']+|\\\\[^\s\"']+|/?[\w.\-]+(?:[\\/][\w.\-]+)+)", text)
+        if match:
+            return match.group(0).rstrip(".,;:")
+        # "the tests folder" / "my Documents folder" / "the .kilo folder".
+        # Only the name immediately before "folder" counts: the words before it
+        # are the request ("List the files in the tests folder"), not the path.
+        named = re.search(
+            r"\b(?:the|my|this|that)?\s*([\w.\- ]{1,40}?)\s+(?:folder|directory)\b",
+            text,
+            re.IGNORECASE,
+        )
+        if named:
+            name = self._trailing_folder_name(named.group(1))
+            if name:
+                lowered = name.casefold()
+                if lowered in _KNOWN_FOLDERS:
+                    return _KNOWN_FOLDERS[lowered]
+                return name
+        # A bare known folder: "list the files in Downloads".
+        known = _IN_FOLDER_RE.search(text)
+        if known:
+            return _KNOWN_FOLDERS.get(known.group(1).casefold(), known.group(1))
+        return None
+
+    def _trailing_folder_name(self, captured: str) -> str:
+        """Reduce the words before "folder" to the name that is actually a path.
+
+        "List the files in the tests folder" yields "tests", not the whole
+        sentence: request words are dropped from the front until a real name
+        remains, and at most two name words ("Program Files") are kept.
+        """
+
+        noise = {
+            "list", "show", "what", "whats", "which", "give", "tell", "me", "the",
+            "a", "an", "my", "this", "that", "files", "file", "folders", "folder",
+            "contents", "content", "items", "item", "entries", "entry", "inside",
+            "in", "of", "from", "under", "please", "can", "you", "could", "and",
+            "there", "all", "every", "just", "go", "through", "walk", "get", "see",
+            "are", "is", "was", "were", "does", "did", "currently", "right",
+            "everything", "anything", "something", "stored", "saved", "inside",
+        }
+        tokens = [token for token in re.split(r"[\s_]+", (captured or "").strip()) if token]
+        while tokens and tokens[0].casefold().strip(",.") in noise:
+            tokens.pop(0)
+        if not tokens:
+            return ""
+        if len(tokens) > 2:
+            tokens = tokens[-2:]
+        # A leading dot is part of a name (".kilo"), so only trailing
+        # punctuation is removed.
+        name = " ".join(tokens).strip().rstrip(".,;:")
+        # A name made only of request words is not a folder.
+        if not name or all(token.casefold().strip(".") in noise for token in name.split()):
+            return ""
+        return name
+
+    def _listing_action(self, path: str) -> TaskAction:
+        return TaskAction(
+            action_id="a1",
+            capability="filesystem.list",
+            parameters={"path": path},
+            description=f"List the contents of {path}.",
+            produces="folder_entries",
+            expected_output="entry names and kinds",
+        )
 
     def _search_query(self, text: str, entities: dict[str, Any]) -> str:
         # The semantic subject, normalized at interpretation time, is the query.

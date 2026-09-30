@@ -5,6 +5,11 @@
     "content": "Hello",
     "timestamp": "2026-07-17T10:56:02.841082+00:00",
     "turn_number": 1,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -13,6 +18,11 @@
     "content": "Hi",
     "timestamp": "2026-07-17T10:56:02.843450+00:00",
     "turn_number": 2,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -21,6 +31,11 @@
     "content": "who is leonilo",
     "timestamp": "2026-07-17T10:56:49.884594+00:00",
     "turn_number": 3,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -29,6 +44,11 @@
     "content": "Leonilo P. Lagman Jr. is a Full Stack Developer with experience in designing, developing, and deploying scalable web applications using the MERN stack (MongoDB, Express.js, React.js, Node.js). He has worked as a Full Stack Developer at the Office of the President \u2013 Climate Change. You can contact him via email at leonilojrlagman@gmail.com or phone (+63) 915-142-8187.",
     "timestamp": "2026-07-17T10:56:59.830445+00:00",
     "turn_number": 4,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -37,6 +57,11 @@
     "content": "what are the levels of governance in the philippines?",
     "timestamp": "2026-07-17T10:57:19.500799+00:00",
     "turn_number": 5,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -45,6 +70,11 @@
     "content": "The levels of governance in the Philippines, based on the provided context, include:\n\n- Provincial Governments\n- City Governments\n- Municipal Governments\n- Bangsamoro Autonomous Region in Muslim Mindanao\n\nThese are mentioned under section III of the document, which discusses Local Government Units.",
     "timestamp": "2026-07-17T10:57:22.200343+00:00",
     "turn_number": 6,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -53,6 +83,11 @@
     "content": "how do you make a python switch case statement",
     "timestamp": "2026-07-17T10:57:38.568399+00:00",
     "turn_number": 7,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -61,6 +96,11 @@
     "content": "I don't know based on my knowledge base.",
     "timestamp": "2026-07-17T10:57:40.140614+00:00",
     "turn_number": 8,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -69,6 +109,11 @@
     "content": "teach me how to use python",
     "timestamp": "2026-07-17T10:57:56.510079+00:00",
     "turn_number": 9,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -77,6 +122,11 @@
     "content": "Based on the provided context, I cannot provide a comprehensive guide on how to use Python as the given snippets do not cover this topic in detail. The sections mentioned seem to be brief and introductory.\n\nI don't know based on my knowledge base.",
     "timestamp": "2026-07-17T10:57:58.974523+00:00",
     "turn_number": 10,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -85,6 +135,11 @@
     "content": "introduce me to python",
     "timestamp": "2026-07-17T10:58:13.098829+00:00",
     "turn_number": 11,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -93,6 +148,11 @@
     "content": "Based on the provided context, I can offer a brief introduction to Python:\n\nPart I of the book introduces you to the basics of Python programming. It starts with installing Python on your computer and running your first program, which prints \"Hello world!\" to the screen.\n\nThe early chapters cover fundamental concepts such as:\n- Installing Python\n- Running your first program (\"Hello world!\")\n- Storing information in variables\n- Working with text and numerical values\n\nIf you're looking for a comprehensive introduction to Python programming, I recommend referring directly to Chapter 1 of \"Python.pdf\", which covers setting up your environment and running your first program. The book also mentions that the Python community is very beginner-friendly, so don't hesitate to seek help if needed.\n\nFor more detailed information on specific topics or further learning, you might want to explore additional resources such as official Python documentation or online tutorials.",
     "timestamp": "2026-07-17T10:58:18.341306+00:00",
     "turn_number": 12,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -101,6 +161,11 @@
     "content": "how to store information into variables in python",
     "timestamp": "2026-07-17T10:58:30.552501+00:00",
     "turn_number": 13,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -109,6 +174,11 @@
     "content": "In Python, you can store information into variables by assigning a value to a variable name. Here's a simple example:\n\n```python\n# Assigning a string value to a variable\nname = \"Leonilo\"\n\n# Assigning an integer value to another variable\nage = 30\n\n# Assigning a floating-point number to yet another variable\nheight = 5.9\n\n# You can also assign more complex data types, such as lists or dictionaries\nhobbies = [\"reading\", \"coding\"]\n\nperson = {\n    'first_name': 'Leonilo',\n    'last_name': 'Lagman Jr.',\n    'age': 30,\n    'hobbies': ['reading', 'coding']\n}\n```\n\nIn the example above:\n- `name` stores a string value.\n- `age` stores an integer value.\n- `height` stores a floating-point number.\n- `hobbies` stores a list of strings.\n- `person` is a dictionary that stores multiple pieces of information about a person.\n\nYou can then use these variables in your program, for example by printing their values:\n\n```python\nprint(name)  # Output: Leonilo\nprint(age)   # Output: 30\nprint(height)  # Output: 5.9\nprint(hobbies)  # Output: ['reading', 'coding']\nprint(person['first_name'])  # Output: Leonilo\n```\n\nRemember, once you assign a value to a variable, its name will refer to that value throughout your program unless you explicitly change it.",
     "timestamp": "2026-07-17T10:58:39.157486+00:00",
     "turn_number": 14,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -117,6 +187,11 @@
     "content": "who is jordan peterson?",
     "timestamp": "2026-07-17T10:58:57.044051+00:00",
     "turn_number": 15,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -125,6 +200,11 @@
     "content": "Based on the provided context, Jordan Peterson appears to be a person who:\n\n- Has proposed twelve rules that facilitate fuller, freer lives.\n- Is knowledgeable in various fields such as politics, psychology, psychiatry, and the unconscious.\n- Is described as a boyish figure who broaches subjects with enthusiasm, sharing knowledge he believes might interest others.\n- Was a professor at Harvard.\n- Switched from political science to study other topics like psychoanalysis.\n- Kept a clinical practice in addition to being part of the research-oriented Department of Psychology at the University of Toronto.\n- Has been influential enough that Professor Peterson mentions listening to him.\n\nThe context does not provide his exact profession or specific details about his work beyond these points.",
     "timestamp": "2026-07-17T10:59:02.054768+00:00",
     "turn_number": 16,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -133,6 +213,11 @@
     "content": "what are leonilo's credentials",
     "timestamp": "2026-07-17T10:59:31.934005+00:00",
     "turn_number": 17,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -141,6 +226,11 @@
     "content": "Based on the provided context, Leonilo P. Lagman Jr.'s credentials include:\n\n- Information Technology Specialist in Java Certification from Certiport - A Pearson VUE Business, issued in November 2022.\n- Information Technology Specialist in Python Certification from Certiport - A Pearson VUE Business, also issued in November 2022.\n\nThese certifications indicate that Leonilo has knowledge and skills related to both Java and Python programming.",
     "timestamp": "2026-07-17T10:59:35.863039+00:00",
     "turn_number": 18,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -149,6 +239,11 @@
     "content": "compare leonilo and jordan peterson",
     "timestamp": "2026-07-17T12:20:28.831797+00:00",
     "turn_number": 19,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -157,6 +252,11 @@
     "content": "Based on the provided context, I don't have enough information to compare Leonilo P. Lagman Jr. and Jordan Peterson in detail.\n\nLeonilo P. Lagman Jr.'s background includes being a full-stack developer with experience in software engineering and government technology. He holds certifications in Java and Python programming. The context also mentions his professional summary but does not provide specific details about his education or credentials beyond the certifications mentioned.\n\nJordan Peterson, on the other hand, is described as a professor at Harvard who has expertise in various fields such as politics, psychology, psychiatry, and the unconscious. He is known for proposing twelve rules that facilitate fuller, freer lives and has been influential enough to be referenced by someone as an authority figure.\n\nWithout more detailed information about both individuals from the provided context, I cannot provide a comprehensive comparison between Leonilo P. Lagman Jr. and Jordan Peterson.",
     "timestamp": "2026-07-17T12:20:43.048468+00:00",
     "turn_number": 20,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -165,6 +265,11 @@
     "content": "give me the overview of the book about python",
     "timestamp": "2026-07-17T12:21:26.690177+00:00",
     "turn_number": 21,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -173,6 +278,11 @@
     "content": "Based on the provided context, here is an overview of the book \"Python Crash Course\":\n\nThe book aims to bring readers up to speed with Python as quickly as possible so they can build working programs in areas such as games, data visualizations, and web applications. It serves as a foundational guide for individuals who have never programmed before or have no experience in programming.\n\nKey Points from the Overview:\n- The goal is to provide practical knowledge that readers can apply right away.\n- It caters to people of any age who are new to programming.\n- The content covers basic programming concepts common across many programming languages, which will serve as a lasting foundation.\n- The book starts with setting up Python on your computer and running the \"Hello world!\" program.\n\nChapters Covered:\n- Chapter 1: Installing Python and creating your first program that prints \"Hello world!\"\n- Chapter 2: Storing information in variables and working with text and numerical values\n- Chapters 3 and 4 introduce further programming concepts\n\nThe book is designed to prepare readers for more advanced techniques in Python, making it easier to learn subsequent languages if needed. It aims to be a no-nonsense guide suitable for total beginners.\n\nFor those ready to move on to more advanced topics or considering learning another language after mastering Python, the book provides a solid foundation.",
     "timestamp": "2026-07-17T12:21:37.129043+00:00",
     "turn_number": 22,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -181,6 +291,11 @@
     "content": "what did I ask last",
     "timestamp": "2026-07-17T12:21:43.878760+00:00",
     "turn_number": 23,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -189,6 +304,11 @@
     "content": "Based on the provided context, you asked her if she had a CV last. The exact quote from the text is:\n\n\"I asked her if she had a CV. She said yes.\"",
     "timestamp": "2026-07-17T12:21:47.760762+00:00",
     "turn_number": 24,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -197,6 +317,11 @@
     "content": "where did you get this information",
     "timestamp": "2026-07-17T12:22:02.005565+00:00",
     "turn_number": 25,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -205,6 +330,11 @@
     "content": "I don't know based on my knowledge base. The context provided does not contain the specific question or information about where I got the previous information from. The last interaction involved a series of excerpts from various books, but there was no mention of getting information from anywhere specific. If you have any other questions or need further assistance, feel free to ask!",
     "timestamp": "2026-07-17T12:22:06.612391+00:00",
     "turn_number": 26,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -213,6 +343,11 @@
     "content": "explain the philippine government",
     "timestamp": "2026-07-17T12:22:53.116841+00:00",
     "turn_number": 27,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -221,6 +356,11 @@
     "content": "Based on the provided context from the document \"Government.pdf,\" here is an overview of the Philippine Government:\n\n### Legislative Branch\n- **Congress of the Philippines:** The bicameral legislative body with the power to enact laws. It includes:\n  - **Senate of the Philippines**\n  - **House of Representatives**\n\n### Judicial Branch\n- **Supreme Court of the Philippines**\n- **Court of Appeals**\n- **Court of Tax Appeals**\n- **Sandiganbayan (Special Court for Impeachment and Corruption Cases)**\n\n### Local Government Units\n- **Provincial Governments**\n- **City Governments**\n- **Municipal Governments**\n- **Bangsamoro Autonomous Region in Muslim Mindanao**\n\n### Diplomatic and Consular Missions\n- Details on various diplomatic missions are provided.\n\n### International Organizations\n- Information about United Nations agencies and other international organizations is included.\n\n### Departments and Their Roles:\n#### Department of Budget and Management\n- Responsibilities related to budgeting, management, and coordination within the government.\n\n#### Legislative Franchises\n- Managed by Gus S. Tambunting.\n\n#### Local Government Development\n- Managed by Roland M. Valeriano.\n  \n#### Micro, Small, and Medium Enterprise Development\n- Managed by Christian S. Unabia.\n\n#### Mindanao Affairs\n- Managed by Yasser A. Balindong.\n\n#### Muslim Affairs\n- Managed by Mohamad Khalid Q. Dimaporo.\n\n#### National Defense and Security\n- The name of the assistant secretary is partially visible as \"RAU\" (likely stands for a person's initials).\n\n### Department of Agrarian Reform\n- Located at Elliptical Road, Diliman, with contact information provided.\n\nFor more detailed information on each branch or department, you would need to refer directly to the document. The context does not provide comprehensive details but outlines key components and some officials' names in various government agencies.",
     "timestamp": "2026-07-17T12:23:06.717123+00:00",
     "turn_number": 28,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -229,6 +369,11 @@
     "content": "what is Pbuild?",
     "timestamp": "2026-08-14T17:48:45.492728+00:00",
     "turn_number": 29,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -237,6 +382,11 @@
     "content": "Based on the provided context, PBuild appears to be a technology company that offers end-to-end solutions for modernizing business operations. The key points about PBuild from the given information are:\n\n- **Founder & CEO:** Leonilo P. Lagman Jr.\n- **Vision:** To become a recognized technology company that develops impactful solutions and contributes to the advancement of the digital economy.\n- **Services Offered:**\n  - Custom Software\n  - Artificial Intelligence\n  - Automation\n  - Digital Transformation\n\nPBuild aims to help businesses adapt to technological advancements by providing modern solutions, addressing operational challenges such as manual and repetitive processes, inefficient workforce management, and a lack of digital presence. The company offers end-to-end technology solutions designed to accelerate product development and increase recurring revenue opportunities.\n\nIf you have any specific questions about PBuild or need more details from the provided context, feel free to ask!",
     "timestamp": "2026-08-14T17:48:58.913030+00:00",
     "turn_number": 30,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -245,6 +395,11 @@
     "content": "what is Pbuild?",
     "timestamp": "2026-08-14T17:51:48.743602+00:00",
     "turn_number": 31,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -253,6 +408,11 @@
     "content": "Based on the provided context from the document \"Pitch.pdf,\" here is an overview of PBuild:\n\n- **Founder & CEO:** Leonilo P. Lagman Jr.\n- **Vision:** To become a recognized technology company that develops impactful solutions and contributes to the advancement of the digital economy.\n- **Services Offered:**\n  - Custom Software\n  - Artificial Intelligence\n  - Automation\n  - Digital Transformation\n\nPBuild aims to help businesses modernize their operations through end-to-end technology solutions. The company provides services in software engineering, artificial intelligence, machine learning, and systems development to address operational challenges such as manual processes, inefficient workforce management, and a lack of digital presence.\n\nFor more detailed information or specific questions about PBuild, please refer to the full document.",
     "timestamp": "2026-08-14T17:51:53.458520+00:00",
     "turn_number": 32,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -261,6 +421,11 @@
     "content": "who is Leonilo?",
     "timestamp": "2026-08-14T17:52:08.913714+00:00",
     "turn_number": 33,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -269,6 +434,11 @@
     "content": "Based on the provided context from \"Pitch.pdf,\" Leonilo P. Lagman Jr. is described as a Full Stack Developer with experience in AI-Augmented Engineering, MVP Building, DevOps, and exploring VR & Emerging Tech. He serves as a Full Stack Developer at the Office of the President \u2013 Climate Change Co.",
     "timestamp": "2026-08-14T17:52:11.995287+00:00",
     "turn_number": 34,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -277,6 +447,11 @@
     "content": "do you know gta?",
     "timestamp": "2026-08-14T17:52:39.481802+00:00",
     "turn_number": 35,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -285,6 +460,11 @@
     "content": "I don't know based on my knowledge base.\n\nThe provided context does not contain any information about Grand Theft Auto (GTA). If you have a question related to GTA or need information from the given context, please clarify your query.",
     "timestamp": "2026-08-14T17:52:42.179751+00:00",
     "turn_number": 36,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -293,6 +473,11 @@
     "content": "what do you think of the levels of the government?",
     "timestamp": "2026-08-14T17:53:17.557203+00:00",
     "turn_number": 37,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -301,6 +486,11 @@
     "content": "Based on the provided context from \"Government.pdf,\" here is an overview of some key branches and positions within the Philippine Government:\n\n- **Public Accountability**\n- **Florida P. Robes**\n- **Government Enterprises and Privatization** - Edwin L. Olivarez\n- **Government Reorganization** - Jonathan Keith T. Flores\n- **Health** - Ciricaco B. Gato Jr.\n- **Higher and Technical Education** - Mark O. Go\n- **Housing and Urban Development** - Jose Francisco B. Benitez\n- **Human Rights** - Bienvenido M. Abante Jr.\n- **Indigenous Cultural Communities and Indigenous Peoples** - Allen Jesse C. Mangaoang\n- **Information and Communications Technology** - Tobias M. Tiangco\n- **Inter-parliamentary Relations And Diplomacy** - Glona\n\nThese positions cover various sectors of the government, including health, education, housing, human rights, ICT, and more. The context does not provide a detailed explanation or my thoughts on the levels of the Philippine Government.\n\nIf you have specific questions about the structure or any particular level of the Philippine Government based on this information, please ask!",
     "timestamp": "2026-08-14T17:53:23.617866+00:00",
     "turn_number": 38,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -309,6 +499,11 @@
     "content": "open notepad",
     "timestamp": "2026-09-16T00:35:00.938327+00:00",
     "turn_number": 39,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -317,6 +512,11 @@
     "content": "Based on the provided context from \"Python.pdf,\" here is information related to opening and managing files:\n\nTo open a file using Python's `open()` function, you need to provide two arguments: the name of the file (and its path if it\u2019s not in the same directory as your program) and the mode in which you want to open the file. For example, to open a file for writing, you would use:\n\n```python\nfile = open('filename.txt', 'w')\n```\n\nThis code opens `filename.txt` in write mode ('w'). If the file does not exist, it will be created; if it exists, its contents will be overwritten.\n\nIf the file is located in a different directory than your program, you would need to provide the full path to the file. For example:\n\n```python\nfile = open('/path/to/folder/filename.txt', 'w')\n```\n\nThis code specifies the complete path to `filename.txt`.\n\nFor more detailed information or specific questions about working with files in Python, please refer to the provided context or ask a related question!",
     "timestamp": "2026-09-16T00:35:14.971289+00:00",
     "turn_number": 40,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -325,6 +525,11 @@
     "content": "open steam",
     "timestamp": "2026-09-16T00:36:59.217256+00:00",
     "turn_number": 41,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -333,6 +538,11 @@
     "content": "I don't know based on my knowledge base.\n\nThe provided context does not contain any information about opening Steam or related topics. If you need assistance with how to open or use Steam, please provide more specific details or clarify your question!",
     "timestamp": "2026-09-16T00:37:01.979334+00:00",
     "turn_number": 42,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -341,6 +551,11 @@
     "content": "open discord",
     "timestamp": "2026-09-16T01:22:41.903680+00:00",
     "turn_number": 43,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -349,6 +564,11 @@
     "content": "I don't know based on my knowledge base.\n\nThe provided context does not contain any information about opening Discord or related topics. If you need assistance with how to open or use Discord, please provide more specific details or clarify your question!",
     "timestamp": "2026-09-16T01:22:50.612938+00:00",
     "turn_number": 44,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -357,6 +577,11 @@
     "content": "Inspect my system and report the current disk space",
     "timestamp": "2026-09-16T01:23:03.315762+00:00",
     "turn_number": 45,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -365,6 +590,11 @@
     "content": "I don't know based on my knowledge base.\n\nThe provided context does not contain any information about inspecting or reporting current disk space. If you need assistance with how to check disk space on a computer, please provide more specific details or clarify your question!",
     "timestamp": "2026-09-16T01:23:06.604913+00:00",
     "turn_number": 46,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -373,6 +603,11 @@
     "content": "Search my knowledge base for the latest project status",
     "timestamp": "2026-09-16T01:23:11.516636+00:00",
     "turn_number": 47,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -381,6 +616,11 @@
     "content": "I don't know based on my knowledge base.\n\nThe provided context does not contain any information about checking the status of projects or recent updates. If you have specific details or a particular project in mind, please provide more information so I can assist you better!",
     "timestamp": "2026-09-16T01:23:14.988598+00:00",
     "turn_number": 48,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -389,6 +629,11 @@
     "content": "Search my knowledge base for the latest project status",
     "timestamp": "2026-09-16T01:23:56.989573+00:00",
     "turn_number": 49,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -397,6 +642,11 @@
     "content": "I don't know based on my knowledge base.\n\nThe provided context does not contain any information about the latest project status. If you have specific details or a particular project in mind, please provide more information so I can assist you better!",
     "timestamp": "2026-09-16T01:24:00.563262+00:00",
     "turn_number": 50,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -405,6 +655,11 @@
     "content": "open microsoft edge",
     "timestamp": "2026-09-16T01:27:35.956465+00:00",
     "turn_number": 51,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -413,6 +668,11 @@
     "content": "I don't know based on my knowledge base.\n\nThe provided context does not contain any information about opening Microsoft Edge or related topics. If you need assistance with how to open or use Microsoft Edge, please provide more specific details or clarify your question!",
     "timestamp": "2026-09-16T01:27:38.772450+00:00",
     "turn_number": 52,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -421,6 +681,11 @@
     "content": "open 7zip for me",
     "timestamp": "2026-09-16T01:27:55.525149+00:00",
     "turn_number": 53,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -429,6 +694,11 @@
     "content": "I don't know based on my knowledge base.\n\nThe provided context does not contain any information about opening 7-Zip or related topics. If you need assistance with how to open or use 7-Zip, please provide more specific details or clarify your question!",
     "timestamp": "2026-09-16T01:27:58.708842+00:00",
     "turn_number": 54,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -437,6 +707,11 @@
     "content": "open steam",
     "timestamp": "2026-09-16T01:28:18.167791+00:00",
     "turn_number": 55,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -445,6 +720,11 @@
     "content": "I don't know based on my knowledge base.\n\nThe provided context does not contain any information about opening Steam or related topics. If you need assistance with how to open or use Steam, please provide more specific details or clarify your question!",
     "timestamp": "2026-09-16T01:28:21.092303+00:00",
     "turn_number": 56,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -453,6 +733,11 @@
     "content": "search downloads",
     "timestamp": "2026-09-16T01:31:53.349088+00:00",
     "turn_number": 57,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -461,6 +746,11 @@
     "content": "I don't know based on my knowledge base.\n\nThe provided context does not contain any information about searching for downloads or related topics. If you need assistance with how to search for downloads or have a specific query regarding downloads, please provide more specific details or clarify your question!",
     "timestamp": "2026-09-16T01:31:56.498636+00:00",
     "turn_number": 58,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -469,6 +759,11 @@
     "content": "create a short poem in notepad",
     "timestamp": "2026-09-16T01:33:08.079782+00:00",
     "turn_number": 59,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -477,6 +772,11 @@
     "content": "I don't know based on my knowledge base.\n\nThe provided context does not contain any information related to creating a short poem in Notepad or similar tasks. If you need assistance with writing a poem, using Notepad, or have another specific question, please provide more details!",
     "timestamp": "2026-09-16T01:33:11.115570+00:00",
     "turn_number": 60,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -485,6 +785,11 @@
     "content": "pewdiepie video",
     "timestamp": "2026-09-16T02:18:56.361542+00:00",
     "turn_number": 61,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -493,6 +798,11 @@
     "content": "I don't know based on my knowledge base.\n\nThe provided context does not contain any information about PewDiePie or his videos. If you have a specific question related to PewDiePie's videos or need help understanding something from the given text, please provide more details!",
     "timestamp": "2026-09-16T02:19:06.053630+00:00",
     "turn_number": 62,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -501,6 +811,11 @@
     "content": "what is 5 * 10",
     "timestamp": "2026-09-16T03:53:04.945220+00:00",
     "turn_number": 63,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -509,6 +824,11 @@
     "content": "I don't know based on my knowledge base.\n\nThe provided context does not contain information about creating a poem, opening programs like Notepad or Steam, searching downloads, or finding PewDiePie videos. The context is from various PDFs and doesn't have the specific question related to the multiplication of 5 * 10. Based on the given text, the answer to \"what is 5 * 10\" is:\n\n5 * 10 = 50\n\nHowever, this calculation was not part of the provided context; it's a simple arithmetic operation that I'm providing here for reference.",
     "timestamp": "2026-09-16T03:53:09.594213+00:00",
     "turn_number": 64,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -517,6 +837,11 @@
     "content": "search the web for the bee movie script in notepad",
     "timestamp": "2026-09-17T02:37:48.982076+00:00",
     "turn_number": 65,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -525,6 +850,11 @@
     "content": "The provided text is from an archived version of the \"Bee Movie\" (2007) script and does not contain instructions on how to search for or save the script in Notepad. To find the Bee Movie script in Notepad, you would typically follow these steps:\n\n1. Search online for a copy of the Bee Movie script.\n2. Once you locate an online version, right-click on the webpage containing the text and select \"Save As\" or use a browser's built-in option to save the page.\n3. Save the file with a .txt extension, such as \"BeeMovieScript.txt.\"\n4. Open Notepad (which can be found in the Start menu on Windows).\n5. Click \"File,\" then \"Open,\" and navigate to where you saved your text file.\n6. Select the text file and open it.\n\nHowever, since I don't have access to web content or the ability to perform actions like searching online, I cannot provide a direct link or exact steps for this task. If you follow these general instructions using any reliable search engine, you should be able to find and save the Bee Movie script in Notepad.",
     "timestamp": "2026-09-17T02:37:49.007310+00:00",
     "turn_number": 66,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -533,6 +863,11 @@
     "content": "place the text in notepad",
     "timestamp": "2026-09-17T02:38:25.962153+00:00",
     "turn_number": 67,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -541,6 +876,11 @@
     "content": "I could not obtain a reliable answer to that from the sources available to me right now.\nWhat I tried: files: no sufficient evidence.\nI can search the web for current information, look through your local files, or use what I already know - tell me which you'd prefer, or add a detail that narrows the question.",
     "timestamp": "2026-09-17T02:38:25.984011+00:00",
     "turn_number": 68,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -549,6 +889,11 @@
     "content": "search the web for the latest nvidia gpu",
     "timestamp": "2026-09-17T02:39:43.257680+00:00",
     "turn_number": 69,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -557,6 +902,11 @@
     "content": "Based on recent information available online:\n\n1. **GeForce RTX 50 Series**: An upcoming series of GPUs from Nvidia, announced but not yet released as of my last update.\n\n2. **Nvidia DGX**: A series of servers and workstations designed for deep learning applications, not a specific GPU model.\n\n3. **General Graphics Cards**: As per the article from PCMag, they list some of the best graphics cards currently available, including various RTX 30-series models like the RTX 3090, RTX 3080, and RTX 3070, among others.\n\nFor the latest Nvidia GPU specifically, the focus is on the upcoming RTX 50 series. However, for current users or those looking to purchase now, the RTX 30-series models are recommended based on available information.",
     "timestamp": "2026-09-17T02:39:43.287981+00:00",
     "turn_number": 70,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -565,6 +915,11 @@
     "content": "open my photos",
     "timestamp": "2026-09-17T02:42:34.201628+00:00",
     "turn_number": 71,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -573,6 +928,11 @@
     "content": "I don't have access to your local files or the ability to open applications on your device. To open your photos, you would typically follow these steps:\n\n1. Open the Photos application on your computer.\n2. Alternatively, use a file explorer (such as File Explorer on Windows) and navigate to where your photos are stored.\n\nIf you need more specific instructions for your operating system or have any other questions about managing your files, feel free to ask!",
     "timestamp": "2026-09-17T02:42:34.242730+00:00",
     "turn_number": 72,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -581,6 +941,11 @@
     "content": "what can you do?",
     "timestamp": "2026-09-17T02:43:11.412209+00:00",
     "turn_number": 73,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -589,6 +954,11 @@
     "content": "I am Atlas, a local-first assistant running the qwen2.5:7b model.\nI currently expose 16 capabilities:\n- computer.applications:\n  - applications.launch: Launch one explicitly selected Windows executable. (needs your confirmation)\n  - applications.launch_named: Resolve and launch a trusted installed Windows application by name. (needs your confirmation)\n  - applications.write_text: Open a trusted Windows application and enter supplied text into it. (needs your confirmation)\n- computer.filesystem:\n  - filesystem.copy: Copy a file or directory under the allowed root. (needs your confirmation)\n  - filesystem.create_folder: Create a directory under the allowed root. (needs your confirmation)\n  - filesystem.list: List entries in an allowed directory.\n  - filesystem.metadata: Inspect metadata for an allowed filesystem path.\n  - filesystem.move: Move or rename a file or directory under the allowed root. (needs your confirmation)\n  - filesystem.read: Read bounded UTF-8 text or PDF page text under the allowed root.\n  - filesystem.search: Search filenames below the allowed root without modifying files.\n  - filesystem.search_content: Search the text contents of files below an allowed folder, returning matching file paths with a short excerpt and line number.\n  - filesystem.write: Write UTF-8 text to a file under the allowed root. (needs your confirmation)\n- computer.system:\n  - system.info: Inspect operating-system, CPU, memory, and disk information.\n- content.generation:\n  - content.generate: Generate creative or informational text from a requested content type, topic, tone, style, and length.\n- internet.retrieval:\n  - web.fetch: Fetch a public web page as bounded, untrusted text with provenance.\n- internet.search:\n  - web.search: Search the public web and return attributed result links without executing page instructions.\nAsk me about a specific area (tools, applications, internet, files, knowledge, memory, or the model) and I will describe exactly what is registered right now.",
     "timestamp": "2026-09-17T02:43:11.430182+00:00",
     "turn_number": 74,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -597,6 +967,11 @@
     "content": "mr beast video in youtube",
     "timestamp": "2026-09-17T12:35:01.875171+00:00",
     "turn_number": 75,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -605,6 +980,11 @@
     "content": "To find a Mr. Beast video on YouTube:\n\n1. Open your web browser.\n2. Go to YouTube.com.\n3. In the search bar at the top of the page, type \"Mr. Beast\" or a specific video title related to Mr. Beast (e.g., \"Mr. Beast $1000 Challenge\").\n4. Press Enter or click the magnifying glass icon next to the search bar.\n5. Browse through the results and select the video you're interested in.\n\nIf you need help with a specific video or have more questions about using YouTube, feel free to ask!",
     "timestamp": "2026-09-17T12:35:01.878132+00:00",
     "turn_number": 76,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -613,6 +993,11 @@
     "content": "search mr beast videos in youtube",
     "timestamp": "2026-09-17T12:35:22.678884+00:00",
     "turn_number": 77,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -621,6 +1006,11 @@
     "content": "NO RELEVANT INFORMATION FOUND\n=============================\n\nCould not retrieve sufficient information for: mr beast videos\n--------------------------------------------------------------\n\n---\nSources:\n- web\n",
     "timestamp": "2026-09-17T12:35:22.683555+00:00",
     "turn_number": 78,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -629,6 +1019,11 @@
     "content": "who is the current president in the philippines?",
     "timestamp": "2026-09-17T12:37:11.045529+00:00",
     "turn_number": 79,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -637,6 +1032,11 @@
     "content": "The current President of the Philippines as of June 2022 is Ferdinand \"Bongbong\" Romualdez Marcos Jr., who took office on June 30, 2022. He is serving a single six-year term under the Philippine Constitution and cannot run for re-election in 2028.",
     "timestamp": "2026-09-17T12:37:11.048970+00:00",
     "turn_number": 80,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -645,6 +1045,11 @@
     "content": "what is the summary of bee movie?",
     "timestamp": "2026-09-17T12:39:26.050745+00:00",
     "turn_number": 81,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -653,6 +1058,11 @@
     "content": "The Bee Movie is an animated film released by Pixar Animation Studios and distributed by Walt Disney Pictures in 2007. The story follows a busy honeybee named Barry B. Benson, who lives in the bustling city of Hive. Barry discovers that there's more to life than just making honey and delivering messages for the queen.\n\nDriven by curiosity and a growing sense of adventure, Barry embarks on a journey beyond the borders of his hive. Along the way, he encounters another world filled with humans and other creatures. He meets Vanessa, a kind-hearted young woman who helps him understand more about life outside the hive.\n\nThroughout the film, Barry learns to balance his new perspective with his duties as a bee and faces challenges that test his resolve. Ultimately, he discovers the true meaning of freedom and the importance of embracing one's unique identity.\n\nThe movie blends humor, adventure, and heartfelt moments as it explores themes of self-discovery and personal growth. It features the voices of comedians Jerry Seinfeld and Drew Barrymore in key roles, with other notable actors lending their talents to various characters.",
     "timestamp": "2026-09-17T12:39:26.053825+00:00",
     "turn_number": 82,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -661,6 +1071,11 @@
     "content": "search YouTube for MrBeast videos",
     "timestamp": "2026-09-17T12:39:52.757754+00:00",
     "turn_number": 83,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -669,6 +1084,11 @@
     "content": "NO RELEVANT INFORMATION FOUND\n=============================\n\nCould not retrieve sufficient information for: mrbeast videos\n-------------------------------------------------------------\n\n---\nSources:\n- web\n",
     "timestamp": "2026-09-17T12:39:52.760865+00:00",
     "turn_number": 84,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -677,6 +1097,11 @@
     "content": "search YouTube for MrBeast videos",
     "timestamp": "2026-09-17T13:55:54.180285+00:00",
     "turn_number": 85,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -685,6 +1110,11 @@
     "content": "SUMMARY: MRBEAST VIDEOS\n=======================\n\nBased on 2 sources\n------------------\n\n## I Survived The Most Extreme Places On Earth - YouTube\n\n\u2022 MrBeast \u00b7 11 days ago \u00b7 101,332,881 views\n\n## I Survived 100 Days on One Block - YouTube\n\n\u2022 MrBeast Gaming \u00b7 4 days ago \u00b7 39,861,299 views\n\n---\nSources:\n- web\n",
     "timestamp": "2026-09-17T13:55:54.184872+00:00",
     "turn_number": 86,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -693,6 +1123,11 @@
     "content": "search youtube most viewed",
     "timestamp": "2026-09-17T13:58:00.383169+00:00",
     "turn_number": 87,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -701,6 +1136,11 @@
     "content": "NO RELEVANT INFORMATION FOUND\n=============================\n\nCould not retrieve sufficient information for: most viewed\n----------------------------------------------------------\n\n---\nSources:\n- web\n",
     "timestamp": "2026-09-17T13:58:00.386830+00:00",
     "turn_number": 88,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -709,6 +1149,11 @@
     "content": "search pewdiepie videos in youtube",
     "timestamp": "2026-09-17T14:09:04.210586+00:00",
     "turn_number": 89,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -717,6 +1162,11 @@
     "content": "SUMMARY: PEWDIEPIE VIDEOS\n=========================\n\nBased on 1 sources\n------------------\n\n## THIS GAME IS THE TRUE MEANING OF SUFFERING. / Getting Over It / #1 - YouTube\n\n\u2022 PewDiePie \u00b7 8 years ago \u00b7 16,103,322 views\n\n---\nSources:\n- web\n",
     "timestamp": "2026-09-17T14:09:04.216480+00:00",
     "turn_number": 90,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -725,6 +1175,11 @@
     "content": "best xqc videos in youtube",
     "timestamp": "2026-09-17T14:48:56.401573+00:00",
     "turn_number": 91,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -733,6 +1188,11 @@
     "content": "INFORMATION: \n=============\n\nBased on 2 sources\n------------------\n\n## [reference] clips that made xQc popular\n\n\u2022 xQc \u00b7 3 years ago \u00b7 686,044 views\n\n## [reference] xqc clips that i've saved for a laugh emergency\n\n\u2022 xQc Gaming \u00b7 3 years ago \u00b7 544,731 views\n\n---\nSources:\n- web\n",
     "timestamp": "2026-09-17T14:48:56.405512+00:00",
     "turn_number": 92,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -741,6 +1201,11 @@
     "content": "search youtube for mr beast",
     "timestamp": "2026-09-17T14:50:27.636909+00:00",
     "turn_number": 93,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -749,6 +1214,11 @@
     "content": "SUMMARY: MR BEAST\n=================\n\nBased on 2 sources\n------------------\n\n## I Survived The Most Extreme Places On Earth\n\n\u2022 MrBeast \u00b7 11 days ago \u00b7 101,423,711 views\n\n## I Survived 100 Days on One Block\n\n\u2022 MrBeast Gaming \u00b7 4 days ago \u00b7 39,997,479 views\n\n---\nSources:\n- web\n",
     "timestamp": "2026-09-17T14:50:27.641631+00:00",
     "turn_number": 94,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -757,6 +1227,11 @@
     "content": "top mr beast videos in youtube?",
     "timestamp": "2026-09-17T18:01:52.156639+00:00",
     "turn_number": 95,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -765,6 +1240,11 @@
     "content": "SUMMARY: TOP MR BEAST VIDEOS ON YOUTUBE\n======================================\n\nBased on recent data:\n\n1. **I Survived The Most Extreme Places On Earth**\n   - Channel: MrBeast\n   - Views: 101,423,711\n   - Date: 11 days ago\n\n2. **I Survived 100 Days on One Block**\n   - Channel: MrBeast Gaming\n   - Views: 39,997,479\n   - Date: 4 days ago\n\n---\nSources:\n- web",
     "timestamp": "2026-09-17T18:01:52.161345+00:00",
     "turn_number": 96,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -773,6 +1253,11 @@
     "content": "search youtube for mr beast videos",
     "timestamp": "2026-09-17T18:03:35.204960+00:00",
     "turn_number": 97,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -781,6 +1266,11 @@
     "content": "SUMMARY: MR BEAST VIDEOS\n========================\n\nBased on 2 sources\n------------------\n\n## I Survived The Most Extreme Places On Earth\n\n\u2022 MrBeast \u00b7 12 days ago \u00b7 101,797,714 views\n\n## Last to Leave Their Circle Wins $500,000\n\n\u2022 MrBeast \u00b7 1 year ago \u00b7 229,892,445 views\n\n---\nSources:\n- web\n",
     "timestamp": "2026-09-17T18:03:35.210564+00:00",
     "turn_number": 98,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -789,6 +1279,11 @@
     "content": "best mr beast youtube video",
     "timestamp": "2026-09-19T02:53:32.704246+00:00",
     "turn_number": 99,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -797,6 +1292,11 @@
     "content": "Based on the recent data from YouTube:\n\nThe top-viewed MrBeast videos include:\n\n1. **I Survived The Most Extreme Places On Earth**\n   - Views: 105,700,376\n   - Date: 13 days ago\n\n2. **Last to Leave Their Circle Wins $500,000**\n   - Views: 230,367,660\n   - Date: 1 year ago\n\n3. **100 Identical Twins Fight For $250,000**\n   - Views: 210,580,686\n   - Date: 1 year ago\n\n4. **$1 vs $1,000,000,000 Nuclear Bunker!**\n   - Views: 192,953,813\n   - Date: 1 year ago\n\n5. **30 Celebrities Fight For $1,000,000!**\n   - Views: 138,479,285\n   - Date: 8 months ago\n\nThe best viewed MrBeast video is \"Last to Leave Their Circle Wins $500,000\" with over 230 million views.\n\nSources:\n- web",
     "timestamp": "2026-09-19T02:53:32.722136+00:00",
     "turn_number": 100,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -805,6 +1305,11 @@
     "content": "summarize the avatar movie in notepad",
     "timestamp": "2026-09-19T11:05:52.396266+00:00",
     "turn_number": 101,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -813,6 +1318,11 @@
     "content": "SUMMARY OF THE AVATAR MOVIE\n===========================\n\nBased on my knowledge:\n\n**Title:** Avatar  \n**Director:** James Cameron  \n**Release Date:** December 18, 2009 (USA)  \n**Genre:** Science Fiction, Adventure, Fantasy  \n\n**Plot:**\nSet in the year 2154, the movie is a fictionalized story of environmentalism and militarism. The main character, Jake Sully, is an ex-Marine who joins the military to work as an operator for a remote-controlled avatar\u2014a hybrid human-machine that allows humans to explore and interact with Pandora, a lush alien moon. \n\nPandora is inhabited by the Na'vi, an advanced indigenous species with their own society and culture. Jake Sully takes on the body of his avatar to fulfill his mission but also begins to forge strong bonds with the Na'vi, particularly with Neytiri, a skilled warrior.\n\nAs Jake learns more about Pandora's ecosystem and the Na'vi way of life, he is torn between his military duty and his growing allegiance to the indigenous people. He discovers that the human company, RDA (Rakshasa Development Administration), plans to strip-mine Pandora for its valuable resources at the cost of the Na'vi culture and the planet's environment.\n\nJake must decide whether to join forces with the Na'vi in their fight against the humans or continue his mission. The climax involves a large-scale battle between the Na'vi and human forces, leading to an epic confrontation that has significant consequences for both sides.\n\n**Themes:**\n- Environmentalism\n- Cultural preservation\n- Moral dilemmas\n\nThe movie is known for its groundbreaking visual effects, especially in relation to 3D technology at the time of release. \n\n---\n\nThis summary covers the main elements of the plot and themes of the Avatar film.",
     "timestamp": "2026-09-19T11:05:52.418764+00:00",
     "turn_number": 102,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -821,6 +1331,11 @@
     "content": "search youtube for mr beast videos",
     "timestamp": "2026-09-20T04:43:12.384662+00:00",
     "turn_number": 103,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -829,6 +1344,11 @@
     "content": "SUMMARY OF MR BEAST VIDEOS ON YOUTUBE\n======================================\n\nBased on the retrieved data:\n\n1. **I Survived The Most Extreme Places On Earth**\n   - Channel: MrBeast\n   - Views: 107,829,245\n   - Date: 2 weeks ago\n\n2. **Ages 1 - 100 Race For $250,000!**\n   - Channel: MrBeast\n   - Views: 161,870,199\n   - Date: 7 months ago\n\n3. **I Survived 100 Days on One Block**\n   - Channel: MrBeast Gaming\n   - Views: 46,449,001\n   - Date: 7 days ago\n\n4. **I Adopted 100 Dogs!**\n   - Channels: MrBeast and Beast Philanthropy\n   - Views: 425,192,541\n   - Date: 2 years ago\n\n5. **Last to Leave Their Circle Wins $500,000**\n   - Channel: MrBeast\n   - Views: 230,726,364\n   - Date: 1 year ago\n\n6. **Survive 99 Nights, Win $99,000**\n   - Channel: MrBeast Gaming\n   - Views: 62,438,613\n   - Date: 7 months ago\n\n7. **7 Days Stranded In A Cave**\n   - Channel: MrBeast\n   - Views: 193,057,468\n   - Date: 2 years ago\n\n8. **I Built A City To Save Kids From Illegal Labor**\n   - Channel: MrBeast\n   - Views: 20,632,216\n   - Date: 1 year ago\n\nThese are the top-viewed and recent videos by MrBeast on YouTube as of the last update.",
     "timestamp": "2026-09-20T04:43:12.401841+00:00",
     "turn_number": 104,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -837,6 +1357,11 @@
     "content": "research deadline savior",
     "timestamp": "2026-09-21T02:14:20.012663+00:00",
     "turn_number": 105,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -845,6 +1370,11 @@
     "content": "I'm not aware of a specific \"Deadline Savior\" video or campaign by MrBeast. However, there have been numerous charitable initiatives and challenges created by MrBeast that help people in various situations. If you're referring to a particular event or challenge related to time constraints or saving someone from a deadline-related crisis, it might be helpful to provide more context.\n\nIf you meant a specific video or campaign, I can try to find more information using the web. Would you like me to perform a search for \"Deadline Savior\" on YouTube?",
     "timestamp": "2026-09-21T02:14:20.030378+00:00",
     "turn_number": 106,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -853,6 +1383,11 @@
     "content": "what can you do?",
     "timestamp": "2026-09-21T06:05:58.347336+00:00",
     "turn_number": 107,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -861,6 +1396,11 @@
     "content": "I am Atlas, a local-first assistant running the qwen2.5:7b model.\nI currently expose 31 capabilities:\n- computer.applications:\n  - applications.launch: Launch one explicitly selected Windows executable. (needs your confirmation)\n  - applications.launch_named: Resolve and launch a trusted installed Windows application by name. (needs your confirmation)\n  - applications.write_text: Open a trusted Windows application, enter supplied text, and read the result back to verify it was written. (needs your confirmation)\n- computer.filesystem:\n  - filesystem.copy: Copy a file or directory under the allowed root. (needs your confirmation)\n  - filesystem.create_folder: Create a directory under the allowed root. (needs your confirmation)\n  - filesystem.list: List entries in an allowed directory.\n  - filesystem.metadata: Inspect metadata for an allowed filesystem path.\n  - filesystem.move: Move or rename a file or directory under the allowed root. (needs your confirmation)\n  - filesystem.read: Read bounded UTF-8 text or PDF page text under the allowed root.\n  - filesystem.search: Search filenames below the allowed root without modifying files.\n  - filesystem.search_content: Search the text contents of files below an allowed folder, returning matching file paths with a short excerpt and line number.\n  - filesystem.write: Write UTF-8 text to a file under the allowed root. (needs your confirmation)\n- computer.interaction:\n  - computer.click: Click a UI element located in the current observation (by element id or visible label). Coordinates are validated against the observation. (needs your confirmation)\n  - computer.double_click: Double-click a UI element located in the current observation. (needs your confirmation)\n  - computer.drag: Drag from a source element to a destination element, both located in the current observation. (needs your confirmation)\n  - computer.focus: Focus (bring to the foreground) an observed application window. (needs your confirmation)\n  - computer.keypress: Send a named key press (enter, tab, escape, up, down, ...). (needs your confirmation)\n  - computer.move: Move the mouse pointer to a UI element located in the current observation. (needs your confirmation)\n  - computer.right_click: Right-click a UI element located in the current observation. (needs your confirmation)\n  - computer.scroll: Scroll the view up or down, optionally after moving to an element. (needs your confirmation)\n  - computer.type: Type text into a UI element located in the current observation. The element is focused by clicking it first so the text lands in the intended control. (needs your confirmation)\n- computer.perception:\n  - computer.find: Find a visible UI element by its label, a semantic description, or its type (button, text field, link, ...) using the layered perception engine. Returns structured candidates with bounds and confidence.\n  - computer.observe: Observe the current or named application's state: window, controls, focused control, and readable text; optionally a full visual-state observation (UI Automation + local OCR + image processing + VLM).\n  - computer.vision_observe: Capture and analyze the current screen into a structured visual state (windows, UI elements, text) using Windows UI Automation, local OCR, image processing, and optionally a local vision model.\n  - computer.windows: List open desktop windows (title, class, process, focus state) without changing anything.\n- computer.system:\n  - system.info: Inspect operating-system, CPU, memory, and disk information.\n- content.formatting:\n  - content.format: Normalize, structure, and render raw content for a specific destination. Detects content type (script, article, transcript, code, list, etc.), reconstructs paragraphs, and formats for Notepad, Markdown, code editors, etc.\n- content.generation:\n  - content.generate: Generate creative or informational text from a requested content type, topic, tone, style, and length.\n- internet.research:\n  - web.research: Search the web, read several top pages, and return the most relevant content for the request (not just result links).\n- internet.retrieval:\n  - web.fetch: Fetch a public web page as bounded, untrusted text with provenance.\n- internet.search:\n  - web.search: Search the public web and return attributed result links without executing page instructions.\nAsk me about a specific area (tools, applications, internet, files, knowledge, memory, or the model) and I will describe exactly what is registered right now.",
     "timestamp": "2026-09-21T06:05:58.389025+00:00",
     "turn_number": 108,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -869,6 +1409,11 @@
     "content": "search baby lyrics",
     "timestamp": "2026-09-21T06:26:18.983871+00:00",
     "turn_number": 109,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -877,6 +1422,11 @@
     "content": "Based on the information provided, here are some key points about \"Baby\" by Justin Bieber and Ludacris:\n\n- The song features Justin Bieber and Ludacris as artists.\n- It includes samples from various songs, with mentions of \"Baby\" being sampled several times.\n- There are multiple language translations available for the lyrics.\n- The song covers a range of genres including pop, rap, R&B, and dance-pop.\n\nUnfortunately, no actual lyrics were provided in your text. To get the official lyrics, you would typically need to search on trusted lyric websites or platforms like Genius, MetroLyrics, etc., which often have complete and accurate word-for-word versions of popular songs. Would you like me to look up the official lyrics for \"Baby\" by Justin Bieber and Ludacris?",
     "timestamp": "2026-09-21T06:26:19.023019+00:00",
     "turn_number": 110,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -885,6 +1435,11 @@
     "content": "who is leonilo lagman in notepad",
     "timestamp": "2026-09-23T09:14:22.745193+00:00",
     "turn_number": 111,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -893,6 +1448,11 @@
     "content": "I don't have specific information about a character named Leonilo Lagman from a readily identifiable source or context, such as literature or media. This name doesn\u2019t appear to be a widely known character.\n\nIf you are referring to a specific work or franchise, could you provide more details? Alternatively, if this is part of a fictional universe or personal narrative, please share the relevant context so I can better assist you in summarizing or researching it.",
     "timestamp": "2026-09-23T09:14:22.764748+00:00",
     "turn_number": 112,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -901,6 +1461,11 @@
     "content": "research about the philippines in notepad",
     "timestamp": "2026-09-23T09:14:56.916528+00:00",
     "turn_number": 113,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
   },
   {
@@ -909,6 +1474,104 @@
     "content": "Based on the information provided, here's a summary for your notepad research on the Philippines:\n\n**Philippines Overview:**\n- Official name: Republic of the Philippines (also referred to as simply Philippines)\n- Location: Archipelagic country in Southeast Asia, western Pacific Ocean; consists of over 7,641 islands and islets\n- Geography: Divided into three main geographical divisions - Luzon, Visayas, and Mindanao\n- Capital City: Manila; most populous city: Quezon City (both part of Metro Manila)\n- Area: Approximately 300,000 square kilometers\n\n**History:**\n- Established the Philippine Commonwealth in 1935 as a transition to full independence.\n- During World War II, occupied by Japan from 1942 until 1945.\n- Independence restored via the Treaty of Manila in 1946.\n\n**Additional Information:**\n- Official website for government information: [gov.ph](https://www.gov.ph)\n- Travel and tourism guides: Available through various sources including Klook, National Geographic, and World Atlas, providing insights into cities, beaches, maps, and more.",
     "timestamp": "2026-09-23T09:14:56.932816+00:00",
     "turn_number": 114,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
     "metadata": {}
+  },
+  {
+    "id": "2db99939-c0f8-4675-87e2-56008fb6996b",
+    "role": "user",
+    "content": "who are you?",
+    "timestamp": "2026-09-30T10:43:27.320077+00:00",
+    "turn_number": 115,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
+    "metadata": {
+      "response_kind": ""
+    }
+  },
+  {
+    "id": "f1d49a4a-8cd1-4ead-b63c-aea88fea6b73",
+    "role": "assistant",
+    "content": "I am Atlas, a virtual assistant designed to provide information and assistance based on my knowledge and the capabilities available to me. My primary function is to help with research, answer questions, and offer insights on various topics. I don't have personal experiences or a physical form; instead, I exist as an AI model capable of processing and responding to natural language inputs. If you need more specific information about a topic or person, such as the current president of the Philippines or Jordan Peterson, I can provide detailed summaries based on the latest available data and my training.",
+    "timestamp": "2026-09-30T10:43:39.926941+00:00",
+    "turn_number": 116,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
+    "metadata": {
+      "response_kind": "conversation",
+      "used_model": true
+    }
+  },
+  {
+    "id": "41c25016-7f69-415d-8860-26f66c7972f7",
+    "role": "user",
+    "content": "what can you do?",
+    "timestamp": "2026-09-30T10:43:44.658842+00:00",
+    "turn_number": 117,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
+    "metadata": {
+      "response_kind": ""
+    }
+  },
+  {
+    "id": "a6a15a9e-1dde-44f1-9b13-0f55022437db",
+    "role": "assistant",
+    "content": "I can assist with a wide range of tasks and provide information on various topics. Here are some key capabilities:\n\n1. **Information Retrieval:**\n   - Search the web for the most relevant content.\n   - Provide summaries and details about people, places, events, and more.\n\n2. **Content Generation:**\n   - Generate creative or informational text, such as stories, articles, or lyrics.\n\n3. **System Information:**\n   - Inspect operating system, CPU, memory, and disk information.\n\n4. **Filesystem Operations:**\n   - Create, copy, move, and read files under the allowed root directory.\n   - List entries in directories and inspect file metadata.\n\n5. **User Interface Interaction:**\n   - Perform mouse and keyboard actions on a computer screen to interact with applications and websites.\n\n6. **Multimedia Analysis:**\n   - Analyze visual content from screens using OCR, image processing, and vision models.\n\n7. **Research and Summarization:**\n   - Conduct web research, read several top pages, and return the most relevant content for specific requests.\n\n8. **Formatting and Text Processing:**\n   - Normalize, structure, and render raw content for different destinations like Notepad or Markdown.\n\n9. **Memory and Knowledge Retrieval:**\n   - Access a vast knowledge base to answer questions across various domains, including general information, historical facts, and more.\n\nIf you have specific needs or questions, feel free to ask!",
+    "timestamp": "2026-09-30T10:43:52.996902+00:00",
+    "turn_number": 118,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
+    "metadata": {
+      "response_kind": "conversation",
+      "used_model": true
+    }
+  },
+  {
+    "id": "b973899a-1b42-466a-ab46-3c2759a954e3",
+    "role": "user",
+    "content": "who is atlas",
+    "timestamp": "2026-09-30T10:44:40.315316+00:00",
+    "turn_number": 119,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
+    "metadata": {
+      "response_kind": ""
+    }
+  },
+  {
+    "id": "d533d514-1a2f-4e56-9475-4e0a518e4efd",
+    "role": "assistant",
+    "content": "I am Atlas, a virtual assistant designed to provide information and assistance based on my knowledge and the capabilities available to me. My primary function is to help with research, answer questions, generate text, and offer insights on various topics. If you have specific questions or need information on a particular topic, feel free to ask!",
+    "timestamp": "2026-09-30T10:44:46.473112+00:00",
+    "turn_number": 120,
+    "attachments": [],
+    "tool_calls": [],
+    "tool_results": [],
+    "citations": [],
+    "execution_state": "completed",
+    "metadata": {
+      "response_kind": "conversation",
+      "used_model": true
+    }
   }
 ]

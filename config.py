@@ -66,6 +66,45 @@ MAX_SESSIONS: int = 50
 # Auto-save session/messaging changes to disk.
 AUTO_SAVE: bool = True
 
+# ---- Conversation context (Context Manager) ----
+#: Maximum number of recent turns included verbatim in a model context.
+CONTEXT_MAX_RECENT_TURNS: int = 12
+#: Maximum number of *relevant older* turns recalled on top of the recent ones.
+CONTEXT_MAX_OLDER_TURNS: int = 6
+#: Total character budget for assembled context (recent + summary + recall + memory).
+CONTEXT_MAX_CHARS: int = 12000
+#: Minimum relevance for a recalled older turn to be included.
+CONTEXT_RELEVANCE_FLOOR: float = 0.35
+#: Allow the deterministic lexical recall path when embeddings are unavailable.
+CONTEXT_LEXICAL_FALLBACK: bool = True
+
+# ---- Conversation retrieval index (semantic search over history) ----
+#: Master switch for the conversation embedding index. When False, conversation
+#: search falls back to the deterministic lexical search in MemoryManager.
+CONVERSATION_INDEX_ENABLED: bool = True
+#: Separate Chroma collection so conversation history never mixes with knowledge
+#: or experience embeddings. Reuses the existing database folder + embedder.
+CONVERSATION_COLLECTION_NAME: str = "atlas_conversation"
+#: Conversations summarized after this many messages (real summarization).
+CONVERSATION_SUMMARY_MIN_MESSAGES: int = 12
+
+# ---- Long-term user memory ----
+#: Master switch for user memory. When False nothing is stored or retrieved.
+ENABLE_USER_MEMORY: bool = True
+#: Append-only JSONL of durable user memory records (survives restart).
+USER_MEMORY_FILE: Path = PROJECT_ROOT / "database" / "user_memory.jsonl"
+#: Separate Chroma collection for user-memory embeddings (never mixed).
+USER_MEMORY_COLLECTION_NAME: str = "atlas_user_memory"
+#: Maximum memories surfaced into one context.
+USER_MEMORY_RETRIEVAL_LIMIT: int = 4
+#: Retained user-memory record cap so the store stays a bounded history.
+USER_MEMORY_MAX_RECORDS: int = 2000
+
+# ---- Conversation streaming ----
+#: Allow Server-Sent Events streaming of real execution events. When False the
+#: API still serves the same turn, just without a live event stream.
+ENABLE_CONVERSATION_STREAMING: bool = True
+
 # ---- Natural-language reasoning pipeline ----
 # Master switch: when False, Atlas uses the deterministic fast path only and
 # never spends local inference on interpretation/recovery.

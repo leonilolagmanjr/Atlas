@@ -150,6 +150,59 @@ class AnswerGenerator:
             logger.exception("Answer generation failed")
             return None
 
+    def stream(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        on_token: Callable[[str], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
+        streamer: Callable[..., str] | None = None,
+    ) -> str:
+        """Stream an answer through the provider boundary, token by token.
+
+        ``streamer`` is the injected streaming model call; it is passed
+        explicitly rather than sniffed off the receiver, because a callable
+        object does not carry its own ``stream`` attribute. When no streamer is
+        given, one blocking call is made and the whole answer is reported as a
+        single token. Per-word progress is never manufactured for the UI.
+        """
+
+        if streamer is not None:
+            # The streaming boundary is an *object* exposing ``stream`` (the
+            # provider/`llm.stream` shape). A bare callable that only implements
+            # ``__call__`` cannot be used as a streamer, so the contract is
+            # checked here rather than discovered through a confusing TypeError.
+            implementation = getattr(streamer, "stream", None)
+            if not callable(implementation):
+                logger.warning(
+                    "Streaming boundary %r exposes no stream(); answering without token events",
+                    getattr(streamer, "__name__", type(streamer).__name__),
+                )
+            else:
+                try:
+                    return implementation(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        on_token=on_token,
+                        should_stop=should_stop,
+                    )
+                except Exception:  # noqa: BLE001 - reported honestly by the caller
+                    logger.exception("Streaming answer generation failed")
+                    return ""
+            # No usable streamer: fall through to the blocking askable rather
+            # than fabricating token events.
+        if self._ask is None:
+            return ""
+        try:
+            text = self._ask(system_prompt=system_prompt, user_prompt=user_prompt)
+        except Exception:  # noqa: BLE001
+            logger.exception("Answer generation failed")
+            return ""
+        if on_token is not None and text:
+            on_token(text)
+        return text or ""
+
     # -- evidence-grounded answers -------------------------------------------------
 
     def grounded(

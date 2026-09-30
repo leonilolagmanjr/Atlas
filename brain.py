@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 import time
-
 from functools import partial
+from typing import Callable
 
 from config import (
     DATABASE_FOLDER,
@@ -68,6 +68,9 @@ class Brain:
         self._planner = planner or Planner(registry=tool_router, ask=self._ask)
         self._pending_contexts: dict[str, ExecutionContext] = {}
         self._last_context: ExecutionContext | None = None
+        #: Cooperative cancellation check for the in-flight request, supplied by
+        #: the Conversation Runtime so a stopped turn really stops.
+        self._cancel: Callable[[], bool] | None = None
         # Conversation-scoped task state for follow-ups ("make it about cars").
         self._active_intent: StructuredIntent | None = None
         self._active_task: Task | None = None
@@ -126,17 +129,36 @@ class Brain:
         )
 
 
-    def process(self, user_input: str) -> str:
-        """Process a user request through Planner and Executor."""
+    def process(
+        self,
+        user_input: str,
+        cancel: Callable[[], bool] | None = None,
+        on_event: Callable[[str, dict], None] | None = None,
+    ) -> str:
+        """Process a user request through Planner and Executor.
+
+        ``cancel`` is an optional cooperative cancellation check. It is
+        consulted after interpretation, after planning, and by the executor
+        before every step, so a request that is stopped does not go on planning
+        and running the rest of its plan. It is cooperative: a call already in
+        flight (a model, file, or network call) is not preempted mid-call.
+
+        ``on_event`` receives ``(event_type, payload)`` for real execution
+        activity as it happens, so a streaming client does not have to wait for
+        the whole task to learn what Atlas is doing.
+        """
 
         started_at = time.perf_counter()
         context = ExecutionContext(user_input=user_input, normalized_input=user_input.strip())
         self._last_context = context
         trace = PipelineTrace(user_input=user_input)
+        self._cancel = cancel
 
         logger.info("Brain received request")
 
         try:
+            if self._cancelled(cancel):
+                return self._cancelled_response(context, started_at, trace)
             history = ""
             if self._memory_manager is not None:
                 history = self._memory_manager.build_conversation_history_for_prompt()
@@ -156,6 +178,8 @@ class Brain:
             context.metadata["intent_reading"] = task.context.get("intent_reading", {})
             context.metadata["capability_check"] = self._intent_engine.validate_capabilities(task)
             trace.record_intent_reading(task.context.get("intent_reading", {}))
+            if self._cancelled(cancel):
+                return self._cancelled_response(context, started_at, trace)
             # 2. Deterministic validation against the capability registry.
             task_validation = self._task_validator.validate(task)
             context.metadata["task"] = task.to_dict()
@@ -183,12 +207,16 @@ class Brain:
                     task=task,
                     prior_task=self._active_task,
                     history=history,
+                    cancelled=cancel,
+                    on_event=on_event,
                 )
                 context.metadata["task"] = task.to_dict()
                 context.metadata["reasoning"] = task.context.get("reasoning", [])
                 context.metadata["reasoning_summary"] = task.context.get("reasoning_summary", "")
                 trace.record_task(task.to_dict())
                 if answer is not None:
+                    if self._cancelled(cancel):
+                        return self._cancelled_response(context, started_at, trace)
                     context.metadata["reasoning"] = (answer.metadata or {}).get(
                         "reasoning", []
                     )
@@ -220,6 +248,25 @@ class Brain:
                                 })
                     context.web_sources = web_sources
                     context.metadata["web_results"] = web_results
+                    # Record the read-only tools the reasoning engine actually
+                    # ran. The early-answer path does not go through the
+                    # executor, so without this a conversation would show no
+                    # activity for a turn that really searched or read files.
+                    for observation in (answer.metadata or {}).get("tool_calls", []) or []:
+                        if not isinstance(observation, dict) or not observation.get("tool"):
+                            continue
+                        success = bool(observation.get("success"))
+                        context.tool_calls.append(
+                            {
+                                "tool": observation.get("tool"),
+                                "status": "completed" if success else "failed",
+                                "success": success,
+                                "parameters": {},
+                                "output": None,
+                                "error": None,
+                                "source": "reasoning",
+                            }
+                        )
                     # Preserve the tool the reasoning engine actually ran so the
                     # execution snapshot stays observable on this early-answer path.
                     selected_tool = (answer.metadata or {}).get("selected_tool")
@@ -287,6 +334,9 @@ class Brain:
             context.metadata["task_requires_confirmation"] = task_validation.requires_confirmation
             trace.record_plan(planner_decision)
 
+            if self._cancelled(cancel):
+                return self._cancelled_response(context, started_at, trace)
+
             # 4. Validate the concrete plan shape before executing anything.
             validation = _validate_plan(planner_decision.plan)
             context.metadata["plan_validation"] = validation
@@ -312,7 +362,7 @@ class Brain:
             )
 
             # 5. Deterministic execution (with verification + recovery inside).
-            self._executor.execute(planner_decision.plan, context)
+            self._executor.execute(planner_decision.plan, context, cancel=cancel, on_event=on_event)
             if context.status == TaskStatus.WAITING_FOR_CONFIRMATION:
                 self._pending_contexts[context.task_id] = context
             if context.status == TaskStatus.COMPLETED:
@@ -322,11 +372,16 @@ class Brain:
             trace.record_execution(context)
             # 5b. Experience memory: record a compact, unevaluated experience for
             # a meaningful completed task so the user's Success/Failed answer has
-            # something durable to attach to. Casual conversation is skipped.
-            self._record_experience(context, experience_context)
+            # something durable to attach to. Casual conversation is skipped, and
+            # a cancelled turn records nothing: it teaches nothing about success.
+            if context.status != TaskStatus.CANCELLED:
+                self._record_experience(context, experience_context)
             return self._complete(context, started_at, trace)
 
         except Exception as exc:
+            if self._cancelled(cancel):
+                logger.info("Brain request cancelled during execution")
+                return self._cancelled_response(context, started_at, trace)
             logger.exception("Brain execution failed")
             context.status = TaskStatus.FAILED
             context.errors.append(f"Brain execution failed ({type(exc).__name__})")
@@ -335,12 +390,39 @@ class Brain:
             context.final_response = UNKNOWN_RESPONSE
             return self._complete(context, started_at, trace)
 
+    @staticmethod
+    def _cancelled(cancel: Callable[[], bool] | None) -> bool:
+        return bool(cancel is not None and cancel())
+
+    def _cancelled_response(
+        self,
+        context: ExecutionContext,
+        started_at: float,
+        trace: PipelineTrace | None = None,
+    ) -> str:
+        """Record a real cancellation and stop the request there.
+
+        Nothing further is interpreted, planned, or executed, and the context
+        says ``CANCELLED`` rather than pretending to have failed.
+        """
+
+        context.status = TaskStatus.CANCELLED
+        context.metadata["cancelled"] = True
+        if context.execution_plan is not None:
+            context.execution_plan.status = PlanStatus.SKIPPED
+        context.final_response = "Cancelled before Atlas finished that."
+        logger.info("Brain request cancelled before execution finished")
+        return self._complete(context, started_at, trace)
+
     def _complete(
         self,
         context: ExecutionContext,
         started_at: float,
         trace: PipelineTrace | None = None,
     ) -> str:
+        # The cancellation check belongs to the request that supplied it. Clear
+        # it here so a later approval/resume cannot inherit a stale token.
+        self._cancel = None
         context.execution_time = time.perf_counter() - started_at
         if context.execution_plan is not None:
             context.execution_plan.metadata["brain_execution_time"] = context.execution_time
