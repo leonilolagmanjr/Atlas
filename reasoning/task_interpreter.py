@@ -21,12 +21,12 @@ from __future__ import annotations
 import logging
 import re
 from typing import Any, Callable, Iterable, Optional
-
 from config import ENABLE_LLM_INTERPRETATION, INTERPRETER_CONFIDENCE_THRESHOLD
 from models_task import (
     Task, TaskAction, TaskState, EvidenceState, CompletionCriteria
 )
 from reasoning.json_llm import safe_reasoning_call
+from reasoning.topic_extraction import CONNECTORS, TopicReading, extract_topic, normalize_query
 from tools.capabilities import CapabilityRegistry
 
 logger = logging.getLogger(__name__)
@@ -126,6 +126,14 @@ _TRANSFORM_VERBS = ("summarize", "summarise", "condense", "extract", "abstract",
 _PLACEMENT_VERBS = _CREATE_VERBS + ("copy", "paste", "type", "put", "place", "add", "insert", "save", "store", "export", "dump", "drop")
 #: Transformation nouns that indicate the output should be a transformed version
 _TRANSFORM_NOUNS = ("summary", "summarisation", "explanation", "overview", "synopsis", "digest", "abstract")
+#: Multi-word transformation phrases that name a *reshaped output* ("key points",
+#: "important findings", "beginner guide"). These are transformations, not source
+#: content types, and must produce a transform step rather than a new search.
+_TRANSFORM_PHRASES = (
+    "key points", "key events", "key takeaways", "important findings",
+    "important points", "main points", "key facts", "beginner guide",
+    "quick summary", "brief summary",
+)
 _PRONOUNS = {"it", "that", "this", "them", "those", "there", "the same", "one", "something"}
 
 
@@ -159,8 +167,10 @@ _IN_APP_RE = re.compile(
 #: anchored on the verb instead of adding "to" to the generic preposition list.
 _PLACE_TO_APP_RE = re.compile(
     r"\b(?:copy|paste|write|save|put|place|add|insert|type|dump|drop)\s+"
-    r"(?:it\s+|this\s+|that\s+|everything\s+|"
-    r"the\s+(?:text|content|result|results|answer|script|code|list)\s+)?"
+    r"(?:it\s+|this\s+|that\s+|these\s+|those\s+|everything\s+|all\s+|them\s+"
+    r"|the\s+(?:[A-Za-z][A-Za-z0-9'-]*\s+){0,3}"
+    r"|my\s+(?:[A-Za-z][A-Za-z0-9'-]*\s+){0,2}"
+    r"|a\s+(?:[A-Za-z][A-Za-z0-9'-]*\s+){0,2})?"
     r"(?:to|into|onto)\s+"
     r"([A-Za-z][A-Za-z0-9._+-]*(?: [A-Za-z][A-Za-z0-9._+-]*){0,3})"
     r"(?:\s+(?:and\b|about\b|that\b|which\b)|$|[,.?!])",
@@ -444,6 +454,28 @@ class SemanticTaskInterpreter:
         # model guess, because it is copied from the literal request.
         if not llm.entities.get("application") and heuristic.entities.get("application"):
             llm.entities["application"] = heuristic.entities["application"]
+        # Carry the semantic topic decomposition onto the reconciled task when the
+        # model did not supply one. It is derived from the literal text, so it is
+        # trustworthy provenance and it gives the recovery layer a normalized
+        # query. A model-provided query is re-cleaned so a connector cannot leak
+        # into a tool call even when the model emits one.
+        if not llm.research_query:
+            llm.research_query = heuristic.research_query or str(
+                llm.entities.get("research_query") or ""
+            )
+        if not llm.raw_topic:
+            llm.raw_topic = heuristic.raw_topic
+        if not llm.normalized_topic:
+            llm.normalized_topic = heuristic.normalized_topic
+        if not llm.topic_reading:
+            llm.topic_reading = dict(heuristic.topic_reading or {})
+        for action in llm.actions:
+            if action.capability in {"web.search", "web.research"}:
+                raw_query = str(action.parameters.get("query") or "").strip()
+                if raw_query:
+                    cleaned, _ = normalize_query(raw_query)
+                    if cleaned:
+                        action.parameters["query"] = cleaned
         return llm
 
     # -- deterministic path ------------------------------------------------------
@@ -484,6 +516,12 @@ class SemanticTaskInterpreter:
             subtasks=subtasks,
             evidence_state=evidence_state,
             completion_criteria=completion_criteria,
+            # Semantic topic decomposition: the raw span, the confident
+            # normalization, and the research query derived from the subject.
+            raw_topic=str(entities.get("raw_topic") or ""),
+            normalized_topic=str(entities.get("normalized_topic") or ""),
+            research_query=str(entities.get("research_query") or ""),
+            topic_reading=dict(entities.get("topic_reading") or {}),
         )
 
         # Add execution trace entry
@@ -491,7 +529,12 @@ class SemanticTaskInterpreter:
             "stage": "interpretation",
             "action": "deterministic_interpretation",
             "result": "task_created",
-            "details": {"task_type": task_type, "goal": goal, "actions_count": len(actions), "subtasks_count": len(subtasks)}
+            "details": {
+                "task_type": task_type, "goal": goal,
+                "actions_count": len(actions), "subtasks_count": len(subtasks),
+                "topic": entities.get("topic"),
+                "research_query": entities.get("research_query"),
+            }
         })
 
         return task
@@ -695,11 +738,21 @@ class SemanticTaskInterpreter:
                 ("pull", r"\bpull\b"),
                 ("browse", r"\bbrowse\b"),
                 ("google", r"\bgoogle\b"),
-                ("research", r"\bresearch\s+(?:for|about|on|into|regarding|concerning|the|latest|latest|recent)\b"),
+                # "research X", "research about X", "research how X works" are all
+                # retrieval; the connector is optional, not required.
+                ("research", r"\bresearch(?:es|ing)?\b"),
             ]
         )
         has_create_verb = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _CREATE_VERBS)
         has_open_verb = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _OPEN_VERBS)
+        # An "informational about" request ("tell me about X", "give me
+        # information about X", "what about X") asks *about a subject* even
+        # though it names no search/find verb. The subject is the topic; the
+        # request is informational, not a mutation.
+        has_informational_about = bool(
+            re.search(r"\b(?:tell me|give me|show me|what|how|anything|everything)\b", lowered)
+            and any(re.search(rf"\b{re.escape(c)}\b", lowered) for c in CONNECTORS)
+        )
 
         # Explicit application: "open X", else "in X" / "using X".
         application = None
@@ -722,7 +775,7 @@ class SemanticTaskInterpreter:
             # A placement verb with "to"/"into" ("copy to Notepad") names the
             # same kind of destination as "in Notepad"; _IN_APP_RE only covers
             # the generic prepositions, so this case is matched verb-anchored.
-            to_match = _PLACE_TO_APP_RE.search(lowered)
+            to_match = _PLACE_TO_APP_RE.search(text)
             if to_match:
                 candidate = to_match.group(1).strip()
                 if self._plausible_application(candidate):
@@ -769,12 +822,21 @@ class SemanticTaskInterpreter:
 
         # Topic: "about X" is the strongest signal for content creation.
         # Only apply this for create requests, not search requests.
+        topic_reading: TopicReading | None = None
         if has_create_verb and not has_search_verb:
             topic_match = _ABOUT_RE.search(text)
             if topic_match:
                 topic = topic_match.group(1).strip(" ,.")
                 if topic:
-                    entities["topic"] = topic
+                    # Run the captured span through the semantic extractor so a
+                    # framing head noun ("a poem about the history of cars")
+                    # yields the subject alone and the reading is recorded.
+                    topic_reading = self._read_topic(
+                        f"{topic_match.group(0).split()[0]} {topic}", content_noun=content_type
+                    )
+                    entities["topic"] = (
+                        topic_reading.subject if topic_reading and topic_reading.subject else topic
+                    )
             elif content_type:
                 # "make a list of 5 workout exercises" -- the topic follows "of"
                 # after the content noun, not "about". Only consulted when a
@@ -785,12 +847,36 @@ class SemanticTaskInterpreter:
                     topic = noun_of.group(1).strip(" ,.")
                     if topic:
                         entities["topic"] = topic
+                if topic_reading is None:
+                    topic_reading = self._read_topic(text, content_noun=content_type)
+                    if topic_reading and topic_reading.subject and not entities.get("topic"):
+                        entities["topic"] = topic_reading.subject
 
-        # For search requests without "about", extract the search target as the topic.
+        # For search requests without "about", extract the semantic subject as
+        # the topic. The raw search target can carry instruction language
+        # ("about sykrim", "information about skyrim", "videos about skyrim");
+        # the topic extractor separates the connector, the metalinguistic head
+        # noun, and the content-type noun from the actual subject, so the query
+        # Atlas researches is the subject alone.
         if has_search_verb and not entities.get("topic"):
-            search_target = self._extract_search_target(text)
-            if search_target:
-                entities["topic"] = search_target
+            topic_reading = self._read_topic(text, content_noun=content_type)
+            if topic_reading and topic_reading.subject:
+                entities["topic"] = topic_reading.subject
+        # An informational "about X" request ("tell me about Skyrim") names a
+        # subject without a search verb; extract it so the reasoning layer can
+        # answer about the right thing instead of treating the request as an
+        # empty conversational turn.
+        if topic_reading is None and has_informational_about and not entities.get("topic"):
+            topic_reading = self._read_topic(text, content_noun=content_type)
+            if topic_reading and topic_reading.subject:
+                entities["topic"] = topic_reading.subject
+        # A search request that names a connector even *with* a topic already
+        # captured (e.g. an earlier create clause) still benefits from the
+        # normalized reading, so the two paths agree on one subject.
+        if topic_reading is None and has_search_verb and entities.get("topic") is not None:
+            topic_reading = self._read_topic(str(entities["topic"]), content_noun=content_type)
+        if topic_reading is not None:
+            self._record_topic_reading(entities, topic_reading)
         # For transformation requests (with transform verb or transform noun),
         # extract the subject. Handles:
         # - "summarize the avatar movie in notepad" (transform verb)
@@ -1039,6 +1125,92 @@ class SemanticTaskInterpreter:
             return False
         return True
 
+    def _read_topic(self, text: str, *, content_noun: str | None = None) -> TopicReading | None:
+        """Read a request (or span) into a :class:`TopicReading`.
+
+        Thin wrapper over the semantic topic extractor that supplies this
+        interpreter's vocabulary as *known entities* for confident typo
+        correction. It never invents a correction: a token is only replaced
+        when a known term is one edit away.
+        """
+
+        noun = str(content_noun or "").strip()
+        if not noun:
+            # A content-type noun the interpreter has not resolved yet ("videos"
+            # is not in _CONTENT_NOUNS) still describes the *kind* of result and
+            # must be separated from the subject rather than treated as content.
+            noun = self._leading_content_noun(text)
+        reading = extract_topic(
+            text,
+            content_noun=noun,
+            known_entities=self._known_entities(),
+        )
+        if reading is None or not reading.subject:
+            return None
+        # A subject that is only a pronoun or that names a local object ("that
+        # file", "the document") is not a web query; leave it unresolved so the
+        # request clarifies instead of searching for a literal pronoun.
+        words = [w for w in re.split(r"\W+", reading.subject.casefold()) if w]
+        if not words or words[0] in _PRONOUNS:
+            return None
+        if any(w in {"file", "files", "folder", "document", "documents"} for w in words):
+            return None
+        return reading
+
+    @staticmethod
+    def _leading_content_noun(text: str) -> str:
+        """Return a leading kind-of-result noun ("videos", "articles") if any."""
+
+        match = re.match(
+            r"^\s*(?:please\s+|can\s+you\s+|could\s+you\s+)?"
+            r"(?:search|find|look up|look for|google|browse|get|show|research|fetch)\b\s+"
+            r"(?:me\s+|for\s+|the\s+|some\s+|any\s+|a\s+|an\s+)?"
+            r"([a-z]+(?:s|es)?)\b",
+            text.casefold(),
+        )
+        if not match:
+            return ""
+        candidate = match.group(1)
+        # Singularize crudely so "videos" -> "video", "articles" -> "article".
+        for known in (
+            "video", "article", "review", "news", "script", "transcript",
+            "lyric", "documentation", "tutorial", "guide", "forum",
+        ):
+            if candidate == known or candidate == known + "s" or candidate == known + "es":
+                return known
+        return ""
+
+    def _known_entities(self) -> list[str]:
+        """Canonical spellings available for confident subject normalization.
+
+        The list is deliberately small and sourced from terms Atlas already
+        knows (applications, platforms, content nouns). It is not a dictionary
+        of world knowledge; genuine subjects are preserved verbatim.
+        """
+
+        return sorted(
+            set(_KNOWN_APPLICATIONS)
+            | set(_SEARCH_PLATFORMS)
+            | set(_CONTENT_NOUNS)
+        )
+
+    @staticmethod
+    def _record_topic_reading(entities: dict[str, Any], reading: TopicReading) -> None:
+        """Store the topic reading alongside the entities for diagnostics.
+
+        ``raw_topic`` is what the text literally contained; ``normalized_topic``
+        is the confident correction; the ``topic`` entity (already set) is the
+        clean subject used to build the research query. Keeping all three lets
+        the reason for an interpretation be inspected without re-parsing.
+        """
+
+        if reading.normalized and reading.normalized.casefold() != reading.subject.casefold():
+            entities.setdefault("raw_topic", reading.subject)
+            entities["normalized_topic"] = reading.normalized
+        # The query the research layer should receive: the normalized subject.
+        entities["research_query"] = reading.query or reading.subject
+        entities["topic_reading"] = reading.to_dict()
+
     def _extract_search_target(self, text: str) -> str | None:
         """Extract the search target from a search request.
 
@@ -1208,7 +1380,9 @@ class SemanticTaskInterpreter:
                 ("pull", r"\bpull\b"),
                 ("browse", r"\bbrowse\b"),
                 ("google", r"\bgoogle\b"),
-                ("research", r"\bresearch\s+(?:for|about|on|into|regarding|concerning|the|latest|recent)\b"),
+                # "research X", "research about X", "research how X works" are all
+                # retrieval; the connector is optional, not required.
+                ("research", r"\bresearch(?:es|ing)?\b"),
             ]
         )
         has_move = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _MOVE_VERBS)
@@ -1517,7 +1691,10 @@ class SemanticTaskInterpreter:
         lowered = text.casefold()
         if any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _TRANSFORM_VERBS):
             return True
-        return any(re.search(rf"\b{noun}s?\b", lowered) for noun in _TRANSFORM_NOUNS)
+        if any(re.search(rf"\b{noun}s?\b", lowered) for noun in _TRANSFORM_NOUNS):
+            return True
+        # Multi-word transformation phrases ("key points", "important findings").
+        return any(phrase in lowered for phrase in _TRANSFORM_PHRASES)
     def _local_file_transform(self, text: str, entities: dict[str, Any]) -> list[TaskAction]:
         # Read the referenced local file, summarize/transform its content, then
         # optionally deliver it. The file reference decides the search pattern;
@@ -1737,7 +1914,8 @@ class SemanticTaskInterpreter:
         has_placement = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _PLACEMENT_VERBS)
         has_transformation_verb = any(re.search(rf"\b{verb}\w*\b", lowered) for verb in _TRANSFORM_VERBS)
         has_transformation_noun = any(re.search(rf"\b{noun}\b", lowered) for noun in _TRANSFORM_NOUNS)
-        has_transformation = has_transformation_verb or has_transformation_noun
+        has_transformation_phrase = any(phrase in lowered for phrase in _TRANSFORM_PHRASES)
+        has_transformation = has_transformation_verb or has_transformation_noun or has_transformation_phrase
         if not (has_placement or has_transformation):
             return []
         application = entities.get("application")
@@ -2035,7 +2213,10 @@ class SemanticTaskInterpreter:
         return folder or name
 
     def _search_query(self, text: str, entities: dict[str, Any]) -> str:
-        query = entities.get("topic")
+        # The semantic subject, normalized at interpretation time, is the query.
+        # Using it (rather than the raw request) is what stops instruction words
+        # like "about" from leaking into a tool call.
+        query = entities.get("research_query") or entities.get("topic")
         if query:
             return query
         # A hybrid request such as "search the web for X and write it into

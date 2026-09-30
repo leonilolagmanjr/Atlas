@@ -1202,6 +1202,12 @@ def classify_failure(context: ExecutionContext) -> dict[str, object]:
         category = "missing_target"
     elif "parameter" in message or "missing" in message or "must be" in message:
         category = "invalid_arguments"
+    elif "no relevant web content" in message or "no usable evidence" in message:
+        # A retrieval search returned nothing usable. This is often an
+        # interpretation/query problem (the query carried instruction language or
+        # a typo), not a network failure, so it is its own category and is
+        # recoverable by retrying with a normalized query.
+        category = "retrieval_failed"
     elif "timeout" in message or "timed out" in message:
         category = "timeout"
     else:
@@ -1212,6 +1218,7 @@ def classify_failure(context: ExecutionContext) -> dict[str, object]:
         "timeout",
         "ui_target_missing",
         "ui_verification_failed",
+        "retrieval_failed",
     }
     return {"category": category, "recoverable": recoverable, "message": message}
 

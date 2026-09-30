@@ -112,6 +112,22 @@ class PipelineTrace:
             lines.append("INTENT READING: " + _dump(self.intent_reading))
         if self.task:
             lines.append("TASK: " + _dump(self.task))
+            # A compact, human-readable topic decomposition makes an
+            # interpretation problem distinguishable from an execution problem.
+            reading = self.task.get("topic_reading") or {}
+            if reading:
+                lines.append(
+                    "TOPIC DECOMPOSITION: "
+                    + _dump({
+                        "raw_topic": reading.get("raw_topic"),
+                        "connector": reading.get("connector"),
+                        "stripped_head": reading.get("stripped_head"),
+                        "content_noun": reading.get("content_noun"),
+                        "subject": reading.get("subject"),
+                        "normalized": reading.get("normalized"),
+                        "research_query": self.task.get("research_query"),
+                    })
+                )
         if self.validation:
             lines.append("VALIDATION: " + _dump(self.validation))
         if self.intent:

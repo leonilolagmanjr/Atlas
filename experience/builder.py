@@ -472,6 +472,10 @@ def _failure_category(
             "invalid_arguments": "wrong_action",
             "ui_target_missing": "delivery_not_completed",
             "missing_target": "wrong_interpretation",
+            # A retrieval search that returned nothing usable is attributed to
+            # interpretation/query normalization, not to the research tool: the
+            # query, not the network, is the usual cause (spec failure taxonomy).
+            "retrieval_failed": "wrong_interpretation",
         }
         if derived in mapping:
             return mapping[derived]

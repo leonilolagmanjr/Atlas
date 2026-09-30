@@ -219,6 +219,16 @@ Rules:
   A named website, application, company, or technology can be the SUBJECT of
   content rather than the target of an action. Only set "site" when the user
   expresses a SEARCH, FIND, BROWSE, or LOOKUP intent.
+- TOPIC SEPARATION: a connector (about, on, regarding, concerning, related
+  to) and a framing noun (information, info, details, facts, overview) are
+  INSTRUCTION language, not subject content. "research about Skyrim" has
+  topic=Skyrim, NOT "about Skyrim". "find information about Skyrim" has
+  topic=Skyrim. "research how Skyrim's leveling system works" has topic="how
+  Skyrim's leveling system works". Keep genuine qualifiers: "research the best
+  Skyrim mods" keeps "best Skyrim mods"; "research the history of Skyrim" keeps
+  "the history of Skyrim". When a query field is set, it must not begin with a
+  connector or framing noun, and must not include an action verb (research,
+  find, search).
 - When a later action consumes an earlier action's result, reference it with
   "$name" (for example the generated text is "$generated_text"). Set "produces"
   on the action that creates that value.
@@ -349,6 +359,40 @@ def task_interpreter_user_prompt(
         ]
     )
     return "\n\n".join(parts)
+
+
+ENTITY_RESOLUTION_SYSTEM = """You are Atlas's entity resolver.
+
+You are given ONE term from a user's request that Atlas could not resolve
+deterministically. Decide whether it is a misspelling of a well-known name, and
+return only structured JSON:
+
+{
+  "candidate": "corrected or canonical name",
+  "confidence": 0.0,
+  "reason": "short reason",
+  "alternatives": ["other plausible names, if any"]
+}
+
+Rules:
+- You may only suggest a NAME. You never execute a tool, command, or action.
+- If the term is already a real word or a plausible name, return the term
+  unchanged with a low confidence instead of inventing something.
+- Use the surrounding request context to disambiguate the sense.
+- Never invent a name you are not reasonably certain about.
+"""
+
+
+def entity_resolution_user_prompt(*, candidate: str, context: str, kind: str) -> str:
+    """Build the entity-resolution prompt from live request context."""
+
+    return (
+        f"Kind of term: {kind}\n"
+        f"Request context: {context or '(none)'}\n"
+        f"Term to resolve: {candidate}\n"
+        "Return the resolution JSON now."
+    )
+
 
 
 RETRIEVAL_VALIDATOR_SYSTEM = """You are Atlas's retrieval validator.

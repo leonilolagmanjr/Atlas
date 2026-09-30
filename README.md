@@ -71,6 +71,22 @@ An action identifies a registered capability, parameters, dependencies, and opti
 
 The model proposes structure, not shell execution. Validation checks capability existence, required parameters/types, dependency identifiers, and output references. Planning orders dependencies, but cycle validation and order-independent reference validation remain incomplete. The generated-text handoff works; generic `$name` output resolution still has legacy gaps and must not be treated as reliable arbitrary dataflow.
 
+### Semantic topic decomposition and query normalization
+
+Natural-language instruction words must not leak into a tool call. `reasoning/topic_extraction.py` is the semantic boundary that converts a request span into a structured `TopicReading` — the raw subject, the connector and framing noun that were stripped, the content-type noun that was separated, the clean subject, a confidently normalized subject, and the research query — so that:
+
+```text
+USER:            research about sykrim and write it in notepad
+SEMANTIC:        action = research   topic = sykrim   destination = Notepad
+TOOL INPUT:      web.research("sykrim")            (not "about sykrim")
+```
+
+It is semantic, not a phrase table: it reasons about the *role* of a span (action verb, connector, framing head noun, content-type noun, qualifier, content). A connector (`about`, `on`, `regarding`, `concerning`, `related to`, `re:`), a framing head noun (`information`, `info`, `details`, `facts`, `overview`), and a leading kind-of-result noun (`videos`, `articles`) are stripped only when they introduce the subject — an inner connector is preserved, so “the concept of a story about Skyrim” keeps its second “about”, and a bare `on` is stripped only as a lead-in (never from “the effects of X on Y”). Genuine qualifiers are kept (“best Skyrim mods”, “Skyrim survival mode”), and compound subjects stay whole (“how Skyrim's leveling system works”, “the history of Skyrim”).
+
+The interpreter applies this reading on the search, research, create, and informational paths and records it on the Task IR (`raw_topic`, `normalized_topic`, `research_query`, `topic_reading`); the query handed to `web.search`/`web.research` is built from the subject, never from the raw instruction. Typo correction is conservative and happens at the semantic level only when a known entity is one edit away (a capitalized transposition such as “Skryim” → “Skyrim”); an uncertain term is preserved rather than silently invented, and a real English word is never “corrected” (“mode” → “code” is refused).
+
+**Recovery.** If a first research pass returns nothing usable (“No relevant web content could be read for: about sykrim”), the reasoning engine performs one bounded query-normalization retry: it prefers the task's own normalized query/topic (which reflects the full intent), otherwise cleans the failed query itself, and only retries when the query genuinely changed. It is recorded in the execution trace and never loops. A retrieval failure is classified as `retrieval_failed` and attributed to `wrong_interpretation` in the experience layer, because the query — not the network — is the usual cause (see [Experience memory](#experience-memory-human-feedback-loop)).
+
 ### Intent Engine 2.0
 Between the interpreter and the validator, the **Intent Engine 2.0** (`reasoning/intent_engine.py`) augments the Task IR with an explicit *understanding* of the request, so a small local model does not have to decide every tool call itself:
 
@@ -89,7 +105,7 @@ It is one component with several deterministic passes — not a swarm of agents 
 - **Confidence as certainty.** Confidence reflects interpretation certainty, not model confidence theater: an under-specified target (“Get me some videos”) lowers it and raises an ambiguity, while a named entity (“Find MrBeast videos”) resolves it.
 - **Memory of corrections** (`reasoning/correction_memory.py`). Reusable, high-confidence structured lessons (JSONL under `memory/`) can override a reading for a class of phrasings. Only curated lessons are stored — never every turn, never an uncontrolled vector dump.
 
-The engine is model-agnostic: it consumes the interpreter's Task IR and works with any local model (or none, on the deterministic fast path). The `PipelineTrace` (`reasoning/diagnostics.py`) records the intent reading for observability.
+The engine is model-agnostic: it consumes the interpreter's Task IR and works with any local model (or none, on the deterministic fast path). The `PipelineTrace` (`reasoning/diagnostics.py`) records the intent reading and a compact `TOPIC DECOMPOSITION` line (raw topic, stripped connector/framing noun, separated content noun, subject, normalized subject, research query) for observability, so an interpretation problem is distinguishable from a planning or execution problem.
 
 ### Module map
 
@@ -99,6 +115,7 @@ The engine is model-agnostic: it consumes the interpreter's Task IR and works wi
 | `brain.py` | Request lifecycle, interpretation/validation, reasoning integration, action delegation, early-answer persistence |
 | `models_task.py`, `models.py` | Task IR, execution contexts, plans, steps, lifecycle and result models |
 | `reasoning/task_interpreter.py`, `reasoning/prompts.py`, `reasoning/json_llm.py` | Semantic interpretation and structured model output handling |
+| `reasoning/topic_extraction.py` | Semantic topic decomposition and query normalization: connector/framing-noun/content-noun separation, the structured `TopicReading`, and confident (never invented) typo correction |
 | `reasoning/intent_engine.py`, `reasoning/reference_resolver.py`, `reasoning/correction_memory.py` | Intent Engine 2.0: goal/outcome/capability understanding, conversation reference resolution, and structured interpretation lessons |
 | `reasoning/reasoning_engine.py` | Bounded source orchestration and answer/delegation decision |
 | `reasoning/query_router.py`, `reasoning/source_selector.py` | Routing signals and ordered source plans |
@@ -325,7 +342,7 @@ USER REQUEST -> INTENT -> PLAN -> EXECUTION -> VERIFICATION -> RESULT
 | `experience/builder.py` | Execution evidence -> compact experience record |
 | `experience/service.py` | The façade Brain and the API use: record, evaluate, retrieve, analyse |
 
-**Feedback controls.** After a task that actually *did* something — tool execution, research, an application action, a multi-step task, a generated deliverable — the control room shows `✓ Success` / `✗ Failed` attached to that specific result. A pure conversational answer shows no controls. Failure is optional to justify: the user can pick a category (wrong interpretation, wrong action, incomplete result, did not follow instruction, wrong information, failed to deliver, verification failed, other) and add a free-text correction, or click without a reason. Feedback is changeable and cannot be duplicated.
+**Feedback controls.** After a task that actually *did* something — tool execution, research, an application action, a multi-step task, a generated deliverable — the control room shows `✓ Success` / `✗ Failed` attached to that specific result. A pure conversational answer shows no controls. Failure is optional to justify: the user can pick a category (wrong interpretation, wrong action, incomplete result, did not follow instruction, wrong information, failed to deliver, verification failed, other) and add a free-text correction, or click without a reason. Feedback is changeable and cannot be duplicated. When the user does not pick a category, Atlas derives one deterministically: a retrieval that returned nothing usable is classified `retrieval_failed` and attributed to `wrong_interpretation`, not to the research tool, because the query (not the network) is the usual cause — so a misinterpreted request is not mislabeled as a tool failure.
 
 **Verification stays authoritative.** Completion criteria (`intent_match`, `required_information_present`, `transformation_completed`, `requested_application_used`, `requested_destination_reached`, `execution_completed`, `delivery_verified`, `final_result_valid`) are derived from tool results and the existing verifier, not from a model's claim. A model saying "Done." is never evidence. An effect the tool could not confirm stays *unknown* rather than being upgraded to a verified success, and a destination written from `applications.write_text` is only `delivery_verified` when the text was read back. When the user's answer disagrees with Atlas's own verification, that disagreement is surfaced rather than averaged away.
 
@@ -479,6 +496,7 @@ The frontend build is **`tsc -b && vite build`**, so it includes TypeScript chec
 The suite uses `unittest` and covers these categories:
 
 - Semantic Task/source fields, malformed model output, instructional-question versus action behavior, clarification and parameter preservation.
+- **Semantic topic decomposition** (`tests/test_topic_decomposition.py`): connector/framing-noun/content-noun separation and the structured reading; the full research matrix (“research about/on/regarding/concerning Skyrim”, “find information about Skyrim”, “look up information on Skyrim”, “tell me about Skyrim”, “research the history of Skyrim”, “research about the best Skyrim mods”); the exact failure (“research about sykrim and write it in notepad” must produce query “sykrim”, never “about sykrim”); research+transformation+destination separation; the non-research cases (poem about cars, videos about Skyrim on YouTube, explanation about photosynthesis); preservation of inner “about” and compound subjects; conservative typo correction that never rewrites a real word; and the bounded query-normalization recovery. The intermediate representation is asserted, not only the final action.
 - **Intent Engine 2.0** (`tests/test_intent_engine.py`): answer-vs-research, creation-without-web, research+transformation+delivery, follow-up reference resolution (“make it shorter”, “put that in Notepad”, “do the same for Interstellar”), application-vs-information, local-file-vs-web, ambiguity and its resolution, multi-step composition, and the negative cases — no spurious web, no spurious application, no lost context, no invented capability, and malformed model output never reaching the executor.
 - Registry-derived capability availability/introspection, task validation, dependency ordering, generated-text handoff, action delegation and end-to-end execution with fake models/tools. This coverage does not establish complete cycle/reference correctness.
 - General/current/local-file/system/memory source routing, accepted versus rejected evidence, answer provenance, per-call budgets and cooperative deadline/cancellation behavior.

@@ -24,6 +24,7 @@ from reasoning.reasoning_models import (
 )
 from reasoning.self_introspection import SelfIntrospection
 from reasoning.source_selector import SourceSelector
+from reasoning.topic_extraction import normalize_query
 from web_task import reformulate_query, validate_content, detect_source_type, RetrievalTask
 #: Read-only research capabilities the reasoning engine performs itself while
 #: synthesizing a cited answer: web lookups and non-mutating file inspection.
@@ -435,20 +436,38 @@ class ReasoningEngine:
         evidence_state = task.evidence_state
         max_attempts = evidence_state.max_retrieval_attempts
         gained_total = 0
-        
+                #: Bounded query-normalization recovery. When the first query returns
+        #: nothing usable, it may be malformed (a connector leaked in, or the
+        #: topic was mistyped). One normalization retry is attempted before the
+        #: generic reformulation, and it is recorded so the feedback loop can
+        #: learn that interpretation/query-normalization was the problem.
+        normalization_retried = False
+
         for attempt in range(max_attempts):
             if not self._run_active():
                 break
-                
+
             evidence_state.retrieval_attempts = attempt + 1
-            
+
             # Generate query for this attempt
             if attempt == 0:
                 # Use the interpreter's planned query or the original question
                 query = self._get_initial_query(task, question)
             else:
-                # Reformulate query based on previous rejection
-                query = self._reformulate_query_for_attempt(evidence_state, attempt)
+                query = None
+                if not normalization_retried:
+                    query = self._normalized_retry_query(task, evidence_state)
+                    if query is not None:
+                        normalization_retried = True
+                        task.execution_trace.append({
+                            "stage": "retrieval",
+                            "action": "query_normalization_recovery",
+                            "result": "retrying_with_normalized_query",
+                            "details": {"query": query},
+                        })
+                if query is None:
+                    # Reformulate query based on previous rejection
+                    query = self._reformulate_query_for_attempt(evidence_state, attempt)
             
             evidence_state.last_query = query
             
@@ -523,6 +542,46 @@ class ReasoningEngine:
             if action.capability in ("web.search", "web.research") and "query" in action.parameters:
                 return str(action.parameters["query"])
         return question
+
+    def _normalized_retry_query(self, task: Task, evidence_state: EvidenceState) -> str | None:
+        """Return a semantically normalized query for one bounded retry.
+
+        A first web pass that returned nothing usable often means the query was
+        malformed (a connector leaked in, or the topic carried framing words).
+        This builds a cleaned candidate and returns it only when it actually
+        differs from what was searched, so the retry is meaningful and cannot
+        loop: the caller allows it once.
+
+        Preference order: the task's own normalized query/topic (which the
+        interpreter derived from the whole request) wins over a lighter cleaning
+        of the failed query, because it reflects the full intent rather than the
+        already-truncated string that failed.
+        """
+
+        current = (evidence_state.last_query or self._get_initial_query(task, "")).strip()
+        if not current:
+            return None
+        current_key = current.casefold()
+
+        # Prefer the interpreter's own normalized query/topic when it differs.
+        for candidate in (
+            task.research_query,
+            task.normalized_topic,
+            str(task.entities.get("topic") or ""),
+        ):
+            candidate = (candidate or "").strip()
+            if not candidate or candidate.casefold() == current_key:
+                continue
+            cleaned_candidate, _ = normalize_query(candidate)
+            if cleaned_candidate and cleaned_candidate.casefold() != current_key:
+                return cleaned_candidate
+
+        # Otherwise, clean the failed query itself (strips a leaked connector or
+        # framing head noun). Returned only when it genuinely changed.
+        cleaned, changed = normalize_query(current)
+        if changed and cleaned and cleaned.casefold() != current_key:
+            return cleaned
+        return None
 
     def _reformulate_query_for_attempt(self, evidence_state: EvidenceState, attempt: int) -> str:
         """Reformulate query based on what was missing in previous attempts."""

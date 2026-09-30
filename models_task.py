@@ -415,6 +415,19 @@ class Task:
     ambiguities: list[str] = field(default_factory=list)
     #: Short, inspectable reasons for the interpretation (never chain-of-thought).
     interpretation_notes: list[str] = field(default_factory=list)
+    # -- semantic topic decomposition (additive; empty by default) ---------------
+    #: The subject as it literally appeared, before connector/head-noun stripping
+    #: ("about sykrim", "videos about skyrim"). Diagnostic provenance only.
+    raw_topic: str = ""
+    #: The subject after confident normalization (typo/casing correction).
+    normalized_topic: str = ""
+    #: The query constructed for research/search tools. It is derived from the
+    #: semantic subject (never the raw instruction), so connector words do not
+    #: leak into a tool call.
+    research_query: str = ""
+    #: The full structured topic reading (connector, head noun, content noun,
+    #: qualifiers, notes). Kept for diagnostics; never executed.
+    topic_reading: dict[str, Any] = field(default_factory=dict)
 
     def apply_intent(self, intent: Any) -> "Task":
         """Write an Intent Engine reading back onto this task.
@@ -518,6 +531,11 @@ class Task:
             "needs_application": self.needs_application,
             "ambiguities": list(self.ambiguities),
             "interpretation_notes": list(self.interpretation_notes),
+            # Semantic topic decomposition
+            "raw_topic": self.raw_topic,
+            "normalized_topic": self.normalized_topic,
+            "research_query": self.research_query,
+            "topic_reading": dict(self.topic_reading),
             # Enhanced fields
             "task_state": self.task_state,
             "evidence_state": self.evidence_state.to_dict() if self.evidence_state else None,
@@ -597,6 +615,10 @@ class Task:
             needs_application=_boolean(data.get("needs_application")),
             ambiguities=_string_list(data.get("ambiguities")),
             interpretation_notes=_string_list(data.get("interpretation_notes")),
+            raw_topic=_text(data.get("raw_topic")) or "",
+            normalized_topic=_text(data.get("normalized_topic")) or "",
+            research_query=_text(data.get("research_query")) or "",
+            topic_reading=_dict(data.get("topic_reading")),
         )
 
 

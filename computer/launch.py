@@ -48,6 +48,17 @@ _APPLICATION_ALIASES: dict[str, tuple[str, ...]] = {
     "fnv": ("FalloutNV.exe", "FalloutNVLauncher.exe"),
 }
 
+def known_application_names() -> tuple[str, ...]:
+    """Friendly application names Atlas can resolve to a real executable.
+
+    This is the single registry other layers validate a destination against, so
+    destination recognition is registry-driven instead of duplicated as a
+    keyword list in the interpreter or the intent engine.
+    """
+
+    return tuple(_APPLICATION_ALIASES)
+
+
 def _windows_search_dirs() -> list[Path]:
     system_root = Path(os.environ.get("SystemRoot", "C:\\Windows"))
     return [system_root / "System32", system_root]
