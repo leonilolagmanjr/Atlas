@@ -26,7 +26,7 @@ from brain import Brain
 from computer.applications import InstalledApplicationsTool
 from computer.runtime import register_read_only_tools
 from computer.system import SystemInfoTool
-from config import COMPUTER_ROOT, ENABLE_CONVERSATION_STREAMING, EXECUTION_MODE, OLLAMA_MODEL, TASK_STORE_FILE
+from config import COMPUTER_ROOT, ENABLE_CONVERSATION_STREAMING, EXECUTION_MODE, OLLAMA_MODEL
 from experience.models import FAILURE_CATEGORIES, FAILURE_CATEGORY_LABELS
 from experience.service import ExperienceService, FeedbackRequest
 from indexer import index_knowledge_base
@@ -269,7 +269,7 @@ class AtlasService:
     #: Experience loop: feedback capture, durable experience records, retrieval.
     experience: ExperienceService = field(default_factory=ExperienceService)
     _tasks: dict[str, TaskRecord] = field(default_factory=dict)
-    _task_store: TaskStore = field(default_factory=lambda: TaskStore(path=TASK_STORE_FILE))
+    _task_store: TaskStore = field(default_factory=TaskStore)
     _executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=1))
     _lock: threading.RLock = field(default_factory=threading.RLock)
     # FIFO of record ids waiting to run, plus the id currently running.
@@ -300,6 +300,35 @@ class AtlasService:
                 record.updated_at = time.time()
             self._tasks[record.id] = record
         self._persist()
+
+    def close(self) -> None:
+        """Release the resources this service owns (worker, stores, database).
+
+        Called at shutdown and by tests. Stores that were built on the
+        process-wide persistence context are left alone; only stores that this
+        service created for itself (an explicit path) are closed, so a shared
+        database is never torn down by one service instance.
+        """
+
+        # Stop the worker FIRST and wait for it, so an in-flight task cannot open
+        # a new connection to a store this method is about to close.
+        try:
+            self._executor.shutdown(wait=True)
+        except Exception:  # noqa: BLE001 - shutdown must not raise
+            logger.debug("Executor shutdown failed", exc_info=True)
+        for store in (self._task_store, getattr(self.experience, "store", None)):
+            closer = getattr(store, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:  # noqa: BLE001
+                    logger.debug("Store close failed", exc_info=True)
+
+    def __enter__(self) -> "AtlasService":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
 
     def ensure_runtime(self) -> None:
         if self.brain is not None:

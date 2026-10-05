@@ -43,7 +43,8 @@ def _install(root: Path) -> AtlasService:
     memory = MemoryManager()
     memory._store = ConversationStore(root_folder=root)  # noqa: SLF001
     memory._sessions._store = memory._store  # noqa: SLF001
-    memory._sessions._active_path = root / "active_session.json"  # noqa: SLF001
+    # The active-conversation pointer is a row in the conversation store's own
+    # database, so redirecting the store is enough; there is no separate file.
     service.runtime._memory = memory  # noqa: SLF001
     service.runtime._context._memory = memory  # noqa: SLF001
     # The Brain keeps its own handle on the session store; it must be redirected

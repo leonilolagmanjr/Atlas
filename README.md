@@ -109,8 +109,8 @@ Whatever does not fit the character budget is **dropped from the prompt and repo
 | --- | --- | --- |
 | Knowledge | What is true? | `atlas_knowledge` |
 | Experience | What worked or failed? | `atlas_experience` |
-| **User memory** | **What does this user durably want?** | `database/user_memory.jsonl` + `atlas_user_memory` |
-| Conversation | What was said? | `memory/sessions/` + `atlas_conversation` |
+| User memory | What does this user durably want? | `user_memories` in `atlas.db` + `atlas_user_memory` |
+| Conversation | What was said? | `conversations`/`messages` in `atlas.db` + `atlas_conversation` |
 
 Nothing is remembered automatically. Only *structurally durable* statements become candidates — an explicit "remember that…", a first-person preference or instruction, or a named project. "Tell me about Docker" is not a memory; "remember that I prefer local-first architecture" is. One statement produces exactly one record. Sensitive-looking values are refused. Memory is local by default and fully user-controlled: view, search, add, edit, delete, clear, and disable.
 
@@ -239,7 +239,7 @@ It is one component with several deterministic passes — not a swarm of agents 
 - **Capability-aware reasoning.** The reading proposes *semantic* requirements (`web.research`, `content.generate`, `applications.write_text`); Atlas — not the model — confirms each against the live `CapabilityRegistry` (`validate_capabilities`). The model never decides whether a tool exists.
 - **Tool necessity.** `needs_web` / `needs_files` / `needs_application` are set from the *outcome*, not from nouns, so Atlas does not search the web because a topic is nameable or open an app because an application was mentioned.
 - **Confidence as certainty.** Confidence reflects interpretation certainty, not model confidence theater: an under-specified target (“Get me some videos”) lowers it and raises an ambiguity, while a named entity (“Find MrBeast videos”) resolves it.
-- **Memory of corrections** (`reasoning/correction_memory.py`). Reusable, high-confidence structured lessons (JSONL under `memory/`) can override a reading for a class of phrasings. Only curated lessons are stored — never every turn, never an uncontrolled vector dump.
+- **Memory of corrections** (`reasoning/correction_memory.py`). Reusable, high-confidence structured lessons (rows in `atlas.db`) can override a reading for a class of phrasings. Only curated lessons are stored — never every turn, never an uncontrolled vector dump.
 
 The engine is model-agnostic: it consumes the interpreter's Task IR and works with any local model (or none, on the deterministic fast path). The `PipelineTrace` (`reasoning/diagnostics.py`) records the intent reading and a compact `TOPIC DECOMPOSITION` line (raw topic, stripped connector/framing noun, separated content noun, subject, normalized subject, research query) for observability, so an interpretation problem is distinguishable from a planning or execution problem.
 
@@ -275,7 +275,8 @@ The engine is model-agnostic: it consumes the interpreter's Task IR and works wi
 | `computer/vision/` | Local vision ("Eyes"): `models.py` (typed `VisualState`), `perception.py` (layered orchestrator), `uia.py` (UI Automation), `ocr.py` (local OCR), `imaging.py` (capture + OpenCV processing), `providers.py` (injectable `VisionProvider`), `actions.py` (target validation/coordinate safety), `input.py` (Win32 mouse/keyboard) |
 | `computer/vision_tools.py`, `computer/interaction.py` | `computer.observe`/`computer.find` observation tools and the permission-gated visual interaction tools |
 | `web_content.py`, `web_research.py`, `web_task.py` | Main-content extraction, task-aware multi-attempt retrieval pipeline, and retrieval task/goal/content-type/scoring/validation models |
-| `memory/`, `task_store.py` | Conversation storage and durable API task snapshots |
+| `memory/`, `task_store.py` | Model-aware façades over the `atlas.db` repositories |
+| `persistence/` | **Persistence layer**: data-root resolution, SQLite schema/connection lifecycle, repository contracts and their SQLite implementations, and the one-time legacy import |
 | `experience/` | Human feedback loop: experience records, durable store, bounded retrieval/ranking, completion evaluation, and planning context |
 | `api.py`, `frontend/` | Local HTTP adapter and polling control room |
 | `config.py`, `logger.py`, `prompts/` | Runtime constants, logging and prompt templates |
@@ -458,11 +459,106 @@ New API task submissions use a single FIFO worker, but approval resolution has k
 
 ## Memory and persistence
 
-`memory/` persists conversation sessions under `memory/sessions/` and builds prompt history from a recent-message window. Brain now persists user/assistant turns for answers returned early by the reasoning engine; persistence is not limited to the legacy retrieval executor path. This does not imply that every failure/approval path has a complete durable event history.
+Atlas keeps **one authoritative structured store**: an embedded SQLite database, `atlas.db`. Everything that is genuinely structured state — conversations and their transcripts, API task snapshots, long-term user memory, experiences, feedback events, knowledge indexing state, and interpretation lessons — lives there as relational rows. No database server is required: `sqlite3` is in the Python standard library, and the file travels with the user's data root.
+
+```text
+Atlas Core (Brain, Conversation Runtime, Experience, Planner, API)
+        ↓
+Repository / data-access interfaces   (persistence/interfaces.py)
+        ↓
+SQLite repository implementations     (persistence/repositories.py)
+        ↓
+         atlas.db
+```
+
+Core code depends on the repository **contracts**, never on SQL. No module above the persistence layer imports `sqlite3`, holds a connection, or writes a SQL string.
+
+### Storage responsibilities
+
+| Store | Location | Owns |
+| --- | --- | --- |
+| **SQLite** | `atlas.db` | The authoritative structured state: conversations, messages, tasks, user memory, experiences, feedback, index state, correction lessons |
+| **ChromaDB** | `chroma/` | Semantic / vector retrieval indexes only (knowledge, conversation, user memory, experience collections) |
+| **Filesystem** | `knowledge/`, `artifacts/`, `logs/`, `models/`, `config/` | Documents and PDFs, generated artifacts, logs, local models, user-editable configuration, exports |
+| **Ollama** | — | The local model runtime |
+
+Documents are never copied into SQLite. For a PDF the split is explicit:
+
+```text
+SQLite      document_id, path, content_hash, last_indexed, status, metadata
+Filesystem  knowledge/my-document.pdf
+ChromaDB    embedded chunks for my-document
+```
+
+Likewise, embeddings never enter SQLite. Chroma can always be rebuilt from the authoritative records, so SQLite — not Chroma — decides whether a conversation, memory, or experience still exists.
+
+### Application data root
+
+Mutable state is separated from the installation so a packaged `Atlas.exe` can run from a read-only directory:
+
+```text
+%LOCALAPPDATA%\Atlas\
+    atlas.db
+    chroma/
+    knowledge/
+    artifacts/
+    logs/
+    models/
+    config/
+```
+
+The root resolves through one abstraction (`persistence/paths.py`), in this order:
+
+1. `ATLAS_DATA_ROOT` — an explicit override, used by tests and tools.
+2. `%LOCALAPPDATA%\Atlas` — when running as a packaged (frozen) build.
+3. The repository root — when running from a source checkout, for development convenience.
+
+The path is read from the environment, never hardcoded to a username, and no module outside `persistence.paths` reconstructs these locations from `__file__`. Changing the data root needs no change to the Brain, tools, memory system, API, or frontend.
+
+### Schema and reliability
+
+`atlas.db` is opened with foreign keys enforced, WAL journaling (so the API can read while a task writes), a busy timeout, and parameterized queries throughout. Writes that must be atomic — replacing a transcript, importing a legacy store — run inside a transaction. The schema version is recorded in `PRAGMA user_version`; a database written by a newer Atlas is refused rather than silently misread.
+
+### Legacy data migration
+
+Earlier versions kept structured state in loose files under `database/` and `memory/`:
+
+```text
+database/tasks.json              database/index_state.json
+database/user_memory.jsonl       database/experiences.jsonl
+database/feedback.jsonl          memory/sessions/<id>/{metadata,messages}.json, summary.txt
+memory/interpretation_lessons.jsonl
+```
+
+Those files were a database in disguise. On first start Atlas imports them into `atlas.db` and **leaves them where they are** — nothing is deleted, and a backup is never required because nothing is destroyed. The import is:
+
+- **Idempotent** — each source is fingerprinted and recorded in `legacy_migrations`, so running it three times imports nothing the second or third time.
+- **Atomic** — a source's rows and its bookkeeping row are written in one transaction; an interrupted run leaves no partial state.
+- **Honest about failure** — malformed JSON lines are skipped and counted, a missing file is a no-op, and a record shortfall rolls the import back rather than reporting success.
+
+A legacy Chroma directory that previously shared `database/` is *relocated* (not deleted) into its dedicated `chroma/` directory so the relational database and the vector index stop sharing a folder.
+
+### Where each concept lives
+
+| Concept | Authoritative store | Semantic index |
+| --- | --- | --- |
+| Conversation history | `conversations` + `messages` in `atlas.db` | `atlas_conversation` collection |
+| API task snapshots | `tasks` in `atlas.db` | — |
+| **User memory** | `user_memories` in `atlas.db` | `atlas_user_memory` collection |
+| Experience | `experiences` in `atlas.db` | `atlas_experience` collection |
+| Feedback events | `feedback_events` in `atlas.db` | — |
+| Knowledge documents | PDFs on disk + `index_documents` metadata in `atlas.db` | `atlas_knowledge` collection |
+| Interpretation lessons | `correction_lessons` in `atlas.db` | — |
+
+`JSON` and `JSONL` remain in use only where a file format is the right answer: user-editable configuration, `exports/` of a conversation, append-only logs, transient tool/API payloads, and external file formats such as the bundled PowerShell command catalog. They are no longer used as a hidden database.
+
+### MongoDB
+
+The current implementation has **no MongoDB runtime dependency**. Nothing in the working tree imports `pymongo`, `motor`, or `MongoClient`, and no `MONGO_*` configuration exists. This migration introduces no MongoDB component and no migration *from* MongoDB, because there was none to migrate.
 
 CLI session commands include `/new [title]`, `/list`, `/open <id>`, `/delete <id>`, `/rename <id> <title>`, `/history`, `/export <id> [path]`, `/import <path>`, `/clear`, and `/help`. `/approve` and `/deny` resolve paused actions.
 
-API task snapshots are stored in `database/tasks.json` using atomic replacement. They are history, **not live execution checkpoints**. Restarted pending/running/approval-paused tasks are marked interrupted rather than resumed with missing context. Automatic conversation summarization remains future work.
+API task snapshots live in the `tasks` table. They are history, **not live execution checkpoints**. Restarted pending/running/approval-paused tasks are marked interrupted rather than resumed with missing context.
 
 ### Experience memory (human feedback loop)
 
@@ -479,7 +575,7 @@ USER REQUEST -> INTENT -> PLAN -> EXECUTION -> VERIFICATION -> RESULT
 | Path | Responsibility |
 | --- | --- |
 | `experience/models.py` | Record schema, completion criteria, failure vocabulary, credential scrubbing |
-| `experience/store.py` | Append-only JSONL durability (`database/experiences.jsonl`, `database/feedback.jsonl`) |
+| `experience/store.py` | Durable store for experiences and feedback events (rows in `atlas.db`) |
 | `experience/memory.py` | Bounded retrieval + ranking over similarity, trust, and metadata |
 | `experience/builder.py` | Execution evidence -> compact experience record |
 | `experience/service.py` | The façade Brain and the API use: record, evaluate, retrieve, analyse |
@@ -494,7 +590,7 @@ USER REQUEST -> INTENT -> PLAN -> EXECUTION -> VERIFICATION -> RESULT
 
 Feedback and experiences survive an application restart. Only a compact task representation is stored — never a whole conversation — and obvious credentials are scrubbed before persisting.
 
-Runtime/user data includes `database/`, `memory/sessions/`, knowledge PDFs, logs, and exported sessions. Treat these as private local data; do not commit them or assume all are ignored automatically. `.venv/`, frontend dependencies/build outputs, and Python caches are generated artifacts.
+Runtime/user data lives under the resolved data root — `atlas.db`, `chroma/`, `knowledge/`, `artifacts/`, `logs/`, `models/`, `config/`, and `exports/` — which is `%LOCALAPPDATA%\Atlas` for a packaged build and the repository root in development. Treat these as private local data; do not commit them or assume all are ignored automatically. `.venv/`, frontend dependencies/build outputs, and Python caches are generated artifacts.
 
 ## Installation
 

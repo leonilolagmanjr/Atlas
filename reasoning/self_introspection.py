@@ -16,7 +16,7 @@ from typing import Any, Sequence
 
 from config import (
     COLLECTION_NAME,
-    DATABASE_FOLDER,
+    CHROMA_FOLDER,
     EMBEDDING_MODEL_NAME,
     EXECUTION_MODE,
     KNOWLEDGE_FOLDER,
@@ -103,7 +103,7 @@ class SelfIntrospection:
         registered: Sequence[ToolMetadata] = (),
         model_name: str = OLLAMA_MODEL,
         knowledge_folder: Path | str = KNOWLEDGE_FOLDER,
-        database_folder: Path | str = DATABASE_FOLDER,
+        database_folder: Path | str = CHROMA_FOLDER,
         collection_name: str = COLLECTION_NAME,
         embedding_model: str = EMBEDDING_MODEL_NAME,
         execution_mode: str = EXECUTION_MODE,

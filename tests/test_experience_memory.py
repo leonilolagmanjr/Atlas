@@ -508,7 +508,8 @@ class RestartPersistenceTests(unittest.TestCase):
             first.apply_feedback(
                 FeedbackRequest(record_id="record-1", outcome="failure", failure_category="wrong_action")
             )
-            self.assertTrue(path.exists())
+            # The authoritative store is the isolated atlas.db beside the paths.
+            self.assertTrue((Path(directory) / "experiences.db").exists())
 
             second = ExperienceService(
                 store=ExperienceStore(experience_path=path, feedback_path=feedback_path)
@@ -612,7 +613,10 @@ class PrivacyTests(unittest.TestCase):
                 request="Research it, token=abcdef1234567890"
             )
             service.record_task_outcome(context, record_id="record-1")
-            serialized = (Path(directory) / "experiences.jsonl").read_text(encoding="utf-8")
+            # Read the stored row straight back out of the authoritative database
+            # for this store, so the assertion is about what is really persisted.
+            stored = store.experience_repository.list_experiences()
+            serialized = repr(stored)
             self.assertNotIn("abcdef1234567890", serialized)
 
     def test_no_whole_conversation_is_stored(self):
@@ -622,14 +626,16 @@ class PrivacyTests(unittest.TestCase):
         self.assertNotIn("conversation", record.to_dict())
         self.assertNotIn("messages", record.to_dict())
 
-    def test_a_corrupt_store_line_does_not_break_loading(self):
+    def test_a_corrupt_legacy_store_file_does_not_break_the_store(self):
+        # The legacy JSONL file is no longer a data source; a corrupt one must
+        # simply be ignored rather than breaking the SQLite-backed store.
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "experiences.jsonl"
             path.write_text("not json\n" + '{"experience_id": "ok-1", "outcome": "success"}\n', encoding="utf-8")
             store = ExperienceStore(
                 experience_path=path, feedback_path=Path(directory) / "feedback.jsonl"
             )
-            self.assertEqual(len(store.experiences()), 1)
+            self.assertEqual(store.experiences(), [])
 
 
 # -- periodic analysis and safe self-improvement --------------------------------

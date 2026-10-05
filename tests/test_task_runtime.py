@@ -3,8 +3,8 @@ import unittest
 from pathlib import Path
 
 from api import AtlasService, TaskRecord
-from config import TASK_STORE_FILE
 from models import TaskStatus
+from persistence.context import default_persistence
 from task_store import TaskStore
 
 
@@ -28,6 +28,7 @@ class TaskRuntimeTests(unittest.TestCase):
             restored = service._get(record.id)
             self.assertEqual(restored.response, "done")
             self.assertEqual(restored.status, TaskStatus.COMPLETED.value)
+            store.close()
 
     def test_service_marks_interrupted_task_as_failed(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -47,7 +48,9 @@ class TaskRuntimeTests(unittest.TestCase):
             restored = service._get(record.id)
             self.assertEqual(restored.status, TaskStatus.FAILED.value)
             self.assertIn("could not be resumed", restored.errors[0])
-            self.assertNotEqual(service._task_store._path, TASK_STORE_FILE)
+            # An explicit store must be isolated from the process-wide database.
+            self.assertNotEqual(service._task_store._path, default_persistence().database_file)
+            store.close()
 
 
 if __name__ == "__main__":

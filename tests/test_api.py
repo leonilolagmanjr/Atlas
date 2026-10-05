@@ -61,6 +61,8 @@ class ReasoningObservabilityTests(unittest.TestCase):
             store = TaskStore(path=Path(directory) / "tasks.json")
             runtime = AtlasService(brain=SimpleNamespace(process=lambda request: "Answer", last_context=context), _task_store=store)
             self.addCleanup(runtime._executor.shutdown, wait=True)
+            self.addCleanup(store.close)
+            self.addCleanup(runtime._executor.shutdown, wait=True)
             record = TaskRecord(id="record", request="Inspect sources", status="PENDING", created_at=1, updated_at=1)
             runtime._tasks[record.id] = record
             with self.assertLogs("api", level="INFO") as logs:
@@ -79,6 +81,7 @@ class ReasoningObservabilityTests(unittest.TestCase):
             serialized = json.dumps(payload) + json.dumps(store.load()) + " ".join(logs.output)
             for private in ("PRIVATE_HISTORY", "PRIVATE_PROMPT", "PRIVATE_CONTENT", "password", "SECRET"):
                 self.assertNotIn(private, serialized)
+            store.close()
 
     def test_delegated_action_and_approval_preserve_trace(self):
         context = ExecutionContext(user_input="Open application")

@@ -25,9 +25,9 @@ import logging
 from typing import Any, Iterable
 
 from config import (
+    CHROMA_FOLDER,
     CONVERSATION_COLLECTION_NAME,
     CONVERSATION_INDEX_ENABLED,
-    DATABASE_FOLDER,
 )
 from memory.models import MemoryMessage
 
@@ -79,7 +79,7 @@ class ConversationIndex:
         collection_name: str = CONVERSATION_COLLECTION_NAME,
         enabled: bool = CONVERSATION_INDEX_ENABLED,
     ) -> None:
-        self._persist_dir = persist_dir or str(DATABASE_FOLDER)
+        self._persist_dir = persist_dir or str(CHROMA_FOLDER)
         self._collection_name = collection_name
         self._enabled = bool(enabled)
         self._client = None

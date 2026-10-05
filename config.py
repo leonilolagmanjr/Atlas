@@ -7,8 +7,42 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from persistence.paths import resolve_application_paths, resolve_data_paths
+
 
 PROJECT_ROOT: Path = Path(__file__).resolve().parent
+
+# ---- Application vs. user-data paths ------------------------------------------
+# Everything mutable (the SQLite database, Chroma, knowledge, artifacts, logs,
+# models, config, exports) resolves through a single data root. In development
+# that root is this repository; a packaged build resolves it to
+# ``%LOCALAPPDATA%\Atlas`` without any code above this line changing.
+APPLICATION_PATHS = resolve_application_paths()
+DATA_PATHS = resolve_data_paths()
+DATA_ROOT: Path = DATA_PATHS.root
+
+#: The authoritative structured-state database.
+ATLAS_DATABASE_FILE: Path = DATA_PATHS.database_file
+#: Dedicated ChromaDB directory — never the same folder as SQLite.
+CHROMA_FOLDER: Path = DATA_PATHS.chroma_dir
+#: Directory holding the log file.
+LOGS_FOLDER: Path = DATA_PATHS.logs_dir
+
+# ---- Legacy filesystem persistence (imported into ``atlas.db`` once) ----------
+# Everything below is *historical*: it exists so the one-time migration can find
+# the old JSON/JSONL stores and so path-exclusion rules can recognise them. No
+# runtime code reads or writes these paths any more. The authoritative store for
+# every one of these concepts is a table in ``atlas.db``.
+LEGACY_ROOT: Path = APPLICATION_PATHS.root
+LEGACY_DATABASE_FOLDER: Path = LEGACY_ROOT / "database"
+LEGACY_MEMORY_FOLDER: Path = LEGACY_ROOT / "memory"
+LEGACY_INDEX_STATE_FILE: Path = LEGACY_DATABASE_FOLDER / "index_state.json"
+LEGACY_USER_MEMORY_FILE: Path = LEGACY_DATABASE_FOLDER / "user_memory.jsonl"
+LEGACY_EXPERIENCE_STORE_FILE: Path = LEGACY_DATABASE_FOLDER / "experiences.jsonl"
+LEGACY_FEEDBACK_STORE_FILE: Path = LEGACY_DATABASE_FOLDER / "feedback.jsonl"
+LEGACY_TASK_STORE_FILE: Path = LEGACY_DATABASE_FOLDER / "tasks.json"
+LEGACY_LESSONS_FILE: Path = LEGACY_MEMORY_FOLDER / "interpretation_lessons.jsonl"
+
 
 
 # ---- Ollama / LLM ----
@@ -16,16 +50,13 @@ OLLAMA_MODEL: str = "qwen2.5:7b"
 
 
 # ---- Knowledge / Indexing ----
-KNOWLEDGE_FOLDER: Path = PROJECT_ROOT / "knowledge"
+KNOWLEDGE_FOLDER: Path = DATA_PATHS.knowledge_dir
 
 # Supported extensions: document_loader handles reading.
 KNOWLEDGE_GLOB: str = "*.pdf"
 
-# Persistent metadata for incremental indexing.
-INDEX_STATE_FILE: Path = PROJECT_ROOT / "database" / "index_state.json"
-
-# Chroma
-DATABASE_FOLDER: Path = PROJECT_ROOT / "database"
+# Chroma — the semantic/vector index, deliberately separate from ``atlas.db``.
+DATABASE_FOLDER: Path = CHROMA_FOLDER  # backwards-compatible alias
 COLLECTION_NAME: str = "atlas_knowledge"
 
 
@@ -53,7 +84,9 @@ LOG_RETRIEVAL: bool = True
 
 
 # ---- Memory (Conversation) ----
-MEMORY_FOLDER: Path = PROJECT_ROOT / "memory"
+#: Legacy conversation-session folder. Conversations live in ``atlas.db``; this
+#: path remains only for the one-time migration and for path exclusion.
+MEMORY_FOLDER: Path = LEGACY_MEMORY_FOLDER
 
 # Short-term memory window controls
 MAX_RETAINED_MESSAGES: int = 10
@@ -91,8 +124,6 @@ CONVERSATION_SUMMARY_MIN_MESSAGES: int = 12
 # ---- Long-term user memory ----
 #: Master switch for user memory. When False nothing is stored or retrieved.
 ENABLE_USER_MEMORY: bool = True
-#: Append-only JSONL of durable user memory records (survives restart).
-USER_MEMORY_FILE: Path = PROJECT_ROOT / "database" / "user_memory.jsonl"
 #: Separate Chroma collection for user-memory embeddings (never mixed).
 USER_MEMORY_COLLECTION_NAME: str = "atlas_user_memory"
 #: Maximum memories surfaced into one context.
@@ -192,11 +223,6 @@ VISION_PREFER_REGION_OCR: bool = True
 # Master switch for the feedback/experience loop. When False, Atlas records no
 # experiences and never retrieves them; every other subsystem is unaffected.
 ENABLE_EXPERIENCE_MEMORY: bool = True
-# Append-only JSONL of durable experience records (survives restart).
-EXPERIENCE_STORE_FILE: Path = PROJECT_ROOT / "database" / "experiences.jsonl"
-# Where the pending-feedback queue and feedback answers live, so a click of
-# Success/Failed is durable even before the experience is evaluated.
-FEEDBACK_STORE_FILE: Path = PROJECT_ROOT / "database" / "feedback.jsonl"
 # Maximum experiences retrieved for planning context per request (bounded).
 EXPERIENCE_RETRIEVAL_LIMIT: int = 4
 # Minimum relevance score for a retrieved experience to be offered to planning.
@@ -211,11 +237,11 @@ EXPERIENCE_MAX_RECORDS: int = 5000
 EXPERIENCE_COLLECTION_NAME: str = "atlas_experience"
 
 # ---- API task history ----
-TASK_STORE_FILE: Path = PROJECT_ROOT / "database" / "tasks.json"
+# The authoritative task store is the ``tasks`` table in ``atlas.db``.
 
 # ---- Logging ----
 LOG_LEVEL: str = "INFO"
 LOG_TO_FILE: bool = False
-LOG_FILE: Path = PROJECT_ROOT / "database" / "atlas.log"
+LOG_FILE: Path = DATA_PATHS.log_file
 
 

@@ -10,25 +10,25 @@ Design rules:
   turn, and never an uncontrolled vector dump.
 * A lesson is data with an explicit ``type`` and a ``pattern``; lookups are
   deterministic substring/pattern matches, not embeddings.
-* Storage is append-only JSONL under ``memory/`` and is best-effort: a missing
-  or corrupt file degrades to "no lessons" and never raises into a request.
+* Storage is the authoritative ``correction_lessons`` table in ``atlas.db``, and
+  is best-effort: a database error degrades to "no lessons" and never raises
+  into a request.
+
+``memory/interpretation_lessons.jsonl`` is imported once by
+:mod:`persistence.migration`; it is no longer read or written at runtime.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from config import PROJECT_ROOT
+from persistence.repositories import SqliteCorrectionMemoryRepository
 
 logger = logging.getLogger(__name__)
-
-#: Where correction lessons live. Kept beside the other memory artifacts.
-DEFAULT_LESSONS_PATH: Path = PROJECT_ROOT / "memory" / "interpretation_lessons.jsonl"
 
 #: Lesson types Atlas understands.
 LESSON_TYPES: frozenset[str] = frozenset(
@@ -94,9 +94,26 @@ class CorrectionMemory:
     #: Lessons below this confidence are never applied automatically.
     _MIN_CONFIDENCE = 0.8
 
-    def __init__(self, path: Path | None = None) -> None:
-        self._path = Path(path) if path is not None else DEFAULT_LESSONS_PATH
+    def __init__(
+        self,
+        path: Path | None = None,
+        *,
+        repository: SqliteCorrectionMemoryRepository | None = None,
+    ) -> None:
+        # ``path`` is accepted for backward compatibility with callers that used
+        # to point at a JSONL file. It is retained as documentation of origin;
+        # lessons now live in ``atlas.db``.
+        self._path = Path(path) if path is not None else None
+        self._repository = repository
         self._lessons: list[Lesson] | None = None
+
+    @property
+    def repository(self) -> SqliteCorrectionMemoryRepository:
+        if self._repository is None:
+            from persistence.context import default_persistence
+
+            self._repository = default_persistence().correction_memory
+        return self._repository
 
     # -- reading -----------------------------------------------------------------
 
@@ -107,22 +124,14 @@ class CorrectionMemory:
 
     def _load(self) -> list[Lesson]:
         try:
-            if not self._path.exists():
-                return []
             loaded: list[Lesson] = []
-            for raw_line in self._path.read_text(encoding="utf-8").splitlines():
-                line = raw_line.strip()
-                if not line:
-                    continue
-                try:
-                    lesson = Lesson.from_dict(json.loads(line))
-                except (json.JSONDecodeError, TypeError):
-                    continue
+            for row in self.repository.list_lessons():
+                lesson = Lesson.from_dict(row)
                 if lesson is not None:
                     loaded.append(lesson)
             return loaded
-        except OSError:
-            logger.warning("Could not read interpretation lessons at %s", self._path)
+        except Exception:  # noqa: BLE001 - a read failure means "no lessons"
+            logger.warning("Could not read interpretation lessons", exc_info=True)
             return []
 
     def match(self, text: str) -> list[Lesson]:
@@ -140,7 +149,12 @@ class CorrectionMemory:
     # -- writing -----------------------------------------------------------------
 
     def record(self, lesson: Lesson) -> bool:
-        """Append a single high-confidence lesson. Returns True when stored."""
+        """Store a single high-confidence lesson. Returns True when stored.
+
+        An identical lesson (same type and pattern) is never taught twice; the
+        repository enforces that with a unique constraint, so re-recording is a
+        no-op rather than a duplicate.
+        """
 
         if lesson.confidence < self._MIN_CONFIDENCE or not lesson.pattern:
             return False
@@ -150,11 +164,11 @@ class CorrectionMemory:
         ):
             return False
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            with self._path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(lesson.to_dict(), ensure_ascii=False) + "\n")
-        except OSError:
-            logger.warning("Could not persist interpretation lesson to %s", self._path)
+            stored = self.repository.add_lesson(lesson.to_dict())
+        except Exception:  # noqa: BLE001 - a write failure must not break a request
+            logger.warning("Could not persist interpretation lesson", exc_info=True)
+            return False
+        if not stored:
             return False
         self._lessons = [*self.lessons(), lesson]
         return True

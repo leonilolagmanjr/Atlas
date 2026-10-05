@@ -26,7 +26,6 @@ experience memory; it is the fourth, separate memory.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import uuid
@@ -37,10 +36,12 @@ from typing import Any, Iterable
 
 from config import (
     ENABLE_USER_MEMORY,
-    USER_MEMORY_FILE,
     USER_MEMORY_MAX_RECORDS,
     USER_MEMORY_RETRIEVAL_LIMIT,
 )
+from persistence.context import database_for_legacy_path, default_persistence
+from persistence.database import AtlasDatabase
+from persistence.repositories import SqliteUserMemoryRepository
 
 logger = logging.getLogger(__name__)
 
@@ -241,9 +242,9 @@ class UserMemoryEmbedder:
     """
 
     def __init__(self, *, persist_dir: str | None = None, collection_name: str | None = None) -> None:
-        from config import DATABASE_FOLDER, USER_MEMORY_COLLECTION_NAME
+        from config import CHROMA_FOLDER, USER_MEMORY_COLLECTION_NAME
 
-        self._persist_dir = persist_dir or str(DATABASE_FOLDER)
+        self._persist_dir = persist_dir or str(CHROMA_FOLDER)
         self._collection_name = collection_name or USER_MEMORY_COLLECTION_NAME
         self._collection: Any = None
 
@@ -315,12 +316,30 @@ class UserMemoryStore:
     def __init__(
         self,
         *,
-        path: Path | str = USER_MEMORY_FILE,
+        path: Path | str | None = None,
         enabled: bool = ENABLE_USER_MEMORY,
         limit: int = USER_MEMORY_MAX_RECORDS,
         embedder: UserMemoryEmbedder | None = None,
+        repository: SqliteUserMemoryRepository | None = None,
+        database: AtlasDatabase | None = None,
     ) -> None:
-        self._path = Path(path)
+        self._owned_database = database
+        self._owns_database = False
+        if repository is not None:
+            self._repository = repository
+        elif database is not None:
+            self._repository = SqliteUserMemoryRepository(database)
+        elif path is not None:
+            self._owned_database = database_for_legacy_path(path)
+            self._owns_database = True
+            self._repository = SqliteUserMemoryRepository(self._owned_database)
+        else:
+            context = default_persistence()
+            self._owned_database = context.database
+            self._repository = context.user_memory
+        self._path = (
+            self._owned_database.path if self._owned_database is not None else Path(path)
+        )
         self._enabled = bool(enabled)
         self._limit = max(1, int(limit))
         self._embedder = embedder if embedder is not None else UserMemoryEmbedder()
@@ -331,37 +350,30 @@ class UserMemoryStore:
     def enabled(self) -> bool:
         return self._enabled
 
+    @property
+    def repository(self) -> SqliteUserMemoryRepository:
+        return self._repository
+
+    def close(self) -> None:
+        """Release this store's SQLite connection when it owns the database."""
+
+        if self._owns_database and self._owned_database is not None:
+            self._owned_database.close()
+
     def set_enabled(self, enabled: bool) -> None:
         """Enable/disable user memory. Disabling stops writes and retrievals."""
 
         self._enabled = bool(enabled)
 
-    def _load(self) -> list[UserMemory]:
-        if not self._path.exists():
-            return []
-        records: list[UserMemory] = []
-        try:
-            with self._path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        records.append(UserMemory.from_dict(json.loads(line)))
-                    except (json.JSONDecodeError, TypeError, ValueError):
-                        continue
-        except OSError:
-            logger.exception("Could not read the user memory store")
-            return []
-        return records
+    def _records(self) -> list[UserMemory]:
+        """The authoritative records, decoded from ``atlas.db``."""
 
-    def _save(self, records: list[UserMemory]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self._path.with_suffix(self._path.suffix + ".tmp")
-        with temporary.open("w", encoding="utf-8") as handle:
-            for record in records[-self._limit:]:
-                handle.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
-        temporary.replace(self._path)
+        return [UserMemory.from_dict(row) for row in self._repository.list_memories()]
+
+    def _trim(self) -> None:
+        """Bound the store so it stays a bounded history, newest kept."""
+
+        self._repository.trim_to(self._limit)
 
     # -- CRUD --------------------------------------------------------------------
 
@@ -378,13 +390,18 @@ class UserMemoryStore:
         cleaned = _clean(text)
         if not self._enabled or not cleaned or _has_sensitive(cleaned):
             return None
-        records = self._load()
         # An identical memory is updated (and touched), not duplicated.
-        for existing in records:
+        for existing in self._records():
             if existing.text.casefold() == cleaned.casefold():
                 existing.updated_at = _now()
                 existing.confidence = max(existing.confidence, float(confidence))
-                self._save(records)
+                self._repository.update_memory(
+                    existing.id,
+                    {
+                        "updated_at": existing.updated_at.isoformat(),
+                        "confidence": existing.confidence,
+                    },
+                )
                 self._embedder.index(existing)
                 return existing
         memory = UserMemory(
@@ -396,55 +413,48 @@ class UserMemoryStore:
             confidence=float(confidence),
             source=source,
         )
-        records.append(memory)
-        self._save(records)
+        self._repository.add_memory(memory.to_dict())
+        self._trim()
         self._embedder.index(memory)
         logger.info("User memory stored: kind=%s id=%s", memory.kind, memory.id)
         return memory
 
     def list(self) -> list[dict[str, Any]]:
-        return [record.to_dict() for record in self._load()]
+        return self._repository.list_memories()
 
     def get(self, memory_id: str) -> dict[str, Any] | None:
-        for record in self._load():
-            if record.id == memory_id:
-                return record.to_dict()
-        return None
+        return self._repository.get_memory(memory_id)
 
     def update(self, memory_id: str, *, text: str | None = None, kind: str | None = None) -> dict[str, Any] | None:
-        records = self._load()
-        for record in records:
-            if record.id != memory_id:
-                continue
-            if text is not None:
-                cleaned = _clean(text)
-                if not cleaned or _has_sensitive(cleaned):
-                    return None
-                record.text = cleaned
-                record.summary = cleaned[:120]
-            if kind is not None and kind in MEMORY_KINDS:
-                record.kind = kind
-            record.updated_at = _now()
-            self._save(records)
-            self._embedder.index(record)
-            return record.to_dict()
-        return None
+        if self._repository.get_memory(memory_id) is None:
+            return None
+        changes: dict[str, Any] = {}
+        if text is not None:
+            cleaned = _clean(text)
+            if not cleaned or _has_sensitive(cleaned):
+                return None
+            changes["text"] = cleaned
+            changes["summary"] = cleaned[:120]
+        if kind is not None and kind in MEMORY_KINDS:
+            changes["kind"] = kind
+        updated = self._repository.update_memory(memory_id, changes)
+        if updated is None:
+            return None
+        record = UserMemory.from_dict(updated)
+        self._embedder.index(record)
+        return record.to_dict()
 
     def delete(self, memory_id: str) -> bool:
-        records = self._load()
-        remaining = [record for record in records if record.id != memory_id]
-        if len(remaining) == len(records):
+        if not self._repository.delete_memory(memory_id):
             return False
-        self._save(remaining)
         self._embedder.delete(memory_id)
         return True
 
     def clear(self) -> int:
-        records = self._load()
+        records = self._repository.list_memories()
         for record in records:
-            self._embedder.delete(record.id)
-        self._save([])
-        return len(records)
+            self._embedder.delete(str(record.get("id") or ""))
+        return self._repository.clear_memories()
 
     # -- observation and retrieval -------------------------------------------------
 
@@ -480,7 +490,7 @@ class UserMemoryStore:
 
         if not self._enabled:
             return []
-        records = self._load()
+        records = self._records()
         if not records:
             return []
         query_tokens = _query_tokens(query)
@@ -521,7 +531,7 @@ class UserMemoryStore:
             return self.list()[:limit]
         return [
             record.to_dict()
-            for record in self._load()
+            for record in self._records()
             if needle in record.text.casefold() or needle in record.summary.casefold()
         ][:limit]
 

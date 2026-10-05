@@ -45,7 +45,15 @@ class _BoundedFilesystemTool(Tool):
             return True
         if path.suffix.casefold() in {".key", ".pem", ".pfx", ".p12", ".sqlite", ".sqlite3", ".db"}:
             return True
-        for private_path in (config.DATABASE_FOLDER, config.MEMORY_FOLDER, config.TASK_STORE_FILE, config.LOG_FILE):
+        # Atlas's own private state: the SQLite database, the Chroma index, the
+        # legacy data folders, and the log file are never exposed to a tool.
+        for private_path in (
+            config.ATLAS_DATABASE_FILE,
+            config.CHROMA_FOLDER,
+            config.MEMORY_FOLDER,
+            config.LEGACY_DATABASE_FOLDER,
+            config.LOG_FILE,
+        ):
             if path.is_relative_to(Path(private_path).resolve()):
                 return True
         return False

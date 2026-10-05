@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from config import AUTO_SAVE, MEMORY_FOLDER
+from config import AUTO_SAVE
 from memory.context_builder import ContextBuilder
 from memory.models import (
     EXECUTION_STATES,
@@ -34,8 +34,8 @@ class MemoryManager:
     def __init__(self, *, ask=None, index=None) -> None:
         from config import ENABLE_LLM_INTERPRETATION
 
-        self._store = ConversationStore(root_folder=MEMORY_FOLDER)
-        self._sessions = SessionManager(store=self._store, root_folder=MEMORY_FOLDER, auto_save=AUTO_SAVE)
+        self._store = ConversationStore()
+        self._sessions = SessionManager(store=self._store, auto_save=AUTO_SAVE)
         self._context_builder = ContextBuilder()
         # Real summarization: the model boundary is injectable and optional.
         if ask is None and ENABLE_LLM_INTERPRETATION:

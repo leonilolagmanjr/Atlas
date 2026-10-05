@@ -8,7 +8,7 @@ from functools import partial
 from typing import Callable
 
 from config import (
-    DATABASE_FOLDER,
+    CHROMA_FOLDER,
     COLLECTION_NAME,
     DEBUG_PIPELINE,
     EMBEDDING_MODEL_NAME,
@@ -110,7 +110,7 @@ class Brain:
             self._capabilities,
             model_name=OLLAMA_MODEL,
             knowledge_folder=KNOWLEDGE_FOLDER,
-            database_folder=DATABASE_FOLDER,
+            database_folder=CHROMA_FOLDER,
             collection_name=COLLECTION_NAME,
             embedding_model=EMBEDDING_MODEL_NAME,
             execution_mode=EXECUTION_MODE,

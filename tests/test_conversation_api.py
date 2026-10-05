@@ -449,6 +449,9 @@ class ExistingTaskApiTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         api_module.service = self._original
+        # Release the task store's SQLite handle before the temp folder goes away;
+        # on Windows an open connection would otherwise keep the file locked.
+        self.service.close()
         self._temporary.cleanup()
 
     def test_health_and_tools_and_tasks_still_work(self) -> None:

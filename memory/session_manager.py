@@ -5,7 +5,6 @@ Tracks session metadata and active session pointer.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,24 +23,22 @@ class ActiveSession:
 
 
 class SessionManager:
-    def __init__(self, *, store: ConversationStore, root_folder: Path, auto_save: bool = True):
+    def __init__(
+        self,
+        *,
+        store: ConversationStore,
+        root_folder: Path | None = None,
+        auto_save: bool = True,
+    ) -> None:
         self._store = store
-        self._active_path = root_folder / "active_session.json"
+        # ``root_folder`` is retained for backward compatibility but is no longer
+        # used: the active-conversation pointer now lives in atlas.db alongside
+        # the conversations it points at.
+        self._root_folder = root_folder
         self._auto_save = auto_save
 
-    def _write_active(self, session_id: str) -> None:
-        self._active_path.parent.mkdir(parents=True, exist_ok=True)
-        self._active_path.write_text(json.dumps({"session_id": session_id}, indent=2), encoding="utf-8")
-
     def get_active_session_id(self) -> str | None:
-        if not self._active_path.exists():
-            return None
-        try:
-            d = json.loads(self._active_path.read_text(encoding="utf-8"))
-            return d.get("session_id")
-        except Exception:
-            logger.exception("Failed reading active session pointer")
-            return None
+        return self._store.repository.get_active_conversation_id()
 
     def create_session(self, *, title: str | None = None) -> ConversationSessionMetadata:
         # Best-effort session cap
@@ -66,7 +63,7 @@ class SessionManager:
         return metadata
 
     def switch_active_session(self, session_id: str) -> None:
-        self._write_active(session_id)
+        self._store.repository.set_active_conversation_id(session_id)
         logger.info("Memory session switched: session_id=%s", session_id)
 
     def rename_session(self, session_id: str, *, new_title: str) -> None:
@@ -86,9 +83,9 @@ class SessionManager:
     def delete_session(self, session_id: str) -> None:
         self._store.delete_session(session_id)
         if self.get_active_session_id() == session_id:
-            # Clear pointer
+            # The pointer no longer refers to an existing conversation.
             try:
-                self._active_path.unlink(missing_ok=True)
+                self._store.repository.clear_active_conversation_id()
             except Exception:
                 logger.exception("Failed clearing active session pointer")
         logger.info("Memory session deleted: session_id=%s", session_id)
