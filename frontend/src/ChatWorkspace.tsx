@@ -5,6 +5,7 @@ import {
   CircleAlert,
   Copy,
   Loader2,
+  LockKeyhole,
   Paperclip,
   Pencil,
   Plus,
@@ -66,13 +67,27 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
   const [pending, setPending] = useState<PendingTurn | null>(null);
   const [search, setSearch] = useState("");
   const [hits, setHits] = useState<ConversationSearchHit[]>([]);
+  const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [attachments, setAttachments] = useState<ConversationAttachment[]>([]);
   const [attachmentPath, setAttachmentPath] = useState("");
+  // The task id of a confirmation turn currently being approved/denied, so the
+  // controls can be disabled and cannot be double-submitted.
+  const [resolvingConfirmation, setResolvingConfirmation] = useState<string | null>(null);
+  // True while a conversation's transcript is being fetched, so the welcome
+  // panel is not shown for a conversation that simply has not loaded yet.
+  const [loadingConversation, setLoadingConversation] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
+  // Monotonic id for the latest conversation open. A slower response for an
+  // earlier click must never overwrite the transcript of the conversation the
+  // user actually switched to.
+  const openRequestRef = useRef(0);
+  // The conversation the user is currently viewing. Used to avoid clobbering a
+  // switched-to conversation when an in-flight turn finishes.
+  const activeIdRef = useRef<string | null>(null);
 
   const refreshConversations = useCallback(async () => {
     try {
@@ -86,13 +101,23 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
   }, []);
 
   const openConversation = useCallback(async (id: string) => {
+    const requestId = (openRequestRef.current += 1);
     setActiveId(id);
+    activeIdRef.current = id;
     setError(null);
+    setMessages([]);
+    setLoadingConversation(true);
     try {
       const result = await api.conversationMessages(id);
+      // Ignore a response that is no longer the latest request: the user has
+      // switched (or switched back) since it was issued.
+      if (requestId !== openRequestRef.current) return;
       setMessages(result.messages);
     } catch (reason) {
+      if (requestId !== openRequestRef.current) return;
       setError(reason instanceof Error ? reason.message : "Could not load the conversation");
+    } finally {
+      if (requestId === openRequestRef.current) setLoadingConversation(false);
     }
   }, []);
 
@@ -111,15 +136,32 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
   useEffect(() => {
     if (!search.trim()) {
       setHits([]);
+      setSearching(false);
       return;
     }
+    let ignore = false;
+    // A search is in progress from the moment the query changes, so an empty
+    // result set is not mistaken for "no matches" while the request is pending.
+    setSearching(true);
     const timer = window.setTimeout(() => {
       api
         .searchConversations(search.trim())
-        .then((result) => setHits(result.results))
-        .catch(() => setHits([]));
+        .then((result) => {
+          // A slower response for an earlier query must not replace the hits of
+          // the query the user is on now.
+          if (!ignore) setHits(result.results);
+        })
+        .catch(() => {
+          if (!ignore) setHits([]);
+        })
+        .finally(() => {
+          if (!ignore) setSearching(false);
+        });
     }, 250);
-    return () => window.clearTimeout(timer);
+    return () => {
+      ignore = true;
+      window.clearTimeout(timer);
+    };
   }, [search]);
 
   async function newConversation() {
@@ -127,7 +169,11 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
     try {
       const conversation = await api.createConversation();
       setConversations((current) => [conversation, ...current]);
+      // A newly created conversation is the latest open; any in-flight open for
+      // an earlier conversation must not overwrite it.
+      openRequestRef.current += 1;
       setActiveId(conversation.id);
+      activeIdRef.current = conversation.id;
       setMessages([]);
       setDraft("");
     } catch (reason) {
@@ -141,8 +187,10 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
       await api.deleteConversation(id);
       const remaining = conversations.filter((item) => item.id !== id);
       setConversations(remaining);
-      if (activeId === id) {
+      if (activeIdRef.current === id) {
+        openRequestRef.current += 1;
         setActiveId(null);
+        activeIdRef.current = null;
         setMessages([]);
         if (remaining.length) await openConversation(remaining[0].id);
       }
@@ -183,11 +231,15 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
     const text = (explicit?.text ?? draft).trim();
     const files = explicit?.attachments ?? attachments;
     if (!text || pending) return;
+    // Bind the turn to the conversation that is open right now. If the user
+    // navigates elsewhere while it streams, the turn still lands in the right
+    // conversation and the view is not dragged back.
+    const turnConversationId = activeId;
     setError(null);
     setDraft("");
     setAttachments([]);
     const turn: PendingTurn = {
-      conversationId: activeId,
+      conversationId: turnConversationId,
       text,
       tokens: "",
       activity: [],
@@ -252,12 +304,25 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
             current ? { ...current, activity: [...current.activity, `Read ${names.join(", ")}`] } : current,
           );
         }
+        return;
+      }
+      if (event.type === "error") {
+        // A real streamed error must be surfaced, not swallowed: the terminal
+        // status still comes from the refetched transcript, but the reason the
+        // turn failed would otherwise be invisible.
+        const detail =
+          typeof event.data.detail === "string"
+            ? event.data.detail
+            : typeof event.data.text === "string"
+              ? event.data.text
+              : "The turn failed";
+        setError(detail);
       }
     };
 
     try {
       await streamMessage(text, {
-        conversationId: activeId,
+        conversationId: turnConversationId,
         attachments: files,
         onEvent,
         signal: controller.signal,
@@ -273,14 +338,23 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
       // answer is never re-typed into state by hand.
       try {
         let conversationsNow = conversations;
-        if (!activeId) {
+        if (!turnConversationId) {
           conversationsNow = await refreshConversations();
         }
-        const target = activeId ?? conversationsNow[0]?.id ?? null;
+        const target = turnConversationId ?? conversationsNow[0]?.id ?? null;
         if (target) {
-          setActiveId(target);
           const result = await api.conversationMessages(target);
-          setMessages(result.messages);
+          // Adopt the transcript and, for a first message in a brand-new chat,
+          // the new conversation id — but only if the user is still where they
+          // were when they sent. If they switched away while it streamed, their
+          // current view must not be replaced or navigated away from.
+          if (activeIdRef.current === turnConversationId) {
+            if (!turnConversationId) {
+              setActiveId(target);
+              activeIdRef.current = target;
+            }
+            setMessages(result.messages);
+          }
           setConversations((current) =>
             current.map((item) =>
               item.id === target
@@ -311,6 +385,27 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
       await api.cancelTurn(turnId);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not cancel the turn");
+    }
+  }
+
+  /**
+   * Approve or deny the action a turn paused for. The action is resolved by the
+   * backend against the structured execution-context task id the turn recorded
+   * (never by reading the message text), and the persisted transcript it returns
+   * is the authority for what to display.
+   */
+  async function resolveConfirmation(message: ConversationMessage, approve: boolean) {
+    const taskId = message.metadata?.task_id;
+    if (!activeId || typeof taskId !== "string" || !taskId || resolvingConfirmation) return;
+    setError(null);
+    setResolvingConfirmation(taskId);
+    try {
+      const result = await api.resolveConfirmation(activeId, taskId, approve);
+      setMessages(result.messages);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not resolve the confirmation");
+    } finally {
+      setResolvingConfirmation(null);
     }
   }
 
@@ -362,7 +457,7 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
             placeholder="Search conversations"
           />
           {search ? (
-            <button type="button" onClick={() => setSearch("")} title="Clear search">
+            <button type="button" onClick={() => setSearch("")} title="Clear search" aria-label="Clear search">
               <X size={13} />
             </button>
           ) : null}
@@ -385,6 +480,10 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
           </div>
         ) : null}
 
+        {search.trim() && !hits.length && !searching ? (
+          <p className="chat-empty-note">No conversations match “{search.trim()}”.</p>
+        ) : null}
+
         <div className="chat-list-label">Conversations</div>
         <div className="chat-list">
           {conversations.length === 0 ? (
@@ -400,6 +499,7 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
                     className="chat-rename"
                     value={renameDraft}
                     autoFocus
+                    aria-label="Conversation title"
                     onChange={(event) => setRenameDraft(event.target.value)}
                     onBlur={() => commitRename(conversation.id)}
                     onKeyDown={(event) => {
@@ -415,7 +515,9 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
                 )}
                 <div className="chat-item-actions">
                   <button
-                    title="Rename"
+                    type="button"
+                    title="Rename conversation"
+                    aria-label={`Rename ${conversation.title || "conversation"}`}
                     onClick={() => {
                       setRenamingId(conversation.id);
                       setRenameDraft(conversation.title || "");
@@ -423,7 +525,12 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
                   >
                     <Pencil size={12} />
                   </button>
-                  <button title="Delete" onClick={() => deleteConversation(conversation.id)}>
+                  <button
+                    type="button"
+                    title="Delete conversation"
+                    aria-label={`Delete ${conversation.title || "conversation"}`}
+                    onClick={() => deleteConversation(conversation.id)}
+                  >
                     <Trash2 size={12} />
                   </button>
                 </div>
@@ -448,10 +555,21 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
           ) : null}
         </header>
 
-        {error ? <div className="error-strip"><CircleAlert size={15} /> {error}</div> : null}
+        {error ? (
+          <div className="error-strip">
+            <CircleAlert size={15} /> {error}
+            <button onClick={() => setError(null)} aria-label="Dismiss error"><X size={14} /></button>
+          </div>
+        ) : null}
 
         <div className="chat-transcript" ref={transcriptRef}>
-          {messages.length === 0 && !pending ? (
+          {loadingConversation && !pending ? (
+            <p className="chat-text chat-thinking">
+              <Loader2 size={14} className="spin" /> Loading conversation...
+            </p>
+          ) : null}
+
+          {messages.length === 0 && !pending && !loadingConversation ? (
             <div className="chat-welcome">
               <h3>Talk to Atlas.</h3>
               <p>
@@ -479,6 +597,8 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
               message={message}
               onEdit={editMessage}
               onRegenerate={regenerate}
+              onResolveConfirmation={resolveConfirmation}
+              resolvingConfirmation={resolvingConfirmation}
               canRegenerate={index === lastAssistantIndex && !pending}
             />
           ))}
@@ -534,7 +654,12 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
               {attachments.map((attachment) => (
                 <span key={attachment.path ?? attachment.name} className="chat-attachment">
                   <Paperclip size={12} /> {attachment.name}
-                  <button type="button" onClick={() => removeAttachment(attachment.path ?? "")} title="Remove">
+                  <button
+                    type="button"
+                    onClick={() => removeAttachment(attachment.path ?? "")}
+                    title="Remove attachment"
+                    aria-label={`Remove ${attachment.name}`}
+                  >
                     <X size={11} />
                   </button>
                 </span>
@@ -547,6 +672,7 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
               <input
                 value={attachmentPath}
                 placeholder="Attach a file by path (Atlas reads it with the same permissions as any file)"
+                aria-label="Attachment file path"
                 onChange={(event) => setAttachmentPath(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
@@ -563,11 +689,25 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
           <div className="chat-composer-actions">
             <span className="hint"><kbd>Enter</kbd> send Â· <kbd>Shift Enter</kbd> newline</span>
             {pending ? (
-              <button type="button" className="button-muted" onClick={() => void stop()}>
-                <Square size={14} /> Stop
+              <button
+                type="button"
+                className="button-muted"
+                onClick={() => void stop()}
+                disabled={pending.cancelled}
+                aria-label="Stop the current turn"
+              >
+                {pending.cancelled ? (
+                  <>
+                    <Loader2 size={14} className="spin" /> Stopping...
+                  </>
+                ) : (
+                  <>
+                    <Square size={14} /> Stop
+                  </>
+                )}
               </button>
             ) : (
-              <button type="submit" className="send-button" disabled={!draft.trim()} title="Send">
+              <button type="submit" className="send-button" disabled={!draft.trim()} title="Send" aria-label="Send message">
                 <Send size={16} />
               </button>
             )}
@@ -582,17 +722,24 @@ function MessageBubble({
   message,
   onEdit,
   onRegenerate,
+  onResolveConfirmation,
+  resolvingConfirmation,
   canRegenerate,
 }: {
   message: ConversationMessage;
   onEdit: (message: ConversationMessage) => void;
   onRegenerate: (message: ConversationMessage) => void;
+  onResolveConfirmation: (message: ConversationMessage, approve: boolean) => void;
+  resolvingConfirmation: string | null;
   canRegenerate: boolean;
 }) {
   const kind = (message.metadata?.response_kind || "") as ResponseKind | "";
   const activity = Array.isArray(message.metadata?.activity) ? message.metadata.activity : [];
   const cites = message.citations ?? [];
   const state = message.execution_state;
+  const taskId = typeof message.metadata?.task_id === "string" ? message.metadata.task_id : null;
+  const awaitingConfirmation = state === "waiting_for_confirmation" && Boolean(taskId);
+  const resolving = awaitingConfirmation && resolvingConfirmation === taskId;
   const [copied, setCopied] = useState(false);
 
   async function copy() {
@@ -624,6 +771,46 @@ function MessageBubble({
               {attachment.error ? <em> â€” {attachment.error}</em> : null}
             </span>
           ))}
+        </div>
+      ) : null}
+
+      {awaitingConfirmation ? (
+        <div className="approval-box">
+          <div>
+            <LockKeyhole size={18} />
+            <div>
+              <strong>Atlas is ready to act</strong>
+              <span>
+                This action changes your computer. Review it, then approve or reject to continue.
+              </span>
+            </div>
+          </div>
+          <div className="approval-actions">
+            <button
+              type="button"
+              className="button-muted"
+              onClick={() => onResolveConfirmation(message, false)}
+              disabled={resolving}
+            >
+              <X size={15} /> Reject
+            </button>
+            <button
+              type="button"
+              className="button-primary"
+              onClick={() => onResolveConfirmation(message, true)}
+              disabled={resolving}
+            >
+              {resolving ? (
+                <>
+                  <Loader2 size={15} className="spin" /> Working...
+                </>
+              ) : (
+                <>
+                  <Check size={15} /> Confirm action
+                </>
+              )}
+            </button>
+          </div>
         </div>
       ) : null}
 

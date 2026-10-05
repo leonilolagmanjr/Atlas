@@ -1,5 +1,6 @@
 import type {
   ApplicationInfo,
+  ConfirmationResolution,
   Conversation,
   ConversationAttachment,
   ConversationMessage,
@@ -87,6 +88,15 @@ export const api = {
     }),
   cancelTurn: (turnId: string) =>
     request<{ turn_id: string; cancelled: boolean }>(`/turns/${turnId}/cancel`, { method: "POST" }),
+
+  /** Approve or deny the action a conversational turn paused for. The
+   *  execution-context ``taskId`` is the one recorded on the assistant message,
+   *  which is what the backend's existing approve/deny contract accepts. */
+  resolveConfirmation: (conversationId: string, taskId: string, approve: boolean) =>
+    request<ConfirmationResolution>(`/conversations/${conversationId}/${approve ? "approve" : "deny"}`, {
+      method: "POST",
+      body: JSON.stringify({ conversation_id: conversationId, task_id: taskId }),
+    }),
 
   // -- long-term memory ----------------------------------------------------
   memories: (query = "") =>

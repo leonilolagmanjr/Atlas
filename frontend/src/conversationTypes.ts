@@ -117,6 +117,15 @@ export interface ConversationStreamEvent {
   data: Record<string, unknown>;
 }
 
+/** The result of approving or denying a confirmation-paused conversational turn. */
+export interface ConfirmationResolution {
+  conversation_id: string;
+  task_id: string;
+  execution_state: ExecutionState;
+  message: ConversationMessage | null;
+  messages: ConversationMessage[];
+}
+
 // ---------------------------------------------------------------------------
 // Long-term memory
 // ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ export type {
   ConversationMessage,
   ConversationSearchHit,
   ConversationStreamEvent,
+  ConfirmationResolution,
   ExecutionState,
   MemoryKind,
   MemoryRecord,

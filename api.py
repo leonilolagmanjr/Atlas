@@ -63,6 +63,17 @@ class ConversationRenamePayload(BaseModel):
     title: str = Field(min_length=1, max_length=200)
 
 
+class ConfirmationPayload(BaseModel):
+    """Resolve a confirmation-paused conversational turn.
+
+    ``task_id`` is the execution-context id the turn recorded on its assistant
+    message, which is exactly what the Brain's approve/deny contract accepts.
+    """
+
+    conversation_id: str = Field(min_length=1, max_length=128)
+    task_id: str = Field(min_length=1, max_length=128)
+
+
 class MemoryPayload(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
     kind: str = Field(default="preference", max_length=32)
@@ -457,6 +468,20 @@ class AtlasService:
             return False
         token.cancel()
         return True
+
+    def resolve_confirmation(
+        self, conversation_id: str, task_id: str, *, approve: bool
+    ) -> dict[str, Any]:
+        """Approve or deny a confirmation-paused conversational turn.
+
+        The paused plan is the Brain's (keyed by the execution-context task id the
+        turn recorded), so this reuses the Brain's existing approve/deny contract
+        rather than creating a task-queue record for it.
+        """
+
+        self.ensure_runtime()
+        assert self.runtime is not None
+        return self.runtime.resolve_confirmation(conversation_id, task_id, approve=approve)
 
     # -- long-term user memory ---------------------------------------------------
 
@@ -984,6 +1009,20 @@ def send_message(payload: MessagePayload) -> dict[str, Any]:
         conversation_id=payload.conversation_id,
         attachments=payload.attachments,
     )
+
+
+@app.post("/api/conversations/{conversation_id}/approve")
+def approve_conversation(conversation_id: str, payload: ConfirmationPayload) -> dict[str, Any]:
+    """Approve the action a conversational turn paused for."""
+
+    return service.resolve_confirmation(conversation_id, payload.task_id, approve=True)
+
+
+@app.post("/api/conversations/{conversation_id}/deny")
+def deny_conversation(conversation_id: str, payload: ConfirmationPayload) -> dict[str, Any]:
+    """Deny (cancel) the action a conversational turn paused for."""
+
+    return service.resolve_confirmation(conversation_id, payload.task_id, approve=False)
 
 
 @app.post("/api/messages/stream")

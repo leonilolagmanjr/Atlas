@@ -464,5 +464,96 @@ class ExistingTaskApiTests(unittest.TestCase):
         self.assertIn("running", self.client.get("/api/queue").json())
 
 
+class _PendingBrain:
+    """A Brain double that pauses a plan, then resolves it via the real contract."""
+
+    def __init__(self) -> None:
+        from models import TaskStatus
+
+        self._TaskStatus = TaskStatus
+        self.approve_calls: list[str | None] = []
+        self.deny_calls: list[str | None] = []
+        self.last_context = None
+
+    def process(self, user_input: str) -> str:
+        # A genuine confirmation pause: the turn records waiting_for_confirmation
+        # and a task id, never a fabricated progress state.
+        self.last_context = _FakeContext(status="WAITING_FOR_CONFIRMATION")
+        return "This action requires your confirmation before Atlas can continue."
+
+    def approve_pending(self, task_id: str | None = None) -> str:
+        self.approve_calls.append(task_id)
+        self.last_context = _FakeContext(status="COMPLETED")
+        return "Wrote the file."
+
+    def deny_pending(self, task_id: str | None = None) -> str:
+        self.deny_calls.append(task_id)
+        self.last_context = _FakeContext(status="CANCELLED")
+        return "Action cancelled."
+
+
+class ConversationConfirmationApiTests(unittest.TestCase):
+    """A conversation turn that pauses for confirmation is resolvable from the chat."""
+
+    def setUp(self) -> None:
+        self.harness = _ServiceHarness()
+        self.harness.brain = _PendingBrain()  # type: ignore[assignment]
+        self.service = self.harness.install()
+        self._original = api_module.service
+        api_module.service = self.service
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        api_module.service = self._original
+        self.harness.cleanup()
+
+    def _paused_turn(self) -> tuple[str, dict[str, Any]]:
+        conversation = self.client.post("/api/conversations", json={}).json()
+        response = self.client.post(
+            "/api/messages",
+            json={"message": "Write the report to the file.", "conversation_id": conversation["id"]},
+        )
+        self.assertEqual(response.status_code, 202)
+        messages = self.client.get(
+            f"/api/conversations/{conversation['id']}/messages"
+        ).json()["messages"]
+        assistant = messages[-1]
+        self.assertEqual(assistant["execution_state"], "waiting_for_confirmation")
+        self.assertTrue(assistant["metadata"]["task_id"])
+        return conversation["id"], assistant
+
+    def test_approve_resolves_the_paused_turn_and_clears_the_control(self) -> None:
+        conversation_id, assistant = self._paused_turn()
+        task_id = assistant["metadata"]["task_id"]
+
+        resolved = self.client.post(
+            f"/api/conversations/{conversation_id}/approve",
+            json={"conversation_id": conversation_id, "task_id": task_id},
+        )
+        self.assertEqual(resolved.status_code, 200)
+        body = resolved.json()
+        self.assertEqual(body["execution_state"], "completed")
+        self.assertEqual(self.harness.brain.approve_calls, [task_id])
+
+        messages = body["messages"]
+        final = messages[-1]
+        self.assertEqual(final["execution_state"], "completed")
+        self.assertEqual(final["content"], "Wrote the file.")
+        # The structured confirmation marker is gone, so the control is retired.
+        self.assertNotIn("task_id", final["metadata"])
+
+    def test_deny_cancels_the_paused_turn(self) -> None:
+        conversation_id, assistant = self._paused_turn()
+        task_id = assistant["metadata"]["task_id"]
+
+        resolved = self.client.post(
+            f"/api/conversations/{conversation_id}/deny",
+            json={"conversation_id": conversation_id, "task_id": task_id},
+        )
+        self.assertEqual(resolved.status_code, 200)
+        self.assertEqual(self.harness.brain.deny_calls, [task_id])
+        self.assertEqual(resolved.json()["messages"][-1]["execution_state"], "cancelled")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

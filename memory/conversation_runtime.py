@@ -549,6 +549,76 @@ class ConversationRuntime:
     def get_messages(self, conversation_id: str) -> list[dict[str, Any]]:
         return [message.to_dict() for message in self._memory.list_messages(conversation_id)]
 
+    def resolve_confirmation(
+        self,
+        conversation_id: str,
+        task_id: str,
+        *,
+        approve: bool,
+    ) -> dict[str, Any]:
+        """Resolve a confirmation-paused conversational turn.
+
+        The paused plan belongs to the Brain (keyed by the execution context
+        ``task_id`` the turn recorded), not to the API task queue, so this calls
+        the existing :meth:`Brain.approve_pending` / :meth:`Brain.deny_pending`
+        contract rather than synthesising a task record. The persisted assistant
+        message for that turn is then updated to the real state that occurred, so
+        the transcript the user sees is the transcript the backend recorded.
+        """
+
+        if self._brain is None:
+            raise RuntimeError("The Atlas runtime is not available yet")
+
+        self._memory.open_session(conversation_id)
+        if approve:
+            response = self._brain.approve_pending(task_id)
+        else:
+            response = self._brain.deny_pending(task_id)
+
+        context = getattr(self._brain, "last_context", None)
+        state = _execution_state(context, CancellationToken())
+        if context is None:
+            # The Brain had no matching pending plan: the action was already
+            # resolved. Report the honest outcome rather than a fabricated one.
+            state = "completed" if approve else "cancelled"
+        # A resumed plan that pauses again (a further consequential step) stays
+        # truthfully ``waiting_for_confirmation`` so the control remains visible.
+
+        conversation = self._ensure_conversation()
+        target = self._find_confirmation_message(conversation.id, task_id)
+        if target is None:
+            return {
+                "conversation_id": conversation.id,
+                "task_id": task_id,
+                "execution_state": state,
+                "message": None,
+                "messages": self.get_messages(conversation.id),
+            }
+
+        metadata = dict(target.metadata or {})
+        metadata.pop("task_id", None)
+        updated = self._memory.update_message(
+            target.id,
+            content=response or target.content,
+            execution_state=state,
+            metadata=metadata,
+        )
+        return {
+            "conversation_id": conversation.id,
+            "task_id": task_id,
+            "execution_state": state,
+            "message": updated.to_dict() if updated is not None else None,
+            "messages": self.get_messages(conversation.id),
+        }
+
+    def _find_confirmation_message(self, conversation_id: str, task_id: str) -> Any:
+        """Find the assistant message awaiting the given execution-context plan."""
+
+        for message in self._memory.list_messages(conversation_id):
+            if str(message.metadata.get("task_id") or "") == task_id:
+                return message
+        return None
+
     def search(self, query: str, *, limit: int = 20) -> list[dict[str, Any]]:
         """Search past conversations: semantic first, deterministic always."""
 
