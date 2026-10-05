@@ -86,31 +86,6 @@ export interface ConversationSearchHit {
   match: "semantic" | "message" | "summary";
 }
 
-export interface TurnResult {
-  conversation_id: string;
-  message_id: string;
-  user_message_id: string;
-  text: string;
-  kind: ResponseKind;
-  execution_state: ExecutionState;
-  tool_calls: ToolCall[];
-  tool_results: Array<{ tool?: string; output?: unknown; error?: string | null }>;
-  citations: string[];
-  activity: string[];
-  classification?: {
-    kind: string;
-    delegate: boolean;
-    reason: string;
-    signals: string[];
-    context_dependent: boolean;
-    anaphoric: boolean;
-  };
-  metadata: {
-    memory_written?: Array<{ id: string; text: string; kind: string; summary?: string }>;
-    [key: string]: unknown;
-  };
-}
-
 /** One real Server-Sent Event from a streaming turn. */
 export interface ConversationStreamEvent {
   type: string;
@@ -150,12 +125,3 @@ export interface MemoryStatus {
   count: number;
   kinds: string[];
 }
-
-/** The canonical memory kinds, mirrored from the backend vocabulary. */
-export const MEMORY_KINDS: Array<{ value: MemoryKind; label: string }> = [
-  { value: "preference", label: "Preference" },
-  { value: "instruction", label: "Instruction" },
-  { value: "fact", label: "Fact" },
-  { value: "project", label: "Project" },
-  { value: "workflow", label: "Workflow" },
-];

@@ -57,6 +57,13 @@ interface PendingTurn {
   activity: string[];
   turnId: string | null;
   cancelled: boolean;
+  // The last state the backend actually reported for this turn. "running" is
+  // only shown while a turn is genuinely streaming; the terminal event
+  // (assistant_completed / cancelled / error) replaces it truthfully.
+  state: "running" | "waiting_for_confirmation" | "cancelled" | "failed" | "completed";
+  // True only between the assistant_started event and its first token/activity:
+  // before that, Atlas is routing the request, not composing an answer.
+  started: boolean;
 }
 
 export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
@@ -79,6 +86,10 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
   // True while a conversation's transcript is being fetched, so the welcome
   // panel is not shown for a conversation that simply has not loaded yet.
   const [loadingConversation, setLoadingConversation] = useState(false);
+  // True from the moment a stop is requested until the backend has actually
+  // reported the turn's terminal state. It reflects the real request, not a
+  // fabricated progress state.
+  const [stopping, setStopping] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   // Monotonic id for the latest conversation open. A slower response for an
@@ -245,6 +256,8 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
       activity: [],
       turnId: null,
       cancelled: false,
+      state: "running",
+      started: false,
     };
     setPending(turn);
 
@@ -257,9 +270,29 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
         setPending((current) => (current ? { ...current, turnId } : current));
         return;
       }
+      if (event.type === "assistant_started") {
+        setPending((current) => (current ? { ...current, started: true } : current));
+        return;
+      }
       if (event.type === "token") {
         const piece = typeof event.data.text === "string" ? event.data.text : "";
-        setPending((current) => (current ? { ...current, tokens: current.tokens + piece } : current));
+        setPending((current) =>
+          current ? { ...current, started: true, tokens: current.tokens + piece } : current,
+        );
+        return;
+      }
+      if (event.type === "assistant_completed") {
+        // The backend reports the recorded terminal state. A turn that paused for
+        // approval is NOT "working": it is waiting on the user, and is labelled
+        // that way instead of showing a spinner that will never end on its own.
+        const state = String(event.data.execution_state ?? "completed");
+        setPending((current) =>
+          current ? { ...current, state: state === "waiting_for_confirmation" ? "waiting_for_confirmation" : "completed" } : current,
+        );
+        return;
+      }
+      if (event.type === "cancelled") {
+        setPending((current) => (current ? { ...current, state: "cancelled", cancelled: true } : current));
         return;
       }
       if (event.type === "tool_started") {
@@ -267,7 +300,7 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
         // explains what Atlas decided to do, so it is shown as that.
         const line =
           typeof event.data.tool === "string"
-            ? `${event.data.tool} â€” started`
+            ? `${event.data.tool} — started`
             : String(event.data.detail ?? "working");
         setPending((current) =>
           current ? { ...current, activity: [...current.activity, line] } : current,
@@ -278,7 +311,7 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
         const tool = typeof event.data.tool === "string" ? event.data.tool : "tool";
         const status = String(event.data.status ?? (event.data.success ? "completed" : "failed"));
         setPending((current) =>
-          current ? { ...current, activity: [...current.activity, `${tool} â€” ${status}`] } : current,
+          current ? { ...current, activity: [...current.activity, `${tool} — ${status}`] } : current,
         );
         return;
       }
@@ -293,7 +326,7 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
         const tool = typeof event.data.tool === "string" ? event.data.tool : "action";
         const status = String(event.data.status ?? "checked");
         setPending((current) =>
-          current ? { ...current, activity: [...current.activity, `Verified ${tool} â€” ${status}`] } : current,
+          current ? { ...current, activity: [...current.activity, `Verified ${tool} — ${status}`] } : current,
         );
         return;
       }
@@ -317,6 +350,7 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
               ? event.data.text
               : "The turn failed";
         setError(detail);
+        setPending((current) => (current ? { ...current, state: "failed" } : current));
       }
     };
 
@@ -371,20 +405,28 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
         setError(reason instanceof Error ? reason.message : "Could not refresh the conversation");
       }
       setPending(null);
+      setStopping(false);
     }
   }
 
   async function stop() {
     const turnId = pending?.turnId;
     if (!turnId) {
+      // The turn has not opened yet, so there is no backend turn to cancel.
+      // Aborting the request stops the client from waiting on it; the stream
+      // itself is what the user is asking to stop.
       abortRef.current?.abort();
       return;
     }
-    setPending((current) => (current ? { ...current, cancelled: true } : current));
+    setStopping(true);
     try {
       await api.cancelTurn(turnId);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not cancel the turn");
+    } finally {
+      // The cancelled state shown afterwards is the state the backend records
+      // on the persisted turn; the streamed terminal event ends the wait.
+      setStopping(false);
     }
   }
 
@@ -412,7 +454,7 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
   /**
    * Edit a past message: the original wording is put back in the composer so it
    * can be changed and sent as a new turn. Nothing is silently rewritten in the
-   * stored transcript â€” what Atlas actually said stays visible.
+   * stored transcript — what Atlas actually said stays visible.
    */
   function editMessage(message: ConversationMessage) {
     setDraft(message.content);
@@ -565,7 +607,7 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
         <div className="chat-transcript" ref={transcriptRef}>
           {loadingConversation && !pending ? (
             <p className="chat-text chat-thinking">
-              <Loader2 size={14} className="spin" /> Loading conversation...
+              <Loader2 size={14} className="spin" /> Loading conversation…
             </p>
           ) : null}
 
@@ -605,13 +647,28 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
 
           {pending ? (
             <div className="chat-message chat-message-assistant">
-              <div className="chat-role">Atlas</div>
+              <div className="chat-role">
+                Atlas
+                {pending.state !== "running" ? (
+                  <em className={`chat-state chat-state-${pending.state}`}>{pending.state.replaceAll("_", " ")}</em>
+                ) : null}
+              </div>
               <div className="chat-bubble">
                 {pending.tokens ? (
                   <p className="chat-text">{pending.tokens}</p>
+                ) : pending.state === "waiting_for_confirmation" ? (
+                  <p className="chat-text chat-thinking">
+                    <LockKeyhole size={14} /> Waiting for your approval…
+                  </p>
+                ) : pending.state === "cancelled" ? (
+                  <p className="chat-text chat-thinking">Stopped.</p>
+                ) : pending.state === "failed" ? (
+                  <p className="chat-text chat-thinking">
+                    <CircleAlert size={14} /> The turn failed.
+                  </p>
                 ) : (
                   <p className="chat-text chat-thinking">
-                    <Loader2 size={14} className="spin" /> Workingâ€¦
+                    <Loader2 size={14} className="spin" /> {pending.started ? "Working…" : "Thinking…"}
                   </p>
                 )}
               </div>
@@ -640,7 +697,7 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
             value={draft}
             rows={2}
             disabled={Boolean(pending)}
-            placeholder="Message Atlasâ€¦"
+            placeholder="Message Atlas…"
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
@@ -687,18 +744,18 @@ export function ChatWorkspace({ modelLabel }: { modelLabel: string }) {
             </div>
           ) : null}
           <div className="chat-composer-actions">
-            <span className="hint"><kbd>Enter</kbd> send Â· <kbd>Shift Enter</kbd> newline</span>
+            <span className="hint"><kbd>Enter</kbd> send · <kbd>Shift Enter</kbd> newline</span>
             {pending ? (
               <button
                 type="button"
                 className="button-muted"
                 onClick={() => void stop()}
-                disabled={pending.cancelled}
+                disabled={pending.cancelled || stopping}
                 aria-label="Stop the current turn"
               >
-                {pending.cancelled ? (
+                {pending.cancelled || stopping ? (
                   <>
-                    <Loader2 size={14} className="spin" /> Stopping...
+                    <Loader2 size={14} className="spin" /> Stopping…
                   </>
                 ) : (
                   <>
@@ -768,7 +825,7 @@ function MessageBubble({
           {message.attachments.map((attachment, index) => (
             <span key={`${attachment.name}-${index}`} className="chat-attachment">
               {attachment.name}
-              {attachment.error ? <em> â€” {attachment.error}</em> : null}
+              {attachment.error ? <em> — {attachment.error}</em> : null}
             </span>
           ))}
         </div>
@@ -802,7 +859,7 @@ function MessageBubble({
             >
               {resolving ? (
                 <>
-                  <Loader2 size={15} className="spin" /> Working...
+                  <Loader2 size={15} className="spin" /> Working…
                 </>
               ) : (
                 <>
@@ -851,7 +908,7 @@ function MessageBubble({
           <ul>
             {message.tool_calls.map((call, index) => (
               <li key={`${call.tool ?? "tool"}-${index}`}>
-                {call.tool ?? "tool"} â€” {call.status ?? "unknown"}
+                {call.tool ?? "tool"} — {call.status ?? "unknown"}
               </li>
             ))}
           </ul>
@@ -880,6 +937,7 @@ export function MemoryView() {
   const [kind, setKind] = useState("preference");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
+  const [clearing, setClearing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async (searchQuery = "") => {
@@ -891,6 +949,27 @@ export function MemoryView() {
       setError(reason instanceof Error ? reason.message : "Could not load memory");
     }
   }, []);
+
+  /** Save an edited memory. A failed save is surfaced, never swallowed, so the
+   *  editor stays open on a record that was not actually updated. */
+  async function saveEdit(id: string) {
+    try {
+      await api.updateMemory(id, editDraft);
+      setEditingId(null);
+      await load(query);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not update that memory");
+    }
+  }
+
+  async function forget(id: string) {
+    try {
+      await api.deleteMemory(id);
+      await load(query);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not delete that memory");
+    }
+  }
 
   useEffect(() => {
     void load();
@@ -926,20 +1005,35 @@ export function MemoryView() {
           className="button-muted"
           onClick={async () => {
             if (!status) return;
-            const next = await api.setMemoryEnabled(!status.enabled);
-            setStatus({ enabled: next.enabled, count: next.count });
+            try {
+              const next = await api.setMemoryEnabled(!status.enabled);
+              setStatus({ enabled: next.enabled, count: next.count });
+            } catch (reason) {
+              setError(reason instanceof Error ? reason.message : "Could not change the memory setting");
+            }
           }}
         >
           {status?.enabled ? "Disable memory" : "Enable memory"}
         </button>
         <button
           className="button-muted"
+          type="button"
+          disabled={clearing || records.length === 0}
           onClick={async () => {
-            await api.clearMemory();
-            await load(query);
+            // Deleting all memory is irreversible, so it is confirmed first.
+            if (!window.confirm("Delete every remembered item? This cannot be undone.")) return;
+            setClearing(true);
+            try {
+              await api.clearMemory();
+              await load(query);
+            } catch (reason) {
+              setError(reason instanceof Error ? reason.message : "Could not clear memory");
+            } finally {
+              setClearing(false);
+            }
           }}
         >
-          Clear all
+          {clearing ? "Clearing…" : "Clear all"}
         </button>
       </div>
 
@@ -983,12 +1077,8 @@ export function MemoryView() {
                     value={editDraft}
                     autoFocus
                     onChange={(event) => setEditDraft(event.target.value)}
-                    onKeyDown={async (event) => {
-                      if (event.key === "Enter") {
-                        await api.updateMemory(record.id, editDraft);
-                        setEditingId(null);
-                        await load(query);
-                      }
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") void saveEdit(record.id);
                       if (event.key === "Escape") setEditingId(null);
                     }}
                   />
@@ -998,13 +1088,7 @@ export function MemoryView() {
               </div>
               <div className="memory-row-actions">
                 {editingId === record.id ? (
-                  <button
-                    onClick={async () => {
-                      await api.updateMemory(record.id, editDraft);
-                      setEditingId(null);
-                      await load(query);
-                    }}
-                  >
+                  <button type="button" onClick={() => void saveEdit(record.id)}>
                     Save
                   </button>
                 ) : (
@@ -1019,11 +1103,9 @@ export function MemoryView() {
                   </button>
                 )}
                 <button
+                  type="button"
                   title="Forget"
-                  onClick={async () => {
-                    await api.deleteMemory(record.id);
-                    await load(query);
-                  }}
+                  onClick={() => void forget(record.id)}
                 >
                   <Trash2 size={12} />
                 </button>

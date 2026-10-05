@@ -1,22 +1,16 @@
 import type {
-  ApplicationInfo,
   ConfirmationResolution,
   Conversation,
   ConversationAttachment,
   ConversationMessage,
   ConversationSearchHit,
   ConversationStreamEvent,
-  FeedbackPayload,
   Health,
   MemoryRecord,
   MemoryStatus,
-  QueueSnapshot,
   SystemInfo,
   TaskRecord,
   ToolInfo,
-  ToolCandidate,
-  ToolKnowledge,
-  TurnResult,
 } from "../types";
 
 const API_BASE = import.meta.env.VITE_ATLAS_API_URL ?? "http://127.0.0.1:8000/api";
@@ -37,25 +31,8 @@ export const api = {
   health: () => request<Health>("/health"),
   system: () => request<SystemInfo>("/system"),
   tools: () => request<{ tools: ToolInfo[] }>("/tools"),
-  toolKnowledge: (query = "") => request<{ tools: ToolKnowledge[] }>(`/tool-knowledge${query ? `?query=${encodeURIComponent(query)}` : ""}`),
-  discoverTools: (query: string) => request<{ candidates: ToolCandidate[] }>(`/tool-discovery?query=${encodeURIComponent(query)}`),
-  applications: () => request<{ applications: ApplicationInfo[] }>("/applications"),
   tasks: () => request<{ tasks: TaskRecord[] }>("/tasks"),
-  queue: () => request<QueueSnapshot>("/queue"),
   task: (id: string) => request<TaskRecord>(`/tasks/${id}`),
-  createTask: (requestText: string) =>
-    request<TaskRecord>("/tasks", {
-      method: "POST",
-      body: JSON.stringify({ request: requestText }),
-    }),
-  approveTask: (id: string) => request<TaskRecord>(`/tasks/${id}/approve`, { method: "POST" }),
-  denyTask: (id: string) => request<TaskRecord>(`/tasks/${id}/deny`, { method: "POST" }),
-  submitFeedback: (id: string, payload: FeedbackPayload) =>
-    request<TaskRecord>(`/tasks/${id}/feedback`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    }),
-  experience: () => request<ExperienceStatus>("/experience"),
 
   // -- conversations -------------------------------------------------------
   conversations: () => request<{ conversations: Conversation[] }>("/conversations"),
@@ -77,15 +54,6 @@ export const api = {
     }),
   deleteConversation: (id: string) =>
     request<void>(`/conversations/${id}`, { method: "DELETE" }),
-  sendMessage: (message: string, conversationId?: string | null, attachments: ConversationAttachment[] = []) =>
-    request<TurnResult>("/messages", {
-      method: "POST",
-      body: JSON.stringify({
-        message,
-        conversation_id: conversationId ?? null,
-        attachments,
-      }),
-    }),
   cancelTurn: (turnId: string) =>
     request<{ turn_id: string; cancelled: boolean }>(`/turns/${turnId}/cancel`, { method: "POST" }),
 
@@ -177,22 +145,4 @@ export function streamMessage(
       }
     }
   });
-}
-
-export interface ExperienceStatus {
-  enabled: boolean;
-  counts?: { total: number; success: number; failure: number; reliable: number; unevaluated: number };
-  failure_categories?: string[];
-  failure_category_labels?: Record<string, string>;
-  analysis?: {
-    available: boolean;
-    reason?: string;
-    evaluated?: number;
-    successes?: number;
-    failures?: number;
-    corrections?: number;
-    proposals?: Array<{ kind: string; evidence: number; statement: string; procedure?: string[] }>;
-    /** Always false: proposals are never applied automatically. */
-    applied?: boolean;
-  };
 }

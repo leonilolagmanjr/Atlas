@@ -21,9 +21,7 @@ export type {
   MemoryRecord,
   MemoryStatus,
   ResponseKind,
-  TurnResult,
 } from "./conversationTypes";
-export { MEMORY_KINDS } from "./conversationTypes";
 
 export interface Health {
   status: string;
@@ -38,42 +36,6 @@ export interface ToolInfo {
   category: string;
   permission_level: string;
   risk_level: string;
-}
-
-export interface ToolKnowledge {
-  name: string;
-  type: string;
-  category: string;
-  description: string;
-  purpose: string[];
-  examples: string[];
-  aliases: string[];
-  related_tools: string[];
-  requires_admin: boolean;
-  risk_level: string;
-  destructive: boolean;
-  read_only: boolean;
-  expected_output: string;
-  platforms: string[];
-  powershell_versions: string[];
-  metadata: Record<string, unknown>;
-}
-
-export interface ToolCandidate {
-  tool: string;
-  tool_type: string;
-  reason: string;
-  risk_level: string;
-  read_only: boolean;
-  score: number;
-}
-
-export interface WebSearchResult {
-  title: string;
-  url: string;
-  snippet: string;
-  source: string;
-  thumbnail_url?: string | null;
 }
 
 export interface WebResult {
@@ -95,13 +57,6 @@ export interface SystemInfo {
     cpu_count: number | null;
     disk: { path: string; total: number; used: number; free: number };
   };
-}
-
-export interface ApplicationInfo {
-  name: string;
-  version: string;
-  publisher: string;
-  install_location: string;
 }
 
 export interface PlanStep {
@@ -126,11 +81,6 @@ export interface ToolCall {
   parameters?: Record<string, unknown>;
   output?: unknown;
   error?: string | null;
-}
-
-export interface QueueSnapshot {
-  running: string | null;
-  pending: string[];
 }
 
 export interface ReasoningStep {
@@ -183,15 +133,3 @@ export interface FeedbackPayload {
   expected_behavior?: string;
   response_quality?: "positive" | "negative" | "";
 }
-
-/** The canonical failure categories, mirrored from the backend vocabulary. */
-export const FAILURE_CATEGORIES: Array<{ value: string; label: string }> = [
-  { value: "wrong_interpretation", label: "Wrong interpretation" },
-  { value: "wrong_action", label: "Wrong action" },
-  { value: "incomplete_result", label: "Incomplete result" },
-  { value: "did_not_follow_instruction", label: "Did not follow instruction" },
-  { value: "wrong_information", label: "Wrong information" },
-  { value: "delivery_not_completed", label: "Failed to deliver to requested application" },
-  { value: "verification_failed", label: "Verification failed" },
-  { value: "other", label: "Other" },
-];
