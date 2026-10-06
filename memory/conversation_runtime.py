@@ -1213,6 +1213,30 @@ def _refine_with_context(
     if len(tokens) > 6:
         return classification
 
+    from reasoning.reference_resolver import ReferenceResolver
+
+    reference = ReferenceResolver().resolve(
+        question, history=str(getattr(context_bundle, "history_text", "") or "")
+    )
+    if reference.target == "previous_output" and reference.mutates_output:
+        return TurnClassification(
+            kind="task",
+            delegate=True,
+            reason="the request transforms the previous output",
+            signals=classification.signals + ("previous_output_transformation",),
+            context_dependent=True,
+            anaphoric=True,
+        )
+    if reference.target == "previous_task" and reference.replace_subject:
+        return TurnClassification(
+            kind="task",
+            delegate=True,
+            reason="the request reuses the previous task with a replacement subject",
+            signals=classification.signals + ("previous_task_reference",),
+            context_dependent=True,
+            anaphoric=True,
+        )
+
     bare_action = any(question.startswith(lead) for lead in _ACTION_LEADS) or bool(
         re.match(
             r"^(?:please\s+|can you\s+|could you\s+)?"

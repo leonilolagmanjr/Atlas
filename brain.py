@@ -25,7 +25,7 @@ from experience.service import ExperienceService
 from knowledge_search import retrieve as retrieve_knowledge
 from llm import ask
 from models import ExecutionContext, PlanStatus, StructuredIntent, TaskStatus
-from models_task import Task
+from models_task import Task, TaskAction
 from planner import Planner
 from reasoning.diagnostics import PipelineTrace
 from reasoning.answer_generator import AnswerGenerator
@@ -175,6 +175,7 @@ class Brain:
             task = self._intent_engine.understand(
                 task, prior_task=self._active_task, history=history
             )
+            self._bind_previous_output(task)
             context.metadata["intent_reading"] = task.context.get("intent_reading", {})
             context.metadata["capability_check"] = self._intent_engine.validate_capabilities(task)
             trace.record_intent_reading(task.context.get("intent_reading", {}))
@@ -201,7 +202,12 @@ class Brain:
                 and set(task.sources) <= {"model", "knowledge"}
                 and not task.current_information_required
             )
-            if ENABLE_REASONING_ENGINE and task_validation.valid and not general_fallback_disabled:
+            if (
+                ENABLE_REASONING_ENGINE
+                and task_validation.valid
+                and not task_validation.needs_clarification
+                and not general_fallback_disabled
+            ):
                 answer = self._reasoning_engine.handle_request(
                     question=context.normalized_input or user_input,
                     task=task,
@@ -443,6 +449,64 @@ class Brain:
         from reasoning.task_interpreter import task_to_intent_shim
         return StructuredIntent.from_mapping(task_to_intent_shim(task), source=task.source)
 
+    def _bind_previous_output(self, task: Task) -> None:
+        """Bind a resolved prior-output reference from the persisted conversation."""
+
+        if "previous_output" not in task.context_references:
+            return
+        intent_reading = task.context.get("intent_reading") or {}
+        resolution = intent_reading.get("context") or {}
+        if "previous_output" in resolution.get("unresolved", []):
+            return
+        previous_output = self._latest_assistant_output()
+        if not previous_output:
+            task.actions = []
+            task.needs_clarification = True
+            task.clarification_question = (
+                "I can carry that out, but I couldn't determine what the previous "
+                "output refers to. What would you like me to use?"
+            )
+            return
+        task.actions = [
+            _bind_previous_output(action, previous_output)
+            for action in task.actions
+        ]
+        if not task.actions:
+            task.needs_clarification = True
+            task.clarification_question = (
+                "I found the previous output, but couldn't determine how to use it "
+                "for this request. What would you like me to do with it?"
+            )
+
+    def _latest_assistant_output(self) -> str:
+        if self._memory_manager is None:
+            return ""
+        for message in reversed(self._memory_manager.get_recent_messages()):
+            if message.role != "assistant":
+                continue
+            for result in reversed(message.tool_results):
+                tool = str(result.get("tool") or "")
+                output = result.get("output")
+                if tool in {
+                    "web.research", "web.fetch", "filesystem.read",
+                    "content.generate", "content.format",
+                } and isinstance(output, dict):
+                    for key in ("text", "content"):
+                        value = output.get(key)
+                        if isinstance(value, str) and value.strip():
+                            return value
+            for call in reversed(message.tool_calls):
+                if call.get("tool") != "applications.write_text":
+                    continue
+                parameters = call.get("parameters") or {}
+                value = parameters.get("text")
+                if isinstance(value, str) and value.strip():
+                    return value
+            content = str(message.content or "").strip()
+            if content:
+                return content
+        return ""
+
     # -- experience memory -------------------------------------------------------
 
     def _retrieve_experience_context(self, task: Task, user_input: str):
@@ -588,6 +652,28 @@ class Brain:
         if len(self._pending_contexts) == 1:
             return next(iter(self._pending_contexts.values()))
         return None
+
+
+def _bind_previous_output(action: TaskAction, output: str) -> TaskAction:
+    action.parameters = _replace_output_reference(action.parameters, output)
+    return action
+
+
+def _replace_output_reference(value, output: str):
+    if value == "$previous_output":
+        return output
+    if isinstance(value, dict):
+        return {
+            key: _replace_output_reference(item, output)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_replace_output_reference(item, output) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_replace_output_reference(item, output) for item in value)
+    return value
+
+
 def _validate_plan(plan) -> dict:
     """Validate a plan's shape before execution.
 

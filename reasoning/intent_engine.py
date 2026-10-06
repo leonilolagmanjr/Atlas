@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import re
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -219,8 +220,11 @@ class IntentEngine:
         """Augment ``task`` with goal / desired outcome / capability requirements."""
 
         text = task.original_prompt or ""
+        had_actions = bool(task.actions)
         reading = self._read(task, prior_task=prior_task, history=history)
         task.apply_intent(reading)
+        if not had_actions and task.actions:
+            self._sync_routing_fields(task)
         # Record the interpretation for observability; never chain-of-thought.
         task.context["intent_reading"] = reading.to_dict()
         # Confidence represents interpretation certainty, not the confidence of the
@@ -231,6 +235,46 @@ class IntentEngine:
         else:
             task.confidence = round(max(task.confidence, reading.confidence), 4)
         return task
+
+    @staticmethod
+    def _sync_routing_fields(task: Task) -> None:
+        """Refresh source routing after resolving actions from prior context."""
+
+        capabilities = {action.capability for action in task.actions}
+        sources: list[str] = []
+        if any(capability.startswith("web.") for capability in capabilities):
+            sources.append("web")
+        if any(capability.startswith("filesystem.") for capability in capabilities):
+            sources.append("files")
+        if any(capability.startswith("system.") for capability in capabilities):
+            sources.append("system")
+        transformation = any(
+            action.capability == "content.generate"
+            and str(action.parameters.get("input_content") or "").startswith("$")
+            for action in task.actions
+        )
+        if "content.generate" in capabilities and not transformation:
+            sources.append("model")
+        read_only = {
+            "content.generate", "content.format", "web.search", "web.fetch",
+            "web.research", "filesystem.search", "filesystem.read",
+            "filesystem.list", "filesystem.metadata", "filesystem.search_content",
+            "system.info", "processes.list", "computer.windows", "computer.observe",
+            "computer.vision_observe", "computer.find",
+        }
+        if capabilities - read_only:
+            sources.append("computer")
+        task.sources = list(dict.fromkeys(sources))
+        task.request_type = (
+            "hybrid" if "computer" in sources and len(sources) > 1
+            else "action" if "computer" in sources or "content.generate" in capabilities
+            else "question"
+        )
+        task.requires_web = "web" in sources
+        task.requires_files = "files" in sources
+        task.requires_computer = "computer" in sources
+        task.requires_system = "system" in sources
+        task.requires_model_knowledge = "model" in sources
 
     def analyze(
         self,
@@ -257,6 +301,12 @@ class IntentEngine:
         reading.notes = reading.interpretation_notes  # alias
 
         actions = list(task.actions)
+        if not actions and reading.context is not None:
+            actions = self._referenced_actions(
+                task, reading.context, prior_task=prior_task
+            )
+            if actions:
+                task.actions = actions
         entity_application = _entity_application(task)
         destination = entity_application or self._destination_from_text(text)
 
@@ -307,6 +357,119 @@ class IntentEngine:
 
         reading.interpretation_notes = list(dict.fromkeys(reading.interpretation_notes))
         return reading
+
+    @staticmethod
+    def _referenced_actions(
+        task: Task,
+        context: ResolvedContext,
+        *,
+        prior_task: Task | None,
+    ) -> list[TaskAction]:
+        """Materialize an already-resolved follow-up as normal task actions."""
+
+        if context.target == "previous_task" and context.replace_subject and prior_task:
+            actions = deepcopy(prior_task.actions)
+            if not actions:
+                return []
+            prior_entities = deepcopy(prior_task.entities)
+            task.entities = {**prior_entities, **task.entities}
+            old_subject = str(
+                prior_task.entities.get("topic")
+                or prior_task.research_query
+                or ""
+            ).strip()
+            new_subject = context.new_subject.strip()
+            if old_subject and new_subject:
+                for action in actions:
+                    action.parameters = _replace_subject(
+                        action.parameters, old_subject, new_subject
+                    )
+                    action.description = _replace_subject(
+                        action.description, old_subject, new_subject
+                    )
+                    if action.expected_output:
+                        action.expected_output = _replace_subject(
+                            action.expected_output, old_subject, new_subject
+                        )
+                for key in (
+                    "topic", "research_query", "raw_topic", "normalized_topic",
+                    "topic_reading",
+                ):
+                    if task.entities.get(key):
+                        task.entities[key] = _replace_subject(
+                            task.entities[key], old_subject, new_subject
+                        )
+                task.raw_topic = new_subject
+                task.normalized_topic = new_subject
+                task.research_query = _replace_subject(
+                    prior_task.research_query or old_subject,
+                    old_subject,
+                    new_subject,
+                )
+                task.topic_reading = _replace_subject(
+                    deepcopy(prior_task.topic_reading), old_subject, new_subject
+                )
+            return actions
+
+        if context.target != "previous_output":
+            return []
+
+        actions: list[TaskAction] = []
+        if context.mutates_output:
+            transformation = context.transformation or "transform"
+            content_type = "summary" if transformation == "summarize" else "text"
+            actions.append(
+                TaskAction(
+                    action_id="a1",
+                    capability="content.generate",
+                    parameters={
+                        "content_type": content_type,
+                        "input_content_type": "generic",
+                        "input_content": "$previous_output",
+                        "instructions": task.original_prompt,
+                    },
+                    description=f"Apply the requested {transformation} to the previous output.",
+                    produces="generated_text",
+                    expected_output="transformed previous output",
+                )
+            )
+            return actions
+
+        destination = context.destination or str(
+            task.entities.get("application") or task.entities.get("filename") or ""
+        )
+        if not destination:
+            return []
+        application = str(task.entities.get("application") or "")
+        filename = str(task.entities.get("filename") or "")
+        if application:
+            return [
+                TaskAction(
+                    action_id="a1",
+                    capability="applications.write_text",
+                    parameters={
+                        "application": application,
+                        "text": "$previous_output",
+                    },
+                    description=f"Write the previous output into {application}.",
+                    expected_output="previous output present in the application",
+                    risk_level="medium_risk",
+                    requires_confirmation=True,
+                )
+            ]
+        if filename:
+            return [
+                TaskAction(
+                    action_id="a1",
+                    capability="filesystem.write",
+                    parameters={"path": filename, "text": "$previous_output"},
+                    description=f"Save the previous output as {filename}.",
+                    expected_output=f"{filename} created",
+                    risk_level="medium_risk",
+                    requires_confirmation=True,
+                )
+            ]
+        return []
 
     # -- hypotheses --------------------------------------------------------------
 
@@ -887,3 +1050,23 @@ def _generic_topic(topic: str) -> bool:
 
 def _dedupe(items: list[str]) -> list[str]:
     return list(dict.fromkeys(items))
+
+
+def _replace_subject(value: Any, old_subject: str, new_subject: str) -> Any:
+    if isinstance(value, str):
+        return re.sub(
+            re.escape(old_subject),
+            lambda _match: new_subject,
+            value,
+            flags=re.IGNORECASE,
+        )
+    if isinstance(value, dict):
+        return {
+            key: _replace_subject(item, old_subject, new_subject)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_replace_subject(item, old_subject, new_subject) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_replace_subject(item, old_subject, new_subject) for item in value)
+    return value

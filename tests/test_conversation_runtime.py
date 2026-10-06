@@ -213,6 +213,19 @@ class RuntimeRoutingTests(unittest.TestCase):
         self.assertEqual(self.brain.requests, ["Open Chrome."])
         self.assertEqual(result.kind, "computer")
 
+    def test_research_transform_and_same_task_followups_are_delegated(self) -> None:
+        self.runtime.handle_message("Research FEU.")
+        summarized = self.runtime.handle_message("Summarize it.")
+        same_task = self.runtime.handle_message("Now do the same for Harvard.")
+
+        self.assertEqual(self.brain.requests, [
+            "Research FEU.",
+            "Summarize it.",
+            "Now do the same for Harvard.",
+        ])
+        self.assertEqual(summarized.kind, "task")
+        self.assertEqual(same_task.kind, "task")
+
     def test_research_turn_produces_a_real_kind_when_brain_uses_web(self) -> None:
         brain = _FakeBrain(tools=[("web.search", "completed"), ("web.fetch", "completed")])
         runtime = ConversationRuntime(
@@ -548,6 +561,23 @@ class ContextManagerTests(unittest.TestCase):
         self.assertTrue(bundle.has_history)
         self.assertIn("Tell me about Skyrim.", bundle.history_text)
         self.assertIn("Skyrim is an RPG.", bundle.history_text)
+
+    def test_main_points_followup_receives_the_prior_research_output(self) -> None:
+        conversation = self.memory.create_session(title="Research follow-up")
+        research = (
+            "Far Eastern University (FEU) was founded in Manila in 1934. "
+            "Its main campus is in Sampaloc. Source: https://www.feu.edu.ph/"
+        )
+        self.memory.append_message(role="user", content="Research FEU.")
+        self.memory.append_message(role="assistant", content=research)
+
+        bundle = self.manager.build(
+            question="What are the main points?",
+            conversation_id=conversation.id,
+        )
+
+        self.assertIn(research, bundle.history_text)
+        self.assertIn(research, bundle.as_prompt())
 
     def test_old_relevant_turn_is_recalled_beyond_the_recent_window(self) -> None:
         conversation = self.memory.create_session(title="Long")

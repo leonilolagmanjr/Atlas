@@ -11,6 +11,7 @@ import unittest
 
 from brain import Brain
 from executor import Executor, classify_failure
+from memory.models import MemoryMessage
 from models import TaskStatus
 from planner import Planner
 from reasoning.verifier import TaskVerifier
@@ -66,7 +67,36 @@ class ConfirmingFormatTool(FormattingTool):
         )
 
 
-def build_brain(ask, tools, *, mode: ExecutionMode = ExecutionMode.AUTONOMOUS) -> Brain:
+class InMemoryConversation:
+    def __init__(self) -> None:
+        self.messages: list[MemoryMessage] = []
+
+    def get_recent_messages(self) -> list[MemoryMessage]:
+        return list(self.messages)
+
+    def get_active_session_id(self) -> str:
+        return "test-conversation"
+
+    def build_conversation_history_for_prompt(self) -> str:
+        return "\n".join(
+            f"{message.role.capitalize()}: {message.content}"
+            for message in self.messages
+            if message.content
+        )
+
+    def append_message(self, **values) -> MemoryMessage:
+        message = MemoryMessage(**values)
+        self.messages.append(message)
+        return message
+
+
+def build_brain(
+    ask,
+    tools,
+    *,
+    mode: ExecutionMode = ExecutionMode.AUTONOMOUS,
+    memory_manager=None,
+) -> Brain:
     registry = ToolRegistry()
     for tool in tools:
         registry.register(tool)
@@ -80,9 +110,11 @@ def build_brain(ask, tools, *, mode: ExecutionMode = ExecutionMode.AUTONOMOUS) -
             vector_store=FakeVectorStore(),
             system_prompt="sys",
             retrieval_template="{conversation_history}{context}{question}",
+            memory_manager=memory_manager,
             tool_router=router,
         ),
         tool_router=router,
+        memory_manager=memory_manager,
         llm_ask=ask,
     )
 
@@ -242,6 +274,153 @@ class WebSearchToFileExecutionTests(unittest.TestCase):
         # The file received the summary text.
         self.assertEqual(writer.calls[0]["path"], "car_reviews.txt")
         self.assertIn("Summary:", writer.calls[0]["text"])
+
+
+class MultiTurnOutputHandoffTests(unittest.TestCase):
+    research_text = (
+        "Far Eastern University (FEU) is a private university in Manila. "
+        "Its main campus is in Sampaloc, and it was founded in 1934. "
+        "Source: https://www.feu.edu.ph/"
+    )
+
+    def _brain_after_research(self, follow_up_tools):
+        memory = InMemoryConversation()
+        search = RecordingTool(
+            "web.search",
+            {
+                "query": "FEU",
+                "results": [
+                    {
+                        "title": "Far Eastern University",
+                        "url": "https://www.feu.edu.ph/",
+                        "snippet": self.research_text,
+                    }
+                ],
+            },
+        )
+        brain = build_brain(
+            lambda **_: "{}",
+            [search, *follow_up_tools],
+            memory_manager=memory,
+        )
+        response = brain.process("Research FEU.")
+        first_context = brain.last_context
+        self.assertEqual(first_context.status, TaskStatus.COMPLETED)
+        memory.append_message(role="user", content="Research FEU.")
+        memory.append_message(
+            role="assistant",
+            content=response,
+            tool_calls=first_context.tool_calls,
+            tool_results=[
+                {"tool": call["tool"], "output": call["output"]}
+                for call in first_context.tool_calls
+            ],
+            citations=first_context.web_sources,
+        )
+        return brain, memory, search, response
+
+    def test_research_output_is_bound_to_notepad_write_action(self):
+        writer = RecordingTool(
+            "applications.write_text",
+            {"pid": 1, "application": "Notepad", "characters": len(self.research_text)},
+        )
+        brain, _memory, search, research_response = self._brain_after_research([writer])
+
+        brain.process("Copy it in Notepad.")
+
+        context = brain.last_context
+        action = context.metadata["task"]["actions"][0]
+        self.assertIn("previous_output", context.metadata["task"]["references"])
+        self.assertEqual(action["capability"], "applications.write_text")
+        self.assertEqual(action["parameters"]["application"].casefold(), "notepad")
+        self.assertEqual(action["parameters"]["text"], research_response)
+        self.assertEqual(writer.calls[0]["text"], research_response)
+        self.assertEqual(search.calls[0]["query"], "FEU")
+        self.assertEqual(
+            context.execution_plan.steps[-1].metadata["parameters"]["text"],
+            research_response,
+        )
+
+    def test_summary_consumes_research_and_copy_consumes_summary(self):
+        summary = "FEU is a Manila university founded in 1934."
+        generator = RecordingTool("content.generate", {"text": summary})
+        writer = RecordingTool(
+            "applications.write_text",
+            {"pid": 1, "application": "Notepad", "characters": len(summary)},
+        )
+        brain, memory, _search, research_response = self._brain_after_research(
+            [generator, writer]
+        )
+
+        brain.process("Summarize it.")
+        summarize_context = brain.last_context
+        self.assertEqual(
+            summarize_context.metadata["task"]["actions"][0]["parameters"]["input_content"],
+            research_response,
+        )
+        self.assertEqual(generator.calls[0]["input_content"], research_response)
+        memory.append_message(
+            role="assistant",
+            content=summary,
+            tool_calls=summarize_context.tool_calls,
+            tool_results=[
+                {"tool": call["tool"], "output": call["output"]}
+                for call in summarize_context.tool_calls
+            ],
+        )
+
+        brain.process("Copy that in Notepad.")
+        self.assertEqual(writer.calls[0]["text"], summary)
+
+    def test_shortening_consumes_research_output(self):
+        shortened = "FEU is a Manila university founded in 1934."
+        generator = RecordingTool("content.generate", {"text": shortened})
+        brain, _memory, _search, research_response = self._brain_after_research(
+            [generator]
+        )
+
+        brain.process("Make it shorter.")
+
+        action = brain.last_context.metadata["task"]["actions"][0]
+        self.assertEqual(action["capability"], "content.generate")
+        self.assertEqual(action["parameters"]["input_content"], research_response)
+        self.assertEqual(generator.calls[0]["input_content"], research_response)
+
+    def test_same_research_workflow_replaces_subject(self):
+        brain, _memory, search, _response = self._brain_after_research([])
+
+        brain.process("Now do the same for Harvard.")
+
+        self.assertEqual(search.calls[-1]["query"], "harvard")
+        self.assertEqual(
+            brain.last_context.metadata["task"]["actions"][0]["parameters"]["query"],
+            "harvard",
+        )
+
+    def test_unavailable_previous_output_asks_for_clarification(self):
+        writer = RecordingTool(
+            "applications.write_text",
+            {"pid": 1, "application": "Notepad", "characters": 0},
+        )
+        memory = InMemoryConversation()
+        brain = build_brain(
+            lambda **_: "I don't know based on my knowledge base.",
+            [
+                RecordingTool(
+                    "web.search",
+                    {"query": "FEU", "results": [{"title": "FEU", "url": "https://example.org"}]},
+                ),
+                writer,
+            ],
+            memory_manager=memory,
+        )
+        brain.process("Research FEU.")
+        memory.messages.clear()
+        response = brain.process("Copy it in Notepad.")
+
+        self.assertEqual(brain.last_context.status, TaskStatus.UNCERTAIN)
+        self.assertIn("couldn't determine", response)
+        self.assertEqual(writer.calls, [])
 
 
 class LLMInterpretedPipelineTests(unittest.TestCase):
