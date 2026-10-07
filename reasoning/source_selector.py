@@ -187,17 +187,28 @@ class SourceSelector:
             )
         if requirement == "required":
             reasons.append("the semantic reading judged external evidence required")
-        else:
-            reasons.append(
-                "the request concerns an external entity; grounded evidence is more reliable"
+            return self._plan(
+                (SourceType.WEB, SourceType.MODEL),
+                "; ".join(reasons),
+                capabilities=tuple(
+                    name for name in ("web.search", "web.fetch") if self._available(name)
+                ),
+                current_information_required=True,
             )
+        # "preferred" evidence: the web is consulted for a grounded answer, but
+        # the request does NOT mandate live current information. The plan keeps
+        # the model as the fallback so a retrieval failure still produces an honest
+        # answer rather than a fabricated one.
+        reasons.append(
+            "the request concerns an external entity; grounded evidence is more reliable"
+        )
         return self._plan(
             (SourceType.WEB, SourceType.MODEL),
             "; ".join(reasons),
             capabilities=tuple(
                 name for name in ("web.search", "web.fetch") if self._available(name)
             ),
-            current_information_required=True,
+            current_information_required=bool(signals.time_sensitive),
         )
 
     @staticmethod

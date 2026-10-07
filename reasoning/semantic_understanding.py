@@ -164,6 +164,39 @@ class SemanticUnderstanding:
         reading.criterion_proxy = structure.criterion_proxy
         reading.candidate_set = structure.candidate_set
 
+        # Priority 1: detect current/latest/final-state semantics before routing.
+        lower = (text or "").casefold()
+        reading.latest_request = any(marker in lower for marker in (
+            "latest", "most recent", "newest", "right now", "currently", "at the moment"
+        ))
+        reading.most_recent_request = reading.latest_request or "most recent" in lower
+        reading.current_knowledge = (
+            reading.freshness_requirement == FRESHNESS_CURRENT
+            or structure.intrinsically_current
+            or structure.freshness == FRESHNESS_CURRENT
+            or bool(reading.latest_request)
+        )
+        reading.ranking = bool(structure.comparative or structure.superlative)
+        reading.dynamic_quantity = bool(
+            reading.current_knowledge or reading.ranking or any(
+                marker in lower for marker in ("subscribers", "views", "rank", "leader", "winner", "president", "version")
+            )
+        )
+        reading.stable_knowledge = not (
+            reading.current_knowledge or reading.ranking or reading.dynamic_quantity
+        ) and reading.operation in {OP_EXPLAIN, OP_IDENTIFY}
+        reading.subjective_criterion = bool(
+            structure.criterion_subjective or any(
+                term in (reading.criterion or "").casefold() for term in (
+                    "best", "most famous", "most popular", "greatest", "coolest", "smartest"
+                )
+            )
+        )
+        reading.objective_criterion = bool(reading.criterion and not reading.subjective_criterion)
+        reading.final_event_result = bool(
+            "winner" in lower or "won" in lower or "champion" in lower or "final score" in lower
+        ) or reading.operation == OP_RANK
+
         # Contextual grounding: the existing Intent Engine already resolved
         # references against the conversation; reuse its reading rather than
         # re-deriving anaphora with new rules.
@@ -406,7 +439,10 @@ def _goal_text(reading: SemanticRequest, structure: StructuralReading) -> str:
 def _freshness_for(task: Task | None, structure: StructuralReading) -> str:
     """Return current | stable | any from structure and the interpreter's flags."""
 
-    if structure.intrinsically_current or structure.superlative:
+    # Priority 1: latest/most-recent timing should be treated as current evidence
+    # requests even when they are worded as a superlative, not as a subjective
+    # criterion.
+    if structure.freshness == FRESHNESS_CURRENT or structure.intrinsically_current or structure.superlative:
         return FRESHNESS_CURRENT
     if task is not None and getattr(task, "current_information_required", False):
         return FRESHNESS_CURRENT
@@ -433,10 +469,18 @@ def _evidence_for(
 
     notes: list[str] = []
 
-    # 1. A ranking/comparison over a criterion must be evidenced. A plausible
-    #    generated ranking is a fabrication, not an answer.
-    if reading.comparative:
+    # Priority 1: a ranking/comparison or current/latest fact is not answerable
+    # from model memory alone; the evidence gate must block it.
+    if reading.comparative or reading.ranking:
         notes.append("ranking/comparison requires evidence to be trustworthy")
+        return EVIDENCE_REQUIRED, notes
+
+    if reading.latest_request or reading.most_recent_request or reading.current_knowledge:
+        notes.append("the answer depends on current information")
+        return EVIDENCE_REQUIRED, notes
+
+    if reading.final_event_result and reading.freshness_requirement == FRESHNESS_CURRENT:
+        notes.append("final event result requires fresh evidence")
         return EVIDENCE_REQUIRED, notes
 
     # 2. Information that changes over time cannot be answered from memory.

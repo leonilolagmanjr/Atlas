@@ -142,6 +142,20 @@ class SemanticRequest:
     #: True when the local model produced (or refined) this reading.
     model_assisted: bool = False
 
+    # -- temporal / evidence-shape extensions -----------------------------------
+    #: Stable facts (definitions, geography, historical results) do not usually
+    #: require fresh verification while live facts do.
+    stable_knowledge: bool = False
+    current_knowledge: bool = False
+    historical_knowledge: bool = False
+    latest_request: bool = False
+    most_recent_request: bool = False
+    dynamic_quantity: bool = False
+    ranking: bool = False
+    subjective_criterion: bool = False
+    objective_criterion: bool = False
+    final_event_result: bool = False
+
     # -- derived helpers -------------------------------------------------------
 
     @property
@@ -186,6 +200,16 @@ class SemanticRequest:
             "subject_is_referent": self.subject_is_referent,
             "notes": list(self.notes),
             "model_assisted": self.model_assisted,
+            "stable_knowledge": self.stable_knowledge,
+            "current_knowledge": self.current_knowledge,
+            "historical_knowledge": self.historical_knowledge,
+            "latest_request": self.latest_request,
+            "most_recent_request": self.most_recent_request,
+            "dynamic_quantity": self.dynamic_quantity,
+            "ranking": self.ranking,
+            "subjective_criterion": self.subjective_criterion,
+            "objective_criterion": self.objective_criterion,
+            "final_event_result": self.final_event_result,
         }
 
     @classmethod
@@ -268,6 +292,16 @@ class SemanticRequest:
             subject_is_referent=flag("subject_is_referent"),
             notes=[str(item).strip() for item in items("notes") if str(item).strip()],
             model_assisted=flag("model_assisted", True),
+            stable_knowledge=flag("stable_knowledge"),
+            current_knowledge=flag("current_knowledge"),
+            historical_knowledge=flag("historical_knowledge"),
+            latest_request=flag("latest_request"),
+            most_recent_request=flag("most_recent_request"),
+            dynamic_quantity=flag("dynamic_quantity"),
+            ranking=flag("ranking"),
+            subjective_criterion=flag("subjective_criterion"),
+            objective_criterion=flag("objective_criterion"),
+            final_event_result=flag("final_event_result"),
         )
 
 

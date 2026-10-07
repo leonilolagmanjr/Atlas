@@ -222,14 +222,29 @@ class ReasoningEngine:
         )):
             answer = self._answers.limitation(decision, notes=run.notes)
         elif gate_result.must_disclose and SourceType.MODEL in decision.sources:
-            note = "; ".join(run.notes)
+            # When the evidence gate says "must disclose" (insufficient or
+            # conflicting evidence), do NOT generate a model-driven answer even
+            # with a caveat. When the request depends on current facts, a caveat
+            # in the answer text is not a verification gate — the user asked for
+            # a dynamic fact and we do not have one we can verify.
             if decision.current_information_required:
-                note += "; live verification unavailable; do not claim a current answer"
+                answer = self._answers.limitation(
+                    decision,
+                    notes=list(run.notes) + [
+                        "current information required but not verified"
+                    ],
+                )
+                answer.metadata["answerability"] = gate_result.answerability.status
+                return self._finish(answer, decision, evidence, run, task)
+            note = "; ".join(run.notes)
             answer = self._answers.direct(question, history=history, fallback_note=note)
-            if decision.current_information_required and answer.mode is ResponseMode.DIRECT_ANSWER:
-                answer.text = "I could not verify current information; this may be out of date.\n\n" + answer.text
-                answer.confidence_level = ConfidenceLevel.LOW
-        elif SourceType.MODEL in decision.sources and self._allow_general_fallback:
+            answer.metadata["answerability"] = "must_disclose_with_caveat"
+            answer.metadata["notes"] = run.notes
+        elif (
+            SourceType.MODEL in decision.sources
+            and self._allow_general_fallback
+            and not decision.current_information_required
+        ):
             answer = self._answers.direct(question, history=history, fallback_note="; ".join(run.notes))
         else:
             answer = self._answers.limitation(decision, notes=run.notes)

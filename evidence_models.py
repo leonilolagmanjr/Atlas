@@ -45,6 +45,12 @@ class Evidence:
     chunk_ids: list[str] = field(default_factory=list)
     confidence: Optional[float] = None
     retrieval_method: Optional[str] = None
+    retrieved_at: Optional[datetime] = None
+    observed_at: Optional[datetime] = None
+    published_at: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+    state: str = "final"
+    freshness_class: str = "stable"
 
 
 #: Sources whose content is external and must never be treated as instructions.
@@ -82,6 +88,12 @@ class EvidenceItem:
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     #: Deterministic 0..1 confidence in this individual item.
     confidence: float = 0.0
+    retrieved_at: Optional[str] = None
+    observed_at: Optional[str] = None
+    published_at: Optional[str] = None
+    valid_until: Optional[str] = None
+    state: str = "final"
+    freshness_class: str = "stable"
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -101,6 +113,12 @@ class EvidenceItem:
             "content": self.content,
             "relevance": round(self.relevance, 4),
             "timestamp": self.timestamp,
+            "retrieved_at": self.retrieved_at,
+            "observed_at": self.observed_at,
+            "published_at": self.published_at,
+            "valid_until": self.valid_until,
+            "state": self.state,
+            "freshness_class": self.freshness_class,
             "confidence": round(self.confidence, 4),
             "weight": self.weight(),
             "untrusted": self.untrusted,

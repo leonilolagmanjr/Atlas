@@ -35,6 +35,7 @@ from reasoning.semantic_request import (
     EVIDENCE_REQUIRED,
     EVIDENCE_UNNECESSARY,
     FRESHNESS_CURRENT,
+    FRESHNESS_STABLE,
     SemanticRequest,
 )
 
@@ -82,6 +83,8 @@ class EvidenceDecision:
     candidate_set: str = ""
     #: The explicit resolution strategy for the reasoning trace.
     resolution_strategy: str = ""
+    #: Structured semantic requirement; used by downstream evidence assessment.
+    information_requirement: InformationRequirement | None = None
     #: Short, inspectable reasons (never chain-of-thought).
     reasons: list[str] = field(default_factory=list)
 
@@ -100,6 +103,13 @@ class EvidenceDecision:
             "subjective_without_proxy": self.subjective_without_proxy,
             "candidate_set": self.candidate_set,
             "resolution_strategy": self.resolution_strategy,
+            "information_requirement": None if self.information_requirement is None else {
+                "entity": self.information_requirement.entity,
+                "property": self.information_requirement.property,
+                "state": self.information_requirement.state,
+                "criterion": self.information_requirement.criterion,
+                "temporal_scope": self.information_requirement.temporal_scope,
+            },
             "reasons": list(self.reasons),
         }
 
@@ -129,6 +139,42 @@ class Answerability:
         }
 
 
+@dataclass
+class InformationRequirement:
+    """Structured description of the fact the user asks for.
+
+    Priority 1: this is the shared semantic contract that generalizes across
+    paraphrases like 'latest Python version' and 'who is leading the NBA finals'.
+    """
+
+    entity: str = ""
+    property: str = ""
+    state: str = "final"
+    criterion: dict[str, Any] = field(default_factory=lambda: {"kind": "objective", "proxy": "", "operator": ""})
+    temporal_scope: str = "stable"
+
+    def requires_final_state(self) -> bool:
+        return self.state in {"final", "live", "historical"} and self.temporal_scope != "stable"
+
+
+@dataclass
+class EvidenceAssessment:
+    """Outcome of evaluating retrieved evidence against a fact requirement."""
+
+    status: str = SUFFICIENT
+    kind: str = ""
+    retry: str = ""
+    reasons: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "kind": self.kind,
+            "retry": self.retry,
+            "reasons": list(self.reasons),
+        }
+
+
 class EvidencePolicy:
     """Derive the evidence decision and evaluate answerability."""
 
@@ -143,8 +189,25 @@ class EvidencePolicy:
             criterion=reading.criterion,
             criterion_proxy=reading.criterion_proxy,
             candidate_set=reading.candidate_set,
-            needs_comparison=reading.comparative,
+            needs_comparison=reading.comparative or reading.ranking,
+            information_requirement=InformationRequirement(
+                entity=reading.subject,
+                property=reading.criterion or reading.goal,
+                state="final" if reading.final_event_result else ("live" if reading.current_knowledge else "stable"),
+                criterion={
+                    "kind": "subjective" if reading.subjective_criterion else "objective" if reading.objective_criterion else "temporal",
+                    "proxy": reading.criterion_proxy,
+                    "operator": "latest" if reading.latest_request else "current" if reading.current_knowledge else "",
+                },
+                temporal_scope="realtime" if reading.current_knowledge else ("historical" if reading.historical_knowledge else "stable"),
+            ),
         )
+        if reading.current_knowledge or reading.latest_request or reading.most_recent_request or reading.ranking or reading.dynamic_quantity:
+            decision.requirement = EVIDENCE_REQUIRED
+            decision.freshness = FRESHNESS_CURRENT
+        elif reading.stable_knowledge:
+            decision.requirement = EVIDENCE_UNNECESSARY
+            decision.freshness = FRESHNESS_STABLE
         decision.query = _retrieval_query(reading, question=question)
 
         # A subjective criterion with no measurable proxy: Atlas must reason about
@@ -177,6 +240,96 @@ class EvidencePolicy:
         return decision
 
     # -- answerability gate -----------------------------------------------------
+
+    def assess(
+        self,
+        reading: SemanticRequest,
+        *,
+        evidence_count: int = 0,
+        evidence_conflicting: bool = False,
+        retrieved_ok: bool = True,
+        evidence_items: Iterable[Any] | None = None,
+    ) -> EvidenceAssessment:
+        """Classify retrieved evidence as sufficient / insufficient / conflicting.
+
+        Priority 1: the policy must distinguish live-state and final-state facts from
+        stable knowledge, and must refuse the common 'intermediate result' failure mode.
+        """
+
+        assessment = EvidenceAssessment(status=SUFFICIENT, reasons=[])
+        if reading.comparative or reading.ranking:
+            if evidence_count < MIN_SOURCES_FOR_RANKING:
+                return EvidenceAssessment(
+                    status=INSUFFICIENT,
+                    kind="intermediate_state" if reading.final_event_result else "wrong_granularity",
+                    retry="re-query_with_completed_result_or_ranked_source",
+                    reasons=["ranking requires a completed result or a ranked candidate set"],
+                )
+            if evidence_conflicting:
+                return EvidenceAssessment(
+                    status="conflicting",
+                    kind="conflicting",
+                    retry="cross_check authoritative sources",
+                    reasons=["retrieved sources disagree"],
+                )
+            return assessment
+
+        if reading.subjective_criterion and not reading.criterion_proxy:
+            return EvidenceAssessment(
+                status=AMBIGUOUS,
+                kind="ambiguous_source",
+                retry="ask_for_proxy_or_disclose_criterion",
+                reasons=["subjective criterion without a measurable objective proxy"],
+            )
+
+        if reading.freshness_requirement == FRESHNESS_CURRENT:
+            if evidence_count < MIN_SOURCES_FOR_CURRENT:
+                return EvidenceAssessment(
+                    status=INSUFFICIENT,
+                    kind="stale" if not retrieved_ok else "intermediate_state",
+                    retry="query_with_freshness_qualifier",
+                    reasons=["current fact requires fresh evidence"],
+                )
+            return assessment
+
+        if reading.latest_request or reading.most_recent_request:
+            if evidence_count < MIN_SOURCES_FOR_CURRENT:
+                return EvidenceAssessment(
+                    status=INSUFFICIENT,
+                    kind="stale",
+                    retry="query_for_latest_available_final_state",
+                    reasons=["latest/most-recent queries need fresh evidence"],
+                )
+            return assessment
+
+        if evidence_count == 0 and reading.evidence_requirement in {EVIDENCE_REQUIRED, EVIDENCE_PREFERRED}:
+            return EvidenceAssessment(
+                status=INSUFFICIENT,
+                kind="ambiguous_source",
+                retry="retrieve_or_ask_for_clarification",
+                reasons=["no usable evidence was retrieved"],
+            )
+
+        if evidence_items is not None:
+            for item in evidence_items:
+                if not hasattr(item, "metadata"):
+                    continue
+                if item.metadata.get("state") == "intermediate":
+                    return EvidenceAssessment(
+                        status=INSUFFICIENT,
+                        kind="intermediate_state",
+                        retry="re-query_for_completed_result",
+                        reasons=["retrieved item describes an intermediate state rather than the final result"],
+                    )
+                if item.metadata.get("freshness") == "stale":
+                    return EvidenceAssessment(
+                        status=INSUFFICIENT,
+                        kind="stale",
+                        retry="query_with_freshness_qualifier",
+                        reasons=["retrieved evidence is stale"],
+                    )
+
+        return assessment
 
     def evaluate(
         self,

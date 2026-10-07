@@ -246,6 +246,21 @@ def analyze_structure(text: str) -> StructuralReading:
         reading.intrinsically_current = True
         reading.freshness = "current"
         reading.markers.append(f"intrinsically_current:{intrinsic}")
+    elif re.search(r"\b(?:how\s+many|how\s+much)\b", lowered):
+        reading.intrinsically_current = True
+        reading.freshness = "current"
+        reading.markers.append("quantity_question")
+    elif re.search(r"\b(?:what\s+happened\s+(?:with|to|around)|happened\s+(?:with|to))\b", lowered):
+        reading.intrinsically_current = True
+        reading.freshness = "current"
+        reading.markers.append("event_question")
+    elif re.search(r"\b(?:worth\s+(?:buying|getting|using)|worthwhile)\b", lowered):
+        reading.intrinsically_current = True
+        reading.freshness = "current"
+        reading.comparative = True
+        reading.criterion = "value"
+        reading.criterion_proxy = "price, specs, and alternatives"
+        reading.markers.append("value_evaluation")
     elif reading.superlative:
         # A "who is the most X" question is a statement about the world as it is
         # now: the leader can change, so it is a current question by structure.
@@ -351,6 +366,37 @@ _SUBJECT_WHICH_HAS_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: Quantitative factual questions such as "How many subscribers does MrBeast have?"
+#: ask for a current value attached to a subject, not an instruction. The subject
+#: is the entity before the verb phrase that owns the property.
+_QUANTITY_SUBJECT_RE = re.compile(
+    r"^\s*(?:how\s+many|how\s+much)\s+(?:[a-z0-9][a-z0-9 _-]*?)\s+"
+    r"(?:does|do)\s+(?P<subject>[A-Za-z][A-Za-z0-9 ._-]*?)\s+"
+    r"(?:have|has|own|owns|get|gets|contain|contains)\b",
+    re.IGNORECASE,
+)
+
+#: Event lookups such as "What happened with Apple recently?" must identify the
+#: entity in the object position rather than treating the verb as the subject.
+_EVENT_SUBJECT_RE = re.compile(
+    r"^\s*(?:what|which|who)\s+happened\s+(?:with|to|around)\s+"
+    r"(?P<subject>[A-Za-z][A-Za-z0-9 ._-]*?)(?:\s+recently|\?|$)",
+    re.IGNORECASE,
+)
+
+#: Recommendation / value checks such as "Is the RTX 5090 worth buying?" are a
+#: comparison over real-world product options, so the product instance is the
+#: subject even when the clause is phrased as a value judgment.
+_WORTH_BUYING_RE = re.compile(
+    r"^\s*(?:can\s+you\s+tell\s+me\s+whether|tell\s+me\s+whether|whether|if|"
+    r"is\s+it|would\s+it|should\s+it)\s+"
+    r"(?P<subject>[A-Za-z0-9][A-Za-z0-9 ._-]*?)\s+(?:is|are|be)\s+worth\s+"
+    r"(?:buying|getting|using)\b"
+    r"|^\s*(?:is|are|would|should|will)\s+(?P<subject_alt>[A-Za-z0-9][A-Za-z0-9 ._-]*?)\s+"
+    r"worth\s+(?:buying|getting|using)\b",
+    re.IGNORECASE,
+)
+
 
 def extract_subject(text: str) -> str:
     """Extract the subject of a request from its grammatical frame.
@@ -370,6 +416,21 @@ def extract_subject(text: str) -> str:
     value = (text or "").strip()
     if not value:
         return ""
+
+    # Event / value / quantity frames are more precise than the generic
+    # "what/which ... has ..." subject extraction and must be tried first.
+    event = _EVENT_SUBJECT_RE.match(value)
+    if event:
+        return _clean_subject(event.group("subject"))
+
+    quantity = _QUANTITY_SUBJECT_RE.match(value)
+    if quantity:
+        return _clean_subject(quantity.group("subject"))
+
+    worth_buying = _WORTH_BUYING_RE.match(value)
+    if worth_buying:
+        subject = worth_buying.group("subject") or worth_buying.group("subject_alt")
+        return _clean_subject(subject)
 
     # A "which <set> has the <property>" frame names the set before the verb.
     which_has = _SUBJECT_WHICH_HAS_RE.match(value)

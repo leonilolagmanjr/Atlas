@@ -55,6 +55,41 @@ def _as_dict(value: Any) -> dict[str, Any]:
 
 
 @dataclass
+class ConversationalClaim:
+    """An assistant factual claim with verification status.
+
+    Priority 3: this reuses the existing conversation record rather than creating a
+    second memory system.
+    """
+
+    text: str = ""
+    turn_id: int = 0
+    claim_status: str = "unverified"
+    source_evidence: Any | None = None
+    fresh_until: datetime | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "text": self.text,
+            "turn_id": self.turn_id,
+            "claim_status": self.claim_status,
+            "source_evidence": self.source_evidence.to_dict() if hasattr(self.source_evidence, "to_dict") else self.source_evidence,
+            "fresh_until": self.fresh_until.isoformat() if self.fresh_until else None,
+        }
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> "ConversationalClaim":
+        fresh_until = data.get("fresh_until")
+        return ConversationalClaim(
+            text=str(data.get("text") or ""),
+            turn_id=int(data.get("turn_id") or 0),
+            claim_status=str(data.get("claim_status") or "unverified"),
+            source_evidence=data.get("source_evidence"),
+            fresh_until=datetime.fromisoformat(fresh_until) if fresh_until else None,
+        )
+
+
+@dataclass
 class MemoryMessage:
     """A single conversational turn message.
 
@@ -77,6 +112,8 @@ class MemoryMessage:
     tool_results: list[dict[str, Any]] = field(default_factory=list)
     #: Sources cited in the answer.
     citations: list[str] = field(default_factory=list)
+    #: Temporal claims emitted during the assistant turn.
+    claims: list[ConversationalClaim] = field(default_factory=list)
     #: completed | failed | cancelled | waiting_for_confirmation | running | unknown
     execution_state: str = "completed"
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -97,6 +134,7 @@ class MemoryMessage:
             "tool_calls": self.tool_calls,
             "tool_results": self.tool_results,
             "citations": self.citations,
+            "claims": [claim.to_dict() for claim in self.claims],
             "execution_state": self.execution_state,
             "metadata": self.metadata,
         }
@@ -106,6 +144,10 @@ class MemoryMessage:
         ts = d.get("timestamp")
         timestamp = utcnow() if not ts else datetime.fromisoformat(ts)
         state = str(d.get("execution_state") or "completed")
+        claims = [
+            ConversationalClaim.from_dict(item) if isinstance(item, dict) else ConversationalClaim(str(item))
+            for item in _as_list(d.get("claims"))
+        ]
         return MemoryMessage(
             id=d.get("id") or str(uuid4()),
             role=d.get("role") or "user",
@@ -116,6 +158,7 @@ class MemoryMessage:
             tool_calls=_as_list(d.get("tool_calls")),
             tool_results=_as_list(d.get("tool_results")),
             citations=[str(item) for item in _as_list(d.get("citations")) if item],
+            claims=claims,
             execution_state=state if state in EXECUTION_STATES else "unknown",
             metadata=_as_dict(d.get("metadata")),
         )

@@ -22,6 +22,7 @@ from reasoning.evidence_policy import (
     SUFFICIENT,
     UNKNOWN,
     Answerability,
+    EvidenceAssessment,
     EvidenceDecision,
     EvidencePolicy,
     STATUS_ACTIONS,
@@ -47,6 +48,7 @@ class GateResult:
     retrieved_ok: bool
     decision: EvidenceDecision | None = None
     reading: SemanticRequest | None = None
+    assessment: EvidenceAssessment | None = None
 
     @property
     def can_answer(self) -> bool:
@@ -69,6 +71,7 @@ class GateResult:
             "usable_count": self.usable_count,
             "evidence_conflicting": self.evidence_conflicting,
             "retrieved_ok": self.retrieved_ok,
+            "assessment": self.assessment.to_dict() if self.assessment is not None else None,
             "reasons": list(self.answerability.reasons),
         }
 
@@ -111,6 +114,13 @@ class EvidenceGate:
         if usable > 0:
             retrieved_ok = True
 
+        assessment = self._policy.assess(
+            reading,
+            evidence_count=usable,
+            evidence_conflicting=conflict,
+            retrieved_ok=retrieved_ok,
+            evidence_items=getattr(evidence_manager, "ranked", lambda: [])(),
+        )
         answerability = self._policy.evaluate(
             reading,
             decision,
@@ -133,6 +143,7 @@ class EvidenceGate:
             retrieved_ok=retrieved_ok,
             decision=decision,
             reading=reading,
+            assessment=assessment,
         )
 
     def can_answer_from(

@@ -140,6 +140,33 @@ class EntityInformationEquivalenceTests(unittest.TestCase):
 
 # -- 2. Rankings and comparison ----------------------------------------------
 
+class DynamicFactRecognitionTests(unittest.TestCase):
+    """Quantitative and current-event questions must resolve the real entity."""
+
+    def setUp(self) -> None:
+        self.pipeline = _Pipeline()
+
+    def test_quantitative_entity_question_resolves_the_subject(self):
+        _, decision, _, _ = self.pipeline.reason("How many subscribers does MrBeast have?")
+        self.assertEqual(decision.reading.subject.casefold(), "mrbeast")
+        self.assertEqual(decision.reading.freshness_requirement, "current")
+        self.assertEqual(decision.reading.evidence_requirement, "required")
+
+    def test_recent_event_question_is_current_and_entity_based(self):
+        _, decision, _, _ = self.pipeline.reason("What happened with Apple recently?")
+        self.assertEqual(decision.reading.subject.casefold(), "apple")
+        self.assertEqual(decision.reading.freshness_requirement, "current")
+        self.assertEqual(decision.reading.evidence_requirement, "required")
+
+    def test_value_judgment_requires_current_evidence(self):
+        _, decision, _, _ = self.pipeline.reason(
+            "Can you tell me whether the RTX 5090 is worth buying?"
+        )
+        self.assertEqual(decision.reading.subject.casefold(), "rtx 5090")
+        self.assertEqual(decision.reading.freshness_requirement, "current")
+        self.assertEqual(decision.reading.evidence_requirement, "required")
+
+
 class RankingEquivalenceTests(unittest.TestCase):
     """Ranking paraphrases must converge on ranking + current + required evidence."""
 

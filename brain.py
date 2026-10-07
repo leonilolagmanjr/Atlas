@@ -245,13 +245,28 @@ class Brain:
             context.intent_category = classify_category(structured, user_input)
             context.metadata["structured_intent"] = structured.to_dict()
             trace.record_intent(structured)
+            # The reasoning engine is the ONLY path that enforces evidence
+            # discipline: it routes to WEB, gathers evidence, and evaluates
+            # whether the evidence actually supports the claim. Both the general
+            # model fallback and the legacy planner path may generate a plausible
+            # answer from model memory — exactly what Atlas must never do for
+            # dynamic facts.
+            #
+            # general_fallback_disabled is True when the request:
+            #   * is a question,
+            #   * has no actions,
+            #   * is locally known ("model, knowledge" sources only), AND
+            #   * does NOT require external evidence (required OR preferred).
+            # Once semantic reasoning has marked evidence as "required" because
+            # the answer depends on current facts, the general fallback is
+            # disabled and we go through the reasoning engine.
             general_fallback_disabled = (
                 not ENABLE_GENERAL_QUESTION_FALLBACK
                 and task.request_type == "question"
                 and not task.actions
                 and set(task.sources) <= {"model", "knowledge"}
                 and not task.current_information_required
-                and task.evidence_requirement != "required"
+                and task.evidence_requirement in {"unnecessary", "preferred"}
             )
             if (
                 ENABLE_REASONING_ENGINE
