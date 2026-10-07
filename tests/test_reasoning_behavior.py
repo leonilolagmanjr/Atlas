@@ -89,6 +89,29 @@ class RecordingToolRunner:
         return ToolResult.failure(f"no fake output for {name}", recoverable=True)
 
 
+def _empty_web_runner():
+    """A tool runner that returns no web results (simulates retrieval failure)."""
+
+    class EmptyWebRunner:
+        def __init__(self):
+            self.calls: list[tuple[str, dict]] = []
+            self.web_calls: list[str] = []
+
+        def __call__(self, name, parameters):
+            self.calls.append((name, dict(parameters)))
+            if name.startswith("web."):
+                self.web_calls.append(name)
+            if name == "web.search":
+                return ToolResult(
+                    success=True, status="completed", output={"provider": "test", "results": []}
+                )
+            if name == "web.fetch":
+                return None
+            return ToolResult.failure(f"no fake output for {name}", recoverable=True)
+
+    return EmptyWebRunner()
+
+
 class StubRetrieval(dict):
     """Mapping that also supports attribute access, matching retrieval shapes."""
 
@@ -477,6 +500,133 @@ class ReasoningBoundaryTests(unittest.TestCase):
         question = "What is the latest Python release?"
         engine.handle_request(question=question, task=task_for(question))
         self.assertTrue(all(name in {"web.search", "web.fetch"} for name, _ in runner.calls))
+
+
+class TemporalFreshnessTests(unittest.TestCase):
+    """Temporal expressions must not be misread as subjective ambiguity.
+
+    A superlative temporal criterion such as "most recent", "latest", or
+    "current" names an objective point in time or the latest completed
+    occurrence. It is not a value judgment, so Atlas must not ask the user
+    to disambiguate it. The only honest move when fresh evidence is missing
+    is to report a limitation, not to request a subjective proxy.
+    """
+
+    def setUp(self) -> None:
+        self.ask = FakeAsk()
+        self.runner = _empty_web_runner()
+        self.engine = build_engine(self.ask, self.runner)
+
+    def _task_with_reading(self, question: str, semantic_reading: dict) -> Task:
+        task = Task(goal=question, original_prompt=question)
+        task.semantic_reading = semantic_reading
+        return task
+
+    def test_most_recent_does_not_trigger_subjective_clarification(self) -> None:
+        task = self._task_with_reading(
+            "Who won the most recent NBA Finals?",
+            {
+                "goal": "Who won the most recent NBA Finals?",
+                "subject": "NBA Finals",
+                "comparative": True,
+                "superlative": True,
+                "criterion": "most recent",
+                "criterion_proxy": "",
+                "subjective_criterion": False,
+                "objective_criterion": True,
+                "final_event_result": True,
+                "freshness_requirement": "current",
+                "evidence_requirement": "required",
+                "latest_request": True,
+                "most_recent_request": True,
+                "current_knowledge": True,
+            },
+        )
+        answer = self.engine.handle_request(question=task.goal, task=task)
+        self.assertIsNotNone(answer)
+        self.assertEqual(self.ask.calls, 0, "a temporal question must not be answered from model memory")
+        self.assertNotIn("subjective", answer.text.lower())
+        self.assertNotIn("no single measure", answer.text.lower())
+        self.assertEqual(answer.metadata.get("answerability"), "insufficient_evidence")
+
+    def test_latest_does_not_trigger_subjective_clarification(self) -> None:
+        task = self._task_with_reading(
+            "What is the latest iPhone?",
+            {
+                "goal": "What is the latest iPhone?",
+                "subject": "iPhone",
+                "comparative": True,
+                "superlative": True,
+                "criterion": "latest",
+                "criterion_proxy": "",
+                "subjective_criterion": False,
+                "objective_criterion": True,
+                "freshness_requirement": "current",
+                "evidence_requirement": "required",
+                "latest_request": True,
+                "most_recent_request": False,
+                "current_knowledge": True,
+            },
+        )
+        answer = self.engine.handle_request(question=task.goal, task=task)
+        self.assertIsNotNone(answer)
+        self.assertEqual(self.ask.calls, 0)
+        self.assertNotIn("subjective", answer.text.lower())
+        self.assertNotIn("no single measure", answer.text.lower())
+        self.assertEqual(answer.metadata.get("answerability"), "insufficient_evidence")
+
+    def test_current_price_does_not_trigger_subjective_clarification(self) -> None:
+        task = self._task_with_reading(
+            "What is the current price of Bitcoin?",
+            {
+                "goal": "What is the current price of Bitcoin?",
+                "subject": "Bitcoin",
+                "comparative": False,
+                "superlative": False,
+                "criterion": "",
+                "criterion_proxy": "",
+                "subjective_criterion": False,
+                "objective_criterion": False,
+                "final_event_result": False,
+                "freshness_requirement": "current",
+                "evidence_requirement": "required",
+                "latest_request": False,
+                "most_recent_request": False,
+                "current_knowledge": True,
+            },
+        )
+        answer = self.engine.handle_request(question=task.goal, task=task)
+        self.assertIsNotNone(answer)
+        self.assertEqual(self.ask.calls, 0)
+        self.assertNotIn("subjective", answer.text.lower())
+        self.assertNotIn("no single measure", answer.text.lower())
+        self.assertEqual(answer.metadata.get("answerability"), "insufficient_evidence")
+
+    def test_subjective_criterion_still_asks_for_clarification(self) -> None:
+        task = self._task_with_reading(
+            "Who is the most famous Minecraft YouTuber?",
+            {
+                "goal": "Who is the most famous Minecraft YouTuber?",
+                "subject": "Minecraft YouTuber",
+                "comparative": True,
+                "superlative": True,
+                "criterion": "most famous",
+                "criterion_proxy": "",
+                "subjective_criterion": True,
+                "objective_criterion": False,
+                "final_event_result": False,
+                "freshness_requirement": "current",
+                "evidence_requirement": "required",
+                "latest_request": False,
+                "most_recent_request": False,
+                "current_knowledge": True,
+            },
+        )
+        answer = self.engine.handle_request(question=task.goal, task=task)
+        self.assertIsNotNone(answer)
+        self.assertIn(answer.mode, {ResponseMode.CLARIFICATION, ResponseMode.LIMITATION})
+        self.assertEqual(answer.metadata.get("answerability"), "ambiguous_subjective_criterion")
+        self.assertIn("subjective", answer.text.lower())
 
 
 if __name__ == "__main__":

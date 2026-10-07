@@ -317,7 +317,7 @@ class ReasoningEngine:
         reading = getattr(task, "semantic_reading", {}) or {}
         criterion = str(reading.get("criterion") or task.entities.get("criterion") or "")
         proxy = str(reading.get("criterion_proxy") or task.entities.get("criterion_proxy") or "")
-        if criterion and not proxy:
+        if criterion and not proxy and reading.get("subjective_criterion", False):
             answer = self._answers.clarification(
                 f"'{criterion}' is subjective and there is no single measure for it. "
                 "Which definition should I use - for example a specific metric, or the "
