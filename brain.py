@@ -251,6 +251,7 @@ class Brain:
                 and not task.actions
                 and set(task.sources) <= {"model", "knowledge"}
                 and not task.current_information_required
+                and task.evidence_requirement != "required"
             )
             if (
                 ENABLE_REASONING_ENGINE

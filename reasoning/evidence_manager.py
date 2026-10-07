@@ -286,7 +286,11 @@ class EvidenceManager:
         """
 
         return any(item.source_type is not SourceType.MODEL for item in self._items)
-        return [source for source in self.sources() if source is not SourceType.MODEL]
+
+    def usable_count(self) -> int:
+        """Count of retrieved (non-model) evidence items."""
+
+        return sum(1 for item in self._items if item.source_type is not SourceType.MODEL)
 
     def sufficient_for(self, mode: ResponseMode, *, content_required: bool = False) -> bool:
         """Return True when the evidence actually supports the response mode.

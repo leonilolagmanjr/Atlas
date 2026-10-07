@@ -16,6 +16,7 @@ from config import (
 from knowledge_search import retrieve
 from models_task import Task, EvidenceState, EvidenceSource
 from reasoning.answer_generator import Answer, AnswerGenerator
+from reasoning.evidence_gate import EvidenceGate
 from reasoning.evidence_manager import EvidenceManager
 from reasoning.query_router import QueryRouter, RoutingSignals
 from reasoning.reasoning_models import (
@@ -108,6 +109,7 @@ class ReasoningEngine:
         self._capabilities = capabilities
         self._router = QueryRouter()
         self._selector = SourceSelector(capabilities)
+        self._evidence_gate = EvidenceGate()
         self._max_iterations = max(1, int(max_iterations))
         self._max_tool_calls = max(0, int(max_tool_calls))
         self._max_sources = max(1, int(max_sources))
@@ -197,6 +199,16 @@ class ReasoningEngine:
             run.notes.append(source.value + ": no sufficient evidence")
             run.trace.record(ReasoningStage.PLANNING, "selecting next permitted source")
 
+        # Deterministic evidence gate: after retrieval, check whether Atlas has
+        # enough to answer without fabricating. This re-evaluates the semantic
+        # layer's evidence decision against what was actually retrieved.
+        gate_result = self._evidence_gate.evaluate(task=task, evidence_manager=evidence)
+        if not gate_result.can_answer:
+            answer = self._evidence_shortfall_answer(task, question, run)
+            run.trace.record(ReasoningStage.EVALUATING,
+                             "evidence gate blocked answer", status=gate_result.status)
+            return self._finish(answer, decision, evidence, run, task)
+
         if not run.active():
             answer = self._answers.limitation(decision, notes=run.notes)
         elif mode is ResponseMode.MEMORY_RECALL:
@@ -209,13 +221,7 @@ class ReasoningEngine:
             SourceType.FILES, SourceType.SYSTEM, SourceType.MEMORY, SourceType.CONVERSATION,
         )):
             answer = self._answers.limitation(decision, notes=run.notes)
-        elif self._must_not_fabricate(task) and not evidence.has_usable():
-            # The answerability gate: a ranking/comparison or a request the semantic
-            # layer judged to *require* evidence must never be answered by plausible
-            # generation. If retrieval produced nothing usable, say so (or ask for
-            # the criterion) instead of inventing an answer.
-            answer = self._evidence_shortfall_answer(task, question, run)
-        elif SourceType.MODEL in decision.sources and self._allow_general_fallback:
+        elif gate_result.must_disclose and SourceType.MODEL in decision.sources:
             note = "; ".join(run.notes)
             if decision.current_information_required:
                 note += "; live verification unavailable; do not claim a current answer"
@@ -223,8 +229,8 @@ class ReasoningEngine:
             if decision.current_information_required and answer.mode is ResponseMode.DIRECT_ANSWER:
                 answer.text = "I could not verify current information; this may be out of date.\n\n" + answer.text
                 answer.confidence_level = ConfidenceLevel.LOW
-        elif self._must_not_fabricate(task) and not evidence.has_usable():
-            answer = self._evidence_shortfall_answer(task, question, run)
+        elif SourceType.MODEL in decision.sources and self._allow_general_fallback:
+            answer = self._answers.direct(question, history=history, fallback_note="; ".join(run.notes))
         else:
             answer = self._answers.limitation(decision, notes=run.notes)
         if not run.active():
