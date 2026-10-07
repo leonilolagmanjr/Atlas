@@ -17,7 +17,6 @@ import logging
 import sys
 import time
 from dataclasses import dataclass
-from typing import Any
 
 logger = logging.getLogger(__name__)
 

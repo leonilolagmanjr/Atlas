@@ -19,7 +19,7 @@ import ctypes
 import logging
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from computer.vision.models import (
     Bounds,

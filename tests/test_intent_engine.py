@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from computer.runtime import register_read_only_tools  # noqa: E402
 from config import COMPUTER_ROOT  # noqa: E402
-from models_task import Task, TaskAction  # noqa: E402
+from models_task import Task  # noqa: E402
 from reasoning.correction_memory import CorrectionMemory  # noqa: E402
 from reasoning.intent_engine import IntentEngine  # noqa: E402
 from reasoning.reference_resolver import ReferenceResolver  # noqa: E402

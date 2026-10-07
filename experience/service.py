@@ -20,7 +20,7 @@ It never executes anything and never calls a model.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from config import (

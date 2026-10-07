@@ -12,7 +12,6 @@ was not the foreground window:
 
 from __future__ import annotations
 
-import ctypes
 import unittest
 
 from computer.text_entry import (

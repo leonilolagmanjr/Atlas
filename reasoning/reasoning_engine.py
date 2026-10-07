@@ -20,7 +20,7 @@ from reasoning.evidence_gate import EvidenceGate
 from reasoning.evidence_manager import EvidenceManager
 from reasoning.query_router import QueryRouter, RoutingSignals
 from reasoning.reasoning_models import (
-    ConfidenceLevel, ReasoningDecision, ReasoningStage, ReasoningTrace,
+    ReasoningDecision, ReasoningStage, ReasoningTrace,
     RequestType, ResponseMode, SourceType,
 )
 from reasoning.self_introspection import SelfIntrospection

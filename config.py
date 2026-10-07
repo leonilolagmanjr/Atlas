@@ -30,9 +30,11 @@ LOGS_FOLDER: Path = DATA_PATHS.logs_dir
 
 # ---- Legacy filesystem persistence (imported into ``atlas.db`` once) ----------
 # Everything below is *historical*: it exists so the one-time migration can find
-# the old JSON/JSONL stores and so path-exclusion rules can recognise them. No
-# runtime code reads or writes these paths any more. The authoritative store for
-# every one of these concepts is a table in ``atlas.db``.
+# the old JSON/JSONL stores and so path-exclusion rules can recognise them.
+# No runtime code writes these paths any more; the authoritative store for every
+# one of these concepts is a table in ``atlas.db``. The paths below are still
+# consulted at runtime by the filesystem tool's exclusion rules (the legacy
+# ``database/`` and ``memory/`` folders must never be exposed to tools).
 LEGACY_ROOT: Path = APPLICATION_PATHS.root
 LEGACY_DATABASE_FOLDER: Path = LEGACY_ROOT / "database"
 LEGACY_MEMORY_FOLDER: Path = LEGACY_ROOT / "memory"

@@ -30,7 +30,6 @@ from typing import Any, Iterable
 
 from reasoning.semantic_request import (
     AMBIGUITY_HIGH,
-    AMBIGUITY_MEDIUM,
     EVIDENCE_PREFERRED,
     EVIDENCE_REQUIRED,
     EVIDENCE_UNNECESSARY,

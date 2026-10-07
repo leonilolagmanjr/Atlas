@@ -16,20 +16,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from reasoning.evidence_policy import (
-    AMBIGUOUS,
-    CONFLICTING,
-    INSUFFICIENT,
-    SUFFICIENT,
-    UNKNOWN,
     Answerability,
     EvidenceAssessment,
     EvidenceDecision,
     EvidencePolicy,
-    STATUS_ACTIONS,
 )
 from reasoning.semantic_request import (
-    EVIDENCE_PREFERRED,
-    EVIDENCE_REQUIRED,
     EVIDENCE_UNNECESSARY,
     FRESHNESS_CURRENT,
     SemanticRequest,

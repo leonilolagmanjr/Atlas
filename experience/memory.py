@@ -31,7 +31,6 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from config import (
-    COLLECTION_NAME,
     DATABASE_FOLDER,
     EXPERIENCE_COLLECTION_NAME,
     EXPERIENCE_MIN_RELEVANCE,

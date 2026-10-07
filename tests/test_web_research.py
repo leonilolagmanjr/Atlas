@@ -15,7 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from unittest.mock import patch  # noqa: E402
 from web import WebResearchTool, WebResult  # noqa: E402
 from web_research import (  # noqa: E402
-    ResearchResult,
     chunk_text,
     query_terms,
     rank_chunks,

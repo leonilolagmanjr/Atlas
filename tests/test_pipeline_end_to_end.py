@@ -10,7 +10,7 @@ import unittest
 
 from brain import Brain
 from executor import Executor
-from models import StructuredIntent, TaskStatus
+from models import TaskStatus
 from planner import Planner
 from tools import ExecutionMode, PermissionEngine, ToolRegistry, ToolRouter
 from tools.base import Tool, ToolMetadata, ToolResult

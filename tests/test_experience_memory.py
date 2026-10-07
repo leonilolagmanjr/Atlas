@@ -19,16 +19,14 @@ from experience.memory import (
     render_experience_context,
 )
 from experience.models import (
-    CompletionChecks,
     Experience,
     FAILURE_CATEGORIES,
     sanitize_text,
 )
 from experience.service import ExperienceService, FeedbackRequest
-from experience.store import ExperienceStore, FeedbackEvent
+from experience.store import ExperienceStore
 from executor import classify_failure
 from models import (
-    Evidence,
     ExecutionContext,
     ExecutionPlan,
     ExecutionStep,

@@ -12,7 +12,6 @@ from reasoning.self_introspection import SelfIntrospection  # noqa: E402
 from tools.base import ToolResult  # noqa: E402
 from tools.capabilities import CapabilityRegistry  # noqa: E402
 from tools.registry import ToolRegistry  # noqa: E402
-from tools.router import ToolRouter  # noqa: E402
 
 
 class FakeAsk:

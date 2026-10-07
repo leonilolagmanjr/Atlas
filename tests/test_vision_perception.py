@@ -34,7 +34,7 @@ from computer.vision.providers import (
     extract_json,
     proposed_elements,
 )
-from computer.vision.uia import UiaElement, UiaWindow, parse_uia_tree, uia_elements_to_visual
+from computer.vision.uia import UiaElement, parse_uia_tree, uia_elements_to_visual
 
 
 # --- fakes -------------------------------------------------------------------

@@ -9,7 +9,6 @@ refused, and that an image is described honestly rather than reported as
 from __future__ import annotations
 
 import unittest
-from pathlib import Path
 from typing import Any
 
 from memory.attachments import (

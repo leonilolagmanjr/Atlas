@@ -31,9 +31,8 @@ Nothing in this module executes tools, launches applications, or mutates state.
 from __future__ import annotations
 
 import difflib
-import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Sequence
 
 # ---------------------------------------------------------------------------
