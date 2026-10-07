@@ -439,17 +439,23 @@ def _goal_text(reading: SemanticRequest, structure: StructuralReading) -> str:
 def _freshness_for(task: Task | None, structure: StructuralReading) -> str:
     """Return current | stable | any from structure and the interpreter's flags."""
 
-    # Priority 1: latest/most-recent timing should be treated as current evidence
-    # requests even when they are worded as a superlative, not as a subjective
-    # criterion.
-    if structure.freshness == FRESHNESS_CURRENT or structure.intrinsically_current or structure.superlative:
+    if structure.freshness == FRESHNESS_STABLE:
+        return FRESHNESS_STABLE
+    if (
+        structure.freshness == FRESHNESS_CURRENT
+        or structure.intrinsically_current
+        or structure.superlative
+    ):
+        return FRESHNESS_CURRENT
+    # A question that asks for the factual outcome of a completed event
+    # ("who won X?", "what was the score?") depends on what actually happened,
+    # which is a current fact about the world.
+    if structure.final_event_result:
         return FRESHNESS_CURRENT
     if task is not None and getattr(task, "current_information_required", False):
         return FRESHNESS_CURRENT
     if structure.local:
         return FRESHNESS_CURRENT
-    if structure.freshness == FRESHNESS_STABLE:
-        return FRESHNESS_STABLE
     return FRESHNESS_ANY
 
 

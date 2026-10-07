@@ -160,6 +160,11 @@ class StructuralReading:
     requested_output: str = ""
     question_form: bool = False
     imperative_form: bool = False
+    #: True when the question asks for the factual outcome of a completed event
+    #: (e.g. "Who won X?", "What was the score?"). Such questions depend on the
+    #: current state of the world and must be treated as freshness="current"
+    #: so the evidence layer does not silently answer them from model memory.
+    final_event_result: bool = False
     markers: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -177,6 +182,7 @@ class StructuralReading:
             "requested_output": self.requested_output,
             "question_form": self.question_form,
             "imperative_form": self.imperative_form,
+            "final_event_result": self.final_event_result,
             "markers": list(self.markers),
         }
 
@@ -283,6 +289,26 @@ def analyze_structure(text: str) -> StructuralReading:
     if words & _ANAPHORA and reading.question_form or (words & _ANAPHORA and reading.imperative_form):
         reading.anaphoric = True
         reading.markers.append("anaphoric_subject")
+
+    # -- final event result ----------------------------------------------------
+    # A question that directly asks for the factual outcome of a completed
+    # event ("who won X?", "what was the score?", "what happened in X?") asks
+    # for information whose truth depends on what actually happened, not on
+    # general knowledge. It is flagged so the freshness layer treats it as
+    # current and the evidence layer does not silently answer it from model
+    # memory. Explanatory leads (why, how, when) are excluded: "Why did X win?"
+    # is an explanation, not a request for the event result.
+    if reading.question_form and not re.search(
+        r"^(?:why|how|when|where|explain|describe|tell\s+me)\b", lowered
+    ):
+        if re.search(
+            r"\b(?:who|which)\s+(?:was\s+the\s+)?(?:winner|winners|score|result|champion)\b"
+            r"|\bwho\s+won\b"
+            r"|\bwhat\s+happened\s+(?:in|with|to|around)\b",
+            lowered,
+        ):
+            reading.final_event_result = True
+            reading.markers.append("final_event_result")
 
     # -- requested output shape ------------------------------------------------
     for phrase, shape in _OUTPUT_SHAPES:

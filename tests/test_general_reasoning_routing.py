@@ -656,5 +656,134 @@ class TransformToDestinationRegressionTests(unittest.TestCase):
         self.assertNotIn("latest news", research.parameters.get("query", ""))
 
 
+class _SemanticPipeline:
+    """A deterministic, offline instance of the semantic reasoning pipeline."""
+
+    def __init__(self) -> None:
+        from reasoning.intent_engine import IntentEngine
+        from reasoning.semantic_reasoning import SemanticReasoning
+        from reasoning.self_introspection import SelfIntrospection
+
+        caps = _capabilities()
+        self.interpreter = _interpreter()
+        self.intent_engine = IntentEngine(capabilities=caps)
+        self.semantics = SemanticReasoning(ask=None, capabilities=caps)
+        self.introspection = SelfIntrospection(caps, model_name="test-model")
+
+    def route(self, text: str):
+        task = self.interpreter.interpret(text)
+        task = self.intent_engine.understand(task)
+        decision = self.semantics.reason(text, task=task)
+        signals = QueryRouter().route(
+            text, task=task, self_introspection=self.introspection
+        )
+        plan = SourceSelector(_capabilities()).select(signals, task_type=task.task_type)
+        return task, decision, signals, plan
+
+    def sources(self, text: str) -> list[str]:
+        return [s.value for s in self.route(text)[3].sources]
+
+
+class SemanticFreshnessRoutingTests(unittest.TestCase):
+    """Event-result questions must route to web research without an explicit search verb.
+
+    The Core Problem: "Who won the NBA Finals?" and "Search who won the NBA Finals."
+    must converge on the same WEB_RESEARCH pipeline. The first request requires
+    current information but does not contain an explicit search keyword, so the
+    routing must be driven by semantic freshness/externality, not lexical matching.
+    """
+
+    def setUp(self) -> None:
+        self.pipeline = _SemanticPipeline()
+
+    def _sources(self, text: str) -> list[str]:
+        return self.pipeline.sources(text)
+
+    def _evidence(self, text: str):
+        task, decision, _, _ = self.pipeline.route(text)
+        return decision.reading.evidence_requirement, decision.reading.freshness_requirement
+
+    # -- Acceptance tests -------------------------------------------------------
+
+    def test_who_won_nba_finals_routes_to_web(self):
+        self.assertIn("web", self._sources("Who won the NBA Finals?"))
+
+    def test_search_who_won_nba_finals_routes_to_web(self):
+        self.assertIn("web", self._sources("Search who won the NBA Finals."))
+
+    def test_who_won_super_bowl_routes_to_web(self):
+        self.assertIn("web", self._sources("Who won the Super Bowl?"))
+
+    def test_current_bitcoin_price_routes_to_web(self):
+        self.assertIn("web", self._sources("What is the current price of Bitcoin?"))
+
+    def test_latest_python_version_routes_to_web(self):
+        self.assertIn("web", self._sources("What is the latest version of Python?"))
+
+    def test_mrbeast_subscriber_count_routes_to_web(self):
+        self.assertIn("web", self._sources("How many subscribers does MrBeast have?"))
+
+    def test_recursion_remains_local_knowledge(self):
+        sources = self._sources("What is recursion?")
+        self.assertNotIn("web", sources)
+
+    def test_tcp_explanation_remains_local_knowledge(self):
+        sources = self._sources("Explain how TCP works.")
+        self.assertNotIn("web", sources)
+
+    def test_summarize_text_uses_local_route(self):
+        sources = self._sources("Summarize this text.")
+        self.assertNotIn("web", sources)
+
+    # -- Semantic evidence/freshness checks -------------------------------------
+
+    def test_nba_finals_winner_has_required_evidence(self):
+        evidence, freshness = self._evidence("Who won the NBA Finals?")
+        self.assertEqual(evidence, "required")
+        self.assertEqual(freshness, "current")
+
+    def test_explicit_search_has_evidence(self):
+        evidence, _ = self._evidence("Search who won the NBA Finals.")
+        self.assertIn(evidence, {"required", "preferred"})
+
+    def test_stable_question_has_unnecessary_evidence(self):
+        evidence, freshness = self._evidence("What is recursion?")
+        self.assertEqual(evidence, "unnecessary")
+        self.assertEqual(freshness, "stable")
+
+    # -- False positive guards --------------------------------------------------
+
+    def test_history_of_super_bowl_remains_local(self):
+        sources = self._sources("What is the history of the Super Bowl?")
+        self.assertNotIn("web", sources)
+
+    def test_search_algorithm_explanation_has_stable_freshness(self):
+        _, freshness = self._evidence("Explain the concept of a search algorithm.")
+        self.assertEqual(freshness, "stable")
+
+    def test_current_in_physics_has_stable_freshness(self):
+        _, freshness = self._evidence("What does current mean in physics?")
+        self.assertEqual(freshness, "stable")
+
+    def test_bitcoin_mechanism_explanation_has_stable_freshness(self):
+        _, freshness = self._evidence("Explain how Bitcoin works.")
+        self.assertEqual(freshness, "stable")
+
+    def test_why_question_about_win_is_not_event_result(self):
+        sources = self._sources("Why did the 2024 Lakers win?")
+        self.assertNotIn("web", sources)
+
+    # -- Stronger regression cases ----------------------------------------------
+
+    def test_who_was_winner_of_super_bowl_routes_to_web(self):
+        self.assertIn("web", self._sources("Who was the winner of the Super Bowl?"))
+
+    def test_what_happened_in_event_routes_to_web(self):
+        self.assertIn("web", self._sources("What happened in the NBA Finals?"))
+
+    def test_latest_ai_developments_routes_to_web(self):
+        self.assertIn("web", self._sources("What are the latest developments in AI?"))
+
+
 if __name__ == "__main__":
     unittest.main()
