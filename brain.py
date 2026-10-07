@@ -33,6 +33,7 @@ from reasoning.intent_engine import IntentEngine
 from reasoning.interpreter import classify_category
 from reasoning.reasoning_engine import ReasoningEngine
 from reasoning.recovery import RecoveryManager
+from reasoning.semantic_reasoning import SemanticDecision, SemanticReasoning
 from reasoning.self_introspection import SelfIntrospection
 from reasoning.task_interpreter import SemanticTaskInterpreter
 from reasoning.task_planner import TaskPlanner
@@ -74,6 +75,10 @@ class Brain:
         # Conversation-scoped task state for follow-ups ("make it about cars").
         self._active_intent: StructuredIntent | None = None
         self._active_task: Task | None = None
+        #: The most recent semantic decision (understanding + evidence +
+        #: capability selection), exposed for diagnostics and the answerability
+        #: gate. Never used to execute anything directly.
+        self._semantic_decision: SemanticDecision | None = None
         registry = getattr(tool_router, "_registry", None)
         catalog = render_capability_catalog(registry)
         # Capability catalog is the single source of truth shared by the
@@ -89,6 +94,17 @@ class Brain:
         # deterministic and runs after interpretation, before validation, so the
         # planner consumes a semantically complete Task IR.
         self._intent_engine = IntentEngine(capabilities=self._capabilities)
+        # Semantic reasoning layer: open-ended understanding -> goal -> evidence
+        # requirements -> capability selection. It runs after interpretation (it
+        # needs the interpreter's resolved subject and references) and *before*
+        # capability routing/validation, so the whole pipeline consumes one
+        # semantic reading instead of re-deriving an intent from keywords. It
+        # never plans or executes; the deterministic validator and executor keep
+        # their authority over permissions, schemas, and state transitions.
+        self._semantic_reasoning = SemanticReasoning(
+            ask=self._ask if ENABLE_LLM_INTERPRETATION else None,
+            capabilities=self._capabilities,
+        )
         self._task_validator = TaskValidator(self._capabilities)
         self._task_planner = TaskPlanner(capabilities=self._capabilities)
         self._recovery = recovery or RecoveryManager(ask=self._ask)
@@ -134,6 +150,7 @@ class Brain:
         user_input: str,
         cancel: Callable[[], bool] | None = None,
         on_event: Callable[[str, dict], None] | None = None,
+        conversation_context: str = "",
     ) -> str:
         """Process a user request through Planner and Executor.
 
@@ -146,6 +163,15 @@ class Brain:
         ``on_event`` receives ``(event_type, payload)`` for real execution
         activity as it happens, so a streaming client does not have to wait for
         the whole task to learn what Atlas is doing.
+
+        ``conversation_context`` is the bounded, relevance-selected conversation
+        grounding assembled by the Conversation Runtime (recent turns, summary,
+        recalled earlier turns, task/tool state). When supplied it *informs intent
+        interpretation before execution is chosen*: the interpreter, the Intent
+        Engine, the router and the reasoning engine all read the same grounded
+        history, so a follow-up like "What about performance?" is understood in
+        the context of what was just discussed instead of being read from zero. It
+        is optional, so an injected legacy Brain double keeps working.
         """
 
         started_at = time.perf_counter()
@@ -162,6 +188,16 @@ class Brain:
             history = ""
             if self._memory_manager is not None:
                 history = self._memory_manager.build_conversation_history_for_prompt()
+            # Prefer the grounded conversation bundle when the runtime supplied
+            # one: it is relevance-selected and bounded, whereas the flat history
+            # is only the recent window. It is the *same* history the interpreter,
+            # Intent Engine, router and reasoning engine all read here.
+            grounded = (conversation_context or "").strip()
+            if grounded:
+                history = grounded if not history.strip() else (
+                    f"{history}\n\n{grounded}"
+                )
+                context.metadata["conversation_context_used"] = True
 
             # 1. Semantic interpretation: natural language -> structured Task.
             task = self._task_interpreter.interpret(
@@ -179,6 +215,20 @@ class Brain:
             context.metadata["intent_reading"] = task.context.get("intent_reading", {})
             context.metadata["capability_check"] = self._intent_engine.validate_capabilities(task)
             trace.record_intent_reading(task.context.get("intent_reading", {}))
+            # 1c. Semantic reasoning: understand what the user is trying to
+            # accomplish (open-ended, not one of N intents), decide whether the
+            # request needs external evidence, and select the capabilities that
+            # would satisfy it - all before any capability routing or validation.
+            semantic = self._semantic_reasoning.reason(
+                context.normalized_input or user_input,
+                task=task,
+                prior_task=self._active_task,
+                history=history,
+            )
+            self._semantic_decision = semantic
+            context.metadata["semantic_reading"] = semantic.to_dict()
+            context.metadata["semantic_trace"] = semantic.trace()
+            trace.record_semantic(semantic.trace())
             if self._cancelled(cancel):
                 return self._cancelled_response(context, started_at, trace)
             # 2. Deterministic validation against the capability registry.

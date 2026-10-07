@@ -277,6 +277,17 @@ class EvidenceManager:
 
         return [source for source in self.sources() if source is not SourceType.MODEL]
 
+    def has_usable(self) -> bool:
+        """True when at least one *retrieved* evidence item is present.
+
+        This is the answerability gate's input: model notes and conversation
+        scaffolding are not retrieved evidence, so a required-evidence request
+        with only those present has not actually been answered.
+        """
+
+        return any(item.source_type is not SourceType.MODEL for item in self._items)
+        return [source for source in self.sources() if source is not SourceType.MODEL]
+
     def sufficient_for(self, mode: ResponseMode, *, content_required: bool = False) -> bool:
         """Return True when the evidence actually supports the response mode.
 

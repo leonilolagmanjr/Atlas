@@ -181,6 +181,23 @@ class RoutingSignals:
     wants_creation: bool = False
     wants_mutation: bool = False
     has_actions: bool = False
+    #: The evidence requirement the semantic reasoning layer decided
+    #: (required | preferred | unnecessary). When present it is the primary input
+    #: to source selection, so routing follows *meaning* rather than a keyword.
+    evidence_requirement: str = "unnecessary"
+    #: True when the semantic layer judged the request a ranking/comparison.
+    comparative: bool = False
+    #: The subject the semantic reading resolved, if any. A self-query deferral
+    #: only holds when this is empty: a message that merely contains "you" but
+    #: names an entity is an external-information request.
+    semantic_subject: str = ""
+    #: Short, inspectable semantic notes carried for diagnosis.
+    semantic_notes: tuple[str, ...] = ()
+    #: True when the request is a follow-up grounded in the conversation rather
+    #: than a self-contained request. The conversation is then a first-class
+    #: source: a contextual question is answered from the retrieved turns, while a
+    #: contextual *instruction* still goes through the action path.
+    contextual: bool = False
     sources: tuple[str, ...] = ()
     request_type: str = ""
     needs_clarification: bool = False
@@ -200,6 +217,10 @@ class RoutingSignals:
             "wants_creation": self.wants_creation,
             "wants_mutation": self.wants_mutation,
             "has_actions": self.has_actions,
+            "evidence_requirement": self.evidence_requirement,
+            "comparative": self.comparative,
+            "semantic_subject": self.semantic_subject,
+            "contextual": self.contextual,
             "features": list(self.features),
         }
 
@@ -233,18 +254,9 @@ class QueryRouter:
         if has_actions:
             features.append("task_ir_actions")
 
-        time_sensitive = _matches_terms(lowered, _TIME_SENSITIVE_TERMS) or str(
-            task.entities.get("sort") or ""
-        ) in {"latest", "newest"}
-        if time_sensitive:
-            features.append("time_sensitive")
+        time_sensitive = self._time_sensitive(lowered, task, features)
 
-        site = str(task.entities.get("site") or "").casefold()
-        explicit_web_request = _matches_terms(lowered, _WEB_REQUEST_TERMS) or bool(site) or any(
-            action.capability.startswith("web.") for action in task.actions
-        )
-        if explicit_web_request:
-            features.append("explicit_web_request")
+        explicit_web_request = self._web_request(lowered, task, features)
 
         is_self_query = False
         self_kind: str | None = None
@@ -286,6 +298,18 @@ class QueryRouter:
         if ambiguous_reference:
             features.append("unresolved_reference")
 
+        contextual = self._contextual(task, has_actions, ambiguous_reference, features)
+
+        evidence_requirement = str(getattr(task, "evidence_requirement", "unnecessary") or "unnecessary")
+        if evidence_requirement in {"required", "preferred"}:
+            features.append(f"semantic_evidence_{evidence_requirement}")
+        comparative = bool(getattr(task, "comparative", False))
+        if comparative:
+            features.append("semantic_comparative")
+        semantic_notes = tuple(getattr(task, "interpretation_notes", []) or ())
+        reading = getattr(task, "semantic_reading", {}) or {}
+        semantic_subject = str(reading.get("subject") or "").strip() if isinstance(reading, dict) else ""
+
         return RoutingSignals(
             text=text,
             is_question=is_question,
@@ -300,11 +324,64 @@ class QueryRouter:
             wants_creation=wants_creation,
             wants_mutation=wants_mutation,
             has_actions=has_actions,
+            contextual=contextual,
+            evidence_requirement=evidence_requirement,
+            comparative=comparative,
+            semantic_subject=semantic_subject,
+            semantic_notes=semantic_notes,
             sources=tuple(task.sources) if task.source == "llm" or task.sources != ["model"] else (),
             request_type=task.request_type,
             needs_clarification=task.needs_clarification,
             features=tuple(features),
         )
+
+    # -- feature detection --------------------------------------------------------
+
+    @staticmethod
+    def _time_sensitive(lowered: str, task: Task, features: list[str]) -> bool:
+        """Return True when the request needs information that changes over time."""
+
+        value = _matches_terms(lowered, _TIME_SENSITIVE_TERMS) or str(
+            task.entities.get("sort") or ""
+        ) in {"latest", "newest"}
+        if value:
+            features.append("time_sensitive")
+        return value
+
+    @staticmethod
+    def _web_request(lowered: str, task: Task, features: list[str]) -> bool:
+        """Return True when the request explicitly asks to use the internet."""
+
+        site = str(task.entities.get("site") or "").casefold()
+        value = _matches_terms(lowered, _WEB_REQUEST_TERMS) or bool(site) or any(
+            action.capability.startswith("web.") for action in task.actions
+        )
+        if value:
+            features.append("explicit_web_request")
+        return value
+
+    @staticmethod
+    def _contextual(
+        task: Task,
+        has_actions: bool,
+        ambiguous_reference: bool,
+        features: list[str],
+    ) -> bool:
+        """Return True for a follow-up grounded in the conversation itself.
+
+        A contextual follow-up resolved a reference to the conversation, so it is
+        not an unresolved reference and not an explicit action; the conversation
+        is the source that grounds the answer.
+        """
+
+        value = bool(
+            not has_actions
+            and not ambiguous_reference
+            and "conversation" in (task.context_references or [])
+        )
+        if value:
+            features.append("contextual_conversation")
+        return value
 
     # -- file intent --------------------------------------------------------------
 

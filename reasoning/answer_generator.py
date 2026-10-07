@@ -407,9 +407,16 @@ class AnswerGenerator:
         text = self._call(
             system_prompt=self._answer_prompt,
             user_prompt=(
-                "The following is our conversation so far. Answer the user's question "
-                "about it factually, quoting what was actually said.\n\n"
-                f"{history}\n\nQuestion:\n{question}"
+                "The following is our conversation so far. The user's new message is a "
+                "follow-up that refers to it. Use the conversation as the primary "
+                "context: answer the follow-up in that context, quoting what was "
+                "actually said where it helps and reasoning over it where the "
+                "follow-up asks for judgement or explanation. Do not invent facts "
+                "that are not in the conversation. If the follow-up is genuinely "
+                "self-contained and the conversation does not bear on it, answer it "
+                "on its own terms instead of forcing the earlier turns into the "
+                "answer.\n\n"
+                f"{history}\n\nFollow-up:\n{question}"
             ),
         )
         if not _usable(text):

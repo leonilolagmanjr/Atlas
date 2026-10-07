@@ -1007,7 +1007,9 @@ class ConversationRuntime:
             emit(TurnEvent(_LIVE_EVENT_TYPES[event_type], dict(payload)))
 
         try:
-            response = self._process_with_brain(text, token, on_event)
+            response = self._process_with_brain(
+                text, token, on_event, context_bundle=context_bundle
+            )
         except Exception:  # noqa: BLE001 - reported honestly, never swallowed
             logger.exception("Delegated turn failed")
             message = self._memory.append_message(
@@ -1069,6 +1071,8 @@ class ConversationRuntime:
         text: str,
         token: CancellationToken,
         on_event: Callable[[str, dict[str, Any]], None],
+        *,
+        context_bundle: Any | None = None,
     ) -> Any:
         """Call the existing Brain, passing the real cancellation and event hooks.
 
@@ -1077,6 +1081,11 @@ class ConversationRuntime:
         working. Cancellation is not decoration here: Brain consults it after
         interpretation, after planning, and inside the executor before every
         step, so a stopped turn stops doing work.
+
+        The bounded conversation grounding (``context_bundle.grounding_text``) is
+        handed to Brain when it accepts it, so intent interpretation happens
+        *after* grounding rather than before it. An injected legacy Brain that
+        does not accept the parameter is unaffected.
         """
 
         import inspect
@@ -1095,6 +1104,12 @@ class ConversationRuntime:
             extra["cancel"] = token.is_cancelled
         if "on_event" in parameters or accepts_kwargs:
             extra["on_event"] = on_event
+        if "conversation_context" in parameters or accepts_kwargs:
+            grounding = ""
+            if context_bundle is not None:
+                grounding = str(getattr(context_bundle, "grounding_text", "") or "")
+            if grounding.strip():
+                extra["conversation_context"] = grounding
         return process(text, **extra)
 
     def _cancelled_result(self, conversation_id: str, user_message_id: str) -> TurnResult:
@@ -1205,6 +1220,11 @@ def _refine_with_context(
         return classification
     if classification.delegate:
         return classification
+    # Everything below is about *earlier turns*: a message is only escalated (or
+    # grounded to the previous output) when there is conversation before it. The
+    # message being served is already persisted, so this must not count it.
+    if not getattr(context_bundle, "has_prior_turns", False):
+        return classification
 
     question = " ".join(str(getattr(context_bundle, "question", "") or "").casefold().split())
     if not question:
@@ -1245,6 +1265,19 @@ def _refine_with_context(
             question,
         )
     )
+    # A contextual *content operation* ("add another section", "continue from
+    # there", "turn that into an email") is an instruction whose object is the
+    # prior work. It delegates so the existing agent resolves the referent and
+    # applies the permission gate, rather than being answered conversationally.
+    from reasoning.reference_resolver import is_content_operation
+
+    if not bare_action and is_content_operation(question):
+        if not re.search(
+            r"\b(?:https?://|www\.|notepad|word|excel|vscode|vs code|chrome|firefox|"
+            r"edge|outlook|youtube|google|github)\b",
+            question,
+        ):
+            bare_action = True
     if not bare_action:
         return classification
     return TurnClassification(

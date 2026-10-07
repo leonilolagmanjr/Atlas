@@ -395,6 +395,81 @@ def entity_resolution_user_prompt(*, candidate: str, context: str, kind: str) ->
 
 
 
+SEMANTIC_UNDERSTANDING_SYSTEM = """You are Atlas's semantic understanding layer.
+
+You are given ONE user message (and the recent conversation). Your job is NOT to
+choose a tool and NOT to classify the message into a fixed set of intents. Your
+job is to describe, in open-ended language, WHAT THE USER IS TRYING TO
+ACCOMPLISH and WHAT A CORRECT RESULT WOULD REQUIRE.
+
+Return ONLY this structured JSON:
+
+{
+  "goal": "what the user is trying to accomplish, in plain words",
+  "subject": "what the request is about (the resolved subject, never the whole sentence)",
+  "operation": "explain | retrieve | rank | compare | identify | transform | create | act | converse",
+  "entities": [{"kind": "person|product|place|...", "value": "name"}],
+  "constraints": ["stated limits, e.g. 'short', '5 items', 'formal tone'"],
+  "requested_output": "desired form of the result (answer, ranking, list, file, app text, ...)",
+  "context_dependencies": ["prior turns or referents this request needs"],
+  "freshness_requirement": "current | stable | any",
+  "evidence_requirement": "required | preferred | unnecessary",
+  "ambiguity": "low | medium | high",
+  "criterion": "the criterion a ranking/comparison is judged by, if any",
+  "criterion_proxy": "an objective measurable proxy for a subjective criterion, or empty",
+  "comparative": true,
+  "candidate_set": "the set a comparison ranges over, if any",
+  "local": false,
+  "contextual": false,
+  "confidence": 0.0
+}
+
+Rules:
+- Describe meaning. Never name a tool, capability, command, or file path.
+- "subject" is the thing the request is about, with instruction words stripped
+  ("Tell me about MrBeast" -> subject "MrBeast"), never the raw sentence.
+- Decide "evidence_requirement" by reasoning about the request, not by keyword:
+  * Is the information current, or could it have changed recently? -> required
+  * Is it about a real-world external entity? -> at least preferred
+  * Is it a ranking or a comparison over a criterion? -> required, because a
+    plausible-sounding ranking that was not retrieved is a fabrication.
+  * Is it quantitative? -> required
+  * Is it subjective ("best", "most famous") with no measurable proxy? -> keep
+    the criterion, set criterion_proxy only when a real measurement exists, and
+    raise ambiguity.
+  * Is it stable textbook knowledge ("what is HTTP")? -> unnecessary
+  * Is it about this machine or the user's own files? -> unnecessary (Atlas observes)
+- "ambiguity" is high when the subject cannot be resolved, medium when the
+  meaning materially depends on a subjective criterion with no objective proxy.
+- Never invent facts. You only describe the request; Atlas retrieves and verifies.
+"""
+
+
+def semantic_understanding_user_prompt(
+    *,
+    request: str,
+    history: str = "",
+    draft: Mapping[str, Any] | None = None,
+    prior_task: Mapping[str, Any] | None = None,
+) -> str:
+    """Build the semantic-understanding prompt from live request context."""
+
+    parts = [f"Recent conversation:\n{history.strip() or '(none)'}"]
+    if prior_task:
+        parts.append(
+            "Previous turn's structured task (for resolving references):\n"
+            + json.dumps(prior_task, ensure_ascii=False)
+        )
+    if draft:
+        parts.append(
+            "Atlas's deterministic pre-reading (a draft, not the answer):\n"
+            + json.dumps(draft, ensure_ascii=False)
+        )
+    parts.append(f"User message:\n{request}")
+    parts.append("Return the semantic understanding JSON now.")
+    return "\n\n".join(parts)
+
+
 RETRIEVAL_VALIDATOR_SYSTEM = """You are Atlas's retrieval validator.
 
 A user asked for something on the web and Atlas retrieved candidate content. Your

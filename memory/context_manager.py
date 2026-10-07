@@ -130,6 +130,29 @@ class ContextBundle:
         return bool(self.recent or self.summary or self.older)
 
     @property
+    def has_prior_turns(self) -> bool:
+        """True when there is conversation *before* the current message.
+
+        ``recent`` includes the user message being served (it is persisted before
+        context is built), so ``has_history`` is true even on a first turn. A
+        follow-up decision needs grounding from earlier turns only, so the current
+        message must be excluded: this is that distinction.
+        """
+
+        if self.summary.strip() or self.older:
+            return True
+        dialogue = [item for item in self.recent if item.role in {"user", "assistant"}]
+        if not dialogue:
+            return False
+        # The turn being served is the last user message; anything before it is a
+        # real earlier turn.
+        last_user = max(
+            (index for index, item in enumerate(dialogue) if item.role == "user"),
+            default=-1,
+        )
+        return last_user > 0
+
+    @property
     def history_text(self) -> str:
         """Conversation-only history, for callers that want just the dialogue."""
 
@@ -141,6 +164,38 @@ class ContextBundle:
         if self.summary.strip():
             lines.insert(0, f"Earlier in this conversation:\n{self.summary.strip()}")
         return "\n".join(lines)
+
+    @property
+    def grounding_text(self) -> str:
+        """Relevant conversation context for grounding intent before execution.
+
+        Unlike :meth:`as_prompt` this omits the CURRENT MESSAGE (the caller already
+        has it) and appends the relevance-recalled older turns and the last task
+        state, so a follow-up is understood against *the relevant* earlier turns
+        rather than only the immediately preceding message. It is bounded by the
+        same budget as the rest of the bundle; nothing is dumped wholesale.
+        """
+
+        sections: list[str] = []
+        if self.summary.strip():
+            sections.append("CONVERSATION SUMMARY:\n" + self.summary.strip())
+        if self.topic.strip():
+            sections.append("CURRENT TOPIC: " + self.topic.strip())
+        if self.recent:
+            dialogue = "\n".join(
+                f"{'User' if item.role == 'user' else 'Assistant'}: {item.text}"
+                for item in self.recent
+                if item.role in {"user", "assistant"}
+            )
+            if dialogue:
+                sections.append("RECENT TURNS:\n" + dialogue)
+        relevant = [item for item in self.older if item.text]
+        if relevant:
+            recalled = "\n".join(f"- ({item.role}) {item.text}" for item in relevant)
+            sections.append("RELEVANT EARLIER CONVERSATION:\n" + recalled)
+        if self.task_state.strip():
+            sections.append("LAST TASK STATE:\n" + self.task_state.strip())
+        return "\n\n".join(section for section in sections if section.strip())
 
     def as_prompt(self, *, question: str | None = None) -> str:
         """Render the whole bundle as the context a model actually receives."""

@@ -209,6 +209,12 @@ class ReasoningEngine:
             SourceType.FILES, SourceType.SYSTEM, SourceType.MEMORY, SourceType.CONVERSATION,
         )):
             answer = self._answers.limitation(decision, notes=run.notes)
+        elif self._must_not_fabricate(task) and not evidence.has_usable():
+            # The answerability gate: a ranking/comparison or a request the semantic
+            # layer judged to *require* evidence must never be answered by plausible
+            # generation. If retrieval produced nothing usable, say so (or ask for
+            # the criterion) instead of inventing an answer.
+            answer = self._evidence_shortfall_answer(task, question, run)
         elif SourceType.MODEL in decision.sources and self._allow_general_fallback:
             note = "; ".join(run.notes)
             if decision.current_information_required:
@@ -217,6 +223,8 @@ class ReasoningEngine:
             if decision.current_information_required and answer.mode is ResponseMode.DIRECT_ANSWER:
                 answer.text = "I could not verify current information; this may be out of date.\n\n" + answer.text
                 answer.confidence_level = ConfidenceLevel.LOW
+        elif self._must_not_fabricate(task) and not evidence.has_usable():
+            answer = self._evidence_shortfall_answer(task, question, run)
         else:
             answer = self._answers.limitation(decision, notes=run.notes)
         if not run.active():
@@ -260,6 +268,55 @@ class ReasoningEngine:
             clarification_question="Please specify the file, application, or topic you mean." if clarification else None,
             reason=plan.reason, response_mode=mode,
         )
+
+    @staticmethod
+    def _must_not_fabricate(task: Task) -> bool:
+        """True when a generated answer would be a fabrication rather than an answer.
+
+        A ranking/comparison over a criterion cannot be produced from plausible
+        recall: the candidates and their ordering must be *retrieved*. Likewise a
+        request the semantic layer judged to **require** external evidence must not
+        fall back to model generation. A *preferred*-evidence request may fall back
+        (with the limitation disclosed), because an honest grounded-in-model answer
+        is still a legitimate answer to "who is X".
+        """
+
+        if bool(getattr(task, "comparative", False)):
+            return True
+        return str(getattr(task, "evidence_requirement", "unnecessary")) == "required"
+
+    def _evidence_shortfall_answer(self, task: Task, question: str, run: _Run) -> Answer:
+        """Answer honestly when required evidence could not be obtained.
+
+        A subjective criterion with no objective proxy is surfaced as a question
+        about the criterion; anything else states clearly that Atlas could not
+        retrieve the evidence and therefore will not assert an answer.
+        """
+
+        reading = getattr(task, "semantic_reading", {}) or {}
+        criterion = str(reading.get("criterion") or task.entities.get("criterion") or "")
+        proxy = str(reading.get("criterion_proxy") or task.entities.get("criterion_proxy") or "")
+        if criterion and not proxy:
+            answer = self._answers.clarification(
+                f"'{criterion}' is subjective and there is no single measure for it. "
+                "Which definition should I use - for example a specific metric, or the "
+                "most recent ranking you trust?"
+            )
+            answer.metadata = dict(answer.metadata or {})
+            answer.metadata["answerability"] = "ambiguous_subjective_criterion"
+            return answer
+        notes = list(run.notes) + [
+            "required evidence was not obtained; refusing to state an unverified answer"
+        ]
+        answer = self._answers.clarification(
+            "I could not retrieve the evidence needed to answer this reliably, and I do "
+            "not want to guess - a plausible-sounding answer here would be fabricated. "
+            "Please try again, or narrow which candidates or source you want me to use."
+        )
+        answer.metadata = dict(answer.metadata or {})
+        answer.metadata["answerability"] = "insufficient_evidence"
+        answer.metadata["notes"] = notes
+        return answer
 
     @staticmethod
     def _must_delegate(task: Task) -> bool:

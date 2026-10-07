@@ -415,6 +415,25 @@ class Task:
     ambiguities: list[str] = field(default_factory=list)
     #: Short, inspectable reasons for the interpretation (never chain-of-thought).
     interpretation_notes: list[str] = field(default_factory=list)
+    # -- open-ended semantic reading (additive; empty by default) --------------
+    #: The full descriptive reading produced *before* capability routing: goal,
+    #: subject, operation, evidence/freshness requirements, ambiguity, and the
+    #: criterion/proxy for a ranking. It is a plain dict so ``models_task`` stays
+    #: independent of the reasoning package and the IR stays serializable.
+    semantic_reading: dict[str, Any] = field(default_factory=dict)
+    #: The evidence requirement derived from the reading (required|preferred|
+    #: unnecessary). The planner and router read this instead of re-deriving it
+    #: from keyword lists, so one decision drives the whole pipeline.
+    evidence_requirement: str = "unnecessary"
+    #: True when the request needs an external comparison/ranking to be answered.
+    comparative: bool = False
+    #: The criterion a ranking is judged by, and the objective proxy for it.
+    criterion: str = ""
+    criterion_proxy: str = ""
+    #: Capabilities the semantic layer judged useful, validated against the live
+    #: registry. Distinct from ``required_capabilities`` (the interpreter's own
+    #: proposal) so a trace can show what each layer contributed.
+    semantic_capabilities: list[str] = field(default_factory=list)
     # -- semantic topic decomposition (additive; empty by default) ---------------
     #: The subject as it literally appeared, before connector/head-noun stripping
     #: ("about sykrim", "videos about skyrim"). Diagnostic provenance only.
@@ -531,6 +550,13 @@ class Task:
             "needs_application": self.needs_application,
             "ambiguities": list(self.ambiguities),
             "interpretation_notes": list(self.interpretation_notes),
+            # Open-ended semantic reading
+            "semantic_reading": dict(self.semantic_reading),
+            "evidence_requirement": self.evidence_requirement,
+            "comparative": self.comparative,
+            "criterion": self.criterion,
+            "criterion_proxy": self.criterion_proxy,
+            "semantic_capabilities": list(self.semantic_capabilities),
             # Semantic topic decomposition
             "raw_topic": self.raw_topic,
             "normalized_topic": self.normalized_topic,
@@ -615,6 +641,16 @@ class Task:
             needs_application=_boolean(data.get("needs_application")),
             ambiguities=_string_list(data.get("ambiguities")),
             interpretation_notes=_string_list(data.get("interpretation_notes")),
+            semantic_reading=_dict(data.get("semantic_reading")),
+            evidence_requirement=_enum(
+                data.get("evidence_requirement"),
+                {"required", "preferred", "unnecessary"},
+                "unnecessary",
+            ),
+            comparative=_boolean(data.get("comparative")),
+            criterion=_text(data.get("criterion")) or "",
+            criterion_proxy=_text(data.get("criterion_proxy")) or "",
+            semantic_capabilities=_string_list(data.get("semantic_capabilities")),
             raw_topic=_text(data.get("raw_topic")) or "",
             normalized_topic=_text(data.get("normalized_topic")) or "",
             research_query=_text(data.get("research_query")) or "",

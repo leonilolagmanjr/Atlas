@@ -46,6 +46,9 @@ class PipelineTrace:
     user_input: str
     intent: dict[str, Any] = field(default_factory=dict)
     intent_reading: dict[str, Any] = field(default_factory=dict)
+    #: The open-ended semantic reading + evidence requirement + selected
+    #: capabilities. This is the stage that replaces rigid intent classification.
+    semantic: dict[str, Any] = field(default_factory=dict)
     task: dict[str, Any] = field(default_factory=dict)
     validation: dict[str, Any] = field(default_factory=dict)
     plan: list[dict[str, Any]] = field(default_factory=list)
@@ -55,6 +58,10 @@ class PipelineTrace:
 
     def record_task(self, task: dict[str, Any]) -> None:
         self.task = task
+    def record_semantic(self, trace: dict[str, Any]) -> None:
+        """Record the semantic reasoning trace (structured, never chain-of-thought)."""
+
+        self.semantic = trace
     def record_intent_reading(self, reading: dict[str, Any]) -> None:
         """Record the Intent Engine's structured reading (never chain-of-thought)."""
 
@@ -110,6 +117,12 @@ class PipelineTrace:
         lines = ["Atlas pipeline trace", f"USER INPUT: {self.user_input}"]
         if self.intent_reading:
             lines.append("INTENT READING: " + _dump(self.intent_reading))
+        if self.semantic:
+            # The semantic reading is the primary diagnosis: it says whether Atlas
+            # understood the goal, what evidence it judged necessary, and which
+            # capabilities it selected - so a failure can be attributed to
+            # understanding, capability choice, retrieval, or generation.
+            lines.append("SEMANTIC READING: " + _dump(self.semantic))
         if self.task:
             lines.append("TASK: " + _dump(self.task))
             # A compact, human-readable topic decomposition makes an

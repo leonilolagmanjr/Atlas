@@ -162,6 +162,11 @@ class IntentReading:
     needs_web: bool = False
     needs_files: bool = False
     needs_application: bool = False
+    #: True when the request is a follow-up grounded in the conversation rather
+    #: than a self-contained request. It does not by itself make the request
+    #: executable; it tells the router/answer path to ground the reading in the
+    #: retrieved conversation context.
+    contextual: bool = False
     ambiguities: list[str] = field(default_factory=list)
     confidence: float = 0.0
     hypotheses: list[IntentHypothesis] = field(default_factory=list)
@@ -180,6 +185,7 @@ class IntentReading:
             "needs_web": self.needs_web,
             "needs_files": self.needs_files,
             "needs_application": self.needs_application,
+            "contextual": self.contextual,
             "ambiguities": list(self.ambiguities),
             "confidence": round(self.confidence, 3),
             "hypotheses": [h.to_dict() for h in self.hypotheses],
@@ -298,6 +304,7 @@ class IntentEngine:
         lowered = text.casefold()
         reading = IntentReading()
         reading.context = self._resolver.resolve(text, prior_task=prior_task, history=history)
+        reading.contextual = bool(reading.context.contextual and not reading.context.unresolved)
         reading.notes = reading.interpretation_notes  # alias
 
         actions = list(task.actions)
@@ -988,6 +995,68 @@ class IntentEngine:
                     reading.goal = "create_and_deliver"
                 reading.needs_application = True
                 reading.interpretation_notes.append("repaired: delivery was explicitly requested")
+
+        # 8. A contextual follow-up that names no executable target of its own is
+        #    a continuation of the conversation, not a fresh task. The interpreter
+        #    sees a bare verb ("make it sound less corporate", "turn that into an
+        #    email") and proposes a creation action, but there is no new object to
+        #    act on: the subject is the previous turn, so the grounded reading is a
+        #    transformation of the prior content. A concrete target (a named
+        #    app/file/destination, or a creation that names its own topic) keeps the
+        #    executable reading.
+        if reading.contextual and not reading.context.mutates_output:
+            concrete_target = bool(
+                destination
+                or task.entities.get("filename")
+                or task.entities.get("application")
+                or self._has_own_topic(task)
+            )
+            if not concrete_target and self._only_generic_content_actions(actions):
+                from reasoning.reference_resolver import is_content_operation
+
+                if is_content_operation(task.original_prompt or ""):
+                    if reading.goal not in {"transform", "summarize"}:
+                        reading.goal = "transform"
+                        reading.interpretation_notes.append(
+                            "repaired: contextual content transformation"
+                        )
+                elif reading.goal not in {"answer", "converse", "transform", "summarize"}:
+                    reading.goal = "answer"
+                    reading.interpretation_notes.append(
+                        "repaired: contextual follow-up with no new target is conversational"
+                    )
+                task.actions = []
+                reading.operations = ["transform"] if reading.goal in {"transform", "summarize"} else ["answer"]
+                reading.needs_application = False
+                reading.needs_files = False
+                reading.required_capabilities = [
+                    c for c in reading.required_capabilities
+                    if not c.startswith(("applications.", "filesystem.write"))
+                ]
+
+    @staticmethod
+    def _only_generic_content_actions(actions: list[TaskAction]) -> bool:
+        """True when the only actions are content that names no source of its own.
+
+        A creation whose input is already the user's new subject (a named topic)
+        is a real request; a bare generator with nothing to generate *about* is
+        only meaningful against the conversation, so it is not a fresh task.
+        """
+
+        if not actions:
+            return True
+        return all(action.capability == "content.generate" for action in actions)
+
+    @staticmethod
+    def _has_own_topic(task: Task) -> bool:
+        """True when the request names a topic of its own (not just a frame)."""
+
+        entities = task.entities or {}
+        for key in ("topic", "research_query", "raw_topic", "normalized_topic"):
+            value = str(entities.get(key) or "").strip()
+            if value:
+                return True
+        return False
 
     @staticmethod
     def _explicitly_needs_web(task: Task) -> bool:

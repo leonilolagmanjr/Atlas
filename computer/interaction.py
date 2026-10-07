@@ -18,7 +18,7 @@ real ones, and tests pass fakes so no GUI is required.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable, Protocol
 
 from config import (
     VISION_ENABLED,
@@ -60,6 +60,27 @@ def _bounded_int(value: Any, *, default: int, low: int, high: int) -> int:
     return max(low, min(high, number))
 
 
+class InputBackend(Protocol):
+    """The subset of :mod:`computer.vision.input` the visual tools rely on.
+
+    Declaring the shape lets the type checker verify every ``click``/``move``/
+    ``drag``/``type_text``/``keypress``/``scroll`` call instead of treating the
+    backend as ``Any``.
+    """
+
+    def click(self, x: int, y: int, *, button: str = "left", count: int = 1) -> Any: ...
+
+    def move(self, x: int, y: int) -> Any: ...
+
+    def drag(self, start_x: int, start_y: int, end_x: int, end_y: int) -> Any: ...
+
+    def type_text(self, text: str) -> Any: ...
+
+    def keypress(self, key: str) -> Any: ...
+
+    def scroll(self, delta: int) -> Any: ...
+
+
 class _VisualToolBase(Tool):
     """Shared plumbing: perceive, validate a target, act, report."""
 
@@ -67,10 +88,10 @@ class _VisualToolBase(Tool):
         self,
         *,
         engine: PerceptionEngine | None = None,
-        input_backend: Any | None = None,
+        input_backend: InputBackend | None = None,
     ) -> None:
         self._engine = engine
-        self._input = input_backend
+        self._input: InputBackend | None = input_backend
 
     def _resolved_engine(self) -> PerceptionEngine:
         if self._engine is None:
@@ -83,7 +104,7 @@ class _VisualToolBase(Tool):
             )
         return self._engine
 
-    def _resolved_input(self) -> Any:
+    def _resolved_input(self) -> InputBackend:
         if self._input is None:
             from computer.vision.input import default_input_backend
 
@@ -122,8 +143,28 @@ class _VisualToolBase(Tool):
             expected_application=str(parameters.get("application") or "").strip(),
         )
         if not validated.ok or validated.target is None:
-            return False, validated.reason, state, None
+            reason = validated.reason or "target could not be resolved"
+            return False, reason, state, None
         return True, validated.reason, state, validated.target
+
+    def _act_on_target(
+        self,
+        parameters: dict[str, Any],
+        action: Callable[[InputBackend, VisualTarget], Any],
+    ) -> tuple[ToolResult | None, VisualState | None, VisualTarget | None]:
+        """Validate, observe and act on the resolved target.
+
+        Returns ``(failure_result, state, target)``: when ``failure_result`` is
+        not None the caller should return it as-is; otherwise the callback has
+        already been invoked with the validated target.
+        """
+
+        self.validate(parameters)
+        ok, reason, state, target = self._observe_and_validate(parameters)
+        if not ok or target is None or state is None:
+            return self._failure(reason or "target could not be resolved"), state, None
+        action(self._resolved_input(), target)
+        return None, state, target
 
     def _result(self, status: str, output: dict[str, Any]) -> ToolResult:
         return ToolResult(success=True, status=status, output=output)
@@ -175,11 +216,13 @@ class ComputerClickTool(_VisualToolBase):
 
     def _click(self, parameters: dict[str, Any], *, count: int, button: str) -> ToolResult:
         try:
-            self.validate(parameters)
-            ok, reason, state, target = self._observe_and_validate(parameters)
-            if not ok or target is None or state is None:
-                return self._failure(reason)
-            self._resolved_input().click(target.x, target.y, button=button, count=count)
+            failure, state, target = self._act_on_target(
+                parameters,
+                lambda backend, target: backend.click(target.x, target.y, button=button, count=count),
+            )
+            if failure is not None:
+                return failure
+            assert state is not None and target is not None
             return self._result(
                 "clicked",
                 {
@@ -247,11 +290,13 @@ class ComputerMoveTool(_VisualToolBase):
 
     def execute(self, parameters: dict[str, Any]) -> ToolResult:
         try:
-            self.validate(parameters)
-            ok, reason, state, target = self._observe_and_validate(parameters)
-            if not ok or target is None or state is None:
-                return self._failure(reason)
-            self._resolved_input().move(target.x, target.y)
+            failure, state, target = self._act_on_target(
+                parameters,
+                lambda backend, target: backend.move(target.x, target.y),
+            )
+            if failure is not None:
+                return failure
+            assert state is not None and target is not None
             return self._result(
                 "moved",
                 {"status": "moved", "target": target.to_dict(), "observation_id": state.observation_id},

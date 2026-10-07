@@ -63,6 +63,15 @@ class SourceSelector:
         if signals.ambiguous_reference and not signals.explicit_web_request and not self._resolved_reference(signals):
             return self._plan((), "no resolvable target; clarification required before any source")
 
+        # The semantic reasoning layer's evidence requirement is the primary
+        # routing input. A request that clearly needs evidence (a ranking, a
+        # current-information question, or an information request about an
+        # external entity) consults the web *whether or not* it named a search
+        # verb, so semantically equivalent requests reach the same strategy.
+        semantic_plan = self._semantic_evidence_plan(signals)
+        if semantic_plan is not None:
+            return semantic_plan
+
         if signals.sources:
             allowed = {source.value: source for source in SourceType}
             if all(source in allowed for source in signals.sources):
@@ -94,6 +103,17 @@ class SourceSelector:
                 "the request refers to earlier turns; answered from conversation memory",
             )
 
+        # A contextual follow-up that names no new target is answered *grounded in
+        # the conversation*: the retrieved turns are the evidence, so the answer is
+        # a continuation of the discussion rather than a fresh knowledge lookup.
+        # An executable contextual request never reaches here (it carries actions
+        # and is handled by the action plan above).
+        if signals.contextual:
+            return self._plan(
+                (SourceType.CONVERSATION, SourceType.MODEL),
+                "the message continues the conversation; it is grounded in the earlier turns",
+            )
+
         if signals.file_intent is not None and self._file_intent_dominates(signals):
             return self._file_plan(signals)
 
@@ -114,6 +134,88 @@ class SourceSelector:
         )
 
     # -- plans --------------------------------------------------------------------
+
+    def _semantic_evidence_plan(self, signals: RoutingSignals) -> SourcePlan | None:
+        """Route from the semantic evidence requirement, or return None to defer.
+
+        A *required* evidence request (a ranking/comparison, or current
+        information) must consult the web before the model: a plausible-looking
+        answer that was not retrieved is a fabrication. A *preferred* evidence
+        request consults the web too, because for an external entity a grounded
+        answer is materially more reliable - but the plan keeps the model as the
+        fallback so a retrieval failure still produces an honest answer.
+
+        This defers (returns None) for requests whose source is genuinely local
+        (files, the machine, the conversation, Atlas itself) so a semantic
+        evidence flag can never drag a local request onto the web. A request that
+        merely *contains* a second-person word ("what do you know about MrBeast")
+        still names an external subject, so a strict self-query read does not
+        suppress its evidence requirement.
+        """
+
+        requirement = signals.evidence_requirement
+        if requirement not in {"required", "preferred"}:
+            return None
+        if not self._available("web.search"):
+            return None
+        # Local domains keep their own routing, but a self-query deferral only
+        # holds when the request has *no* external subject of its own.
+        if signals.system_reference or signals.is_memory_query:
+            return None
+        if signals.is_self_query and not self._names_external_subject(signals):
+            return None
+        if signals.file_intent is not None and self._file_intent_dominates(signals):
+            return None
+        # A contextual follow-up with no subject of its own is grounded in the
+        # conversation; but a follow-up that *does* name an external subject must
+        # still consult evidence, so only defer when the request carries no
+        # subject to look up.
+        if signals.contextual and not signals.comparative and not signals.sources \
+                and not self._names_external_subject(signals):
+            return None
+        # An explicit local file target ("find my resume") is never a web search.
+        if signals.has_actions and not signals.explicit_web_request:
+            planned = {source for source in signals.sources}
+            if planned and planned <= {"files", "computer", "system"}:
+                return None
+
+        reasons: list[str] = []
+        if signals.comparative:
+            reasons.append(
+                "the request is a ranking/comparison and must be answered from "
+                "retrieved candidates, not generated"
+            )
+        if requirement == "required":
+            reasons.append("the semantic reading judged external evidence required")
+        else:
+            reasons.append(
+                "the request concerns an external entity; grounded evidence is more reliable"
+            )
+        return self._plan(
+            (SourceType.WEB, SourceType.MODEL),
+            "; ".join(reasons),
+            capabilities=tuple(
+                name for name in ("web.search", "web.fetch") if self._available(name)
+            ),
+            current_information_required=True,
+        )
+
+    @staticmethod
+    def _names_external_subject(signals: RoutingSignals) -> bool:
+        """True when the semantic reading carries a concrete, non-self subject.
+
+        A self-query is only *really* about Atlas when it has no external subject
+        ("what can you do?"). A message that merely contains "you" but names an
+        entity ("what do you know about MrBeast") is an external-information
+        request, and its evidence requirement must be honoured.
+        """
+
+        for note in signals.semantic_notes:
+            if note.startswith("local:"):
+                continue
+        # The subject carried by the semantic reading, if any, is exposed through
+        # the evidence features appended by the router.
+        return bool(signals.semantic_subject)
 
     def _file_plan(self, signals: RoutingSignals) -> SourcePlan:
         intent = signals.file_intent

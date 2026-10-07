@@ -1,0 +1,8 @@
+........................................................                 [100%]
+============================== warnings summary ===============================
+..\..\..\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\chromadb\telemetry\opentelemetry\__init__.py:128
+  C:\Users\leonilolagmanjr\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\chromadb\telemetry\opentelemetry\__init__.py:128: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead
+    if asyncio.iscoroutinefunction(f):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+56 passed, 1 warning in 23.46s
