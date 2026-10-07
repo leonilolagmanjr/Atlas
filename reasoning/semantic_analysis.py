@@ -103,7 +103,7 @@ _STABLE_QUESTION_HEADS: tuple[str, ...] = (
 #: change at any moment, so it is always fresh.
 _INTRINSICALLY_CURRENT: tuple[str, ...] = (
     "president", "prime minister", "ceo", "chancellor", "governor", "mayor",
-    "leader", "king", "queen", "pope", "champion", "winner", "record holder",
+    "leader", "king", "queen", "pope",     "champion", "championship", "winner", "record holder",
     "version", "release", "price", "stock", "score", "weather", "temperature",
     "population", "ranking", "rank", "subscribers", "views", "followers",
     "net worth", "exchange rate", "interest rate", "schedule", "news",
@@ -267,6 +267,13 @@ def analyze_structure(text: str) -> StructuralReading:
         reading.criterion = "value"
         reading.criterion_proxy = "price, specs, and alternatives"
         reading.markers.append("value_evaluation")
+    elif re.search(r"\bworth\b", lowered) and not re.search(r"\bfor\s+what\s+it'?s\s+worth\b", lowered):
+        reading.intrinsically_current = True
+        reading.freshness = "current"
+        reading.comparative = True
+        reading.criterion = "value"
+        reading.criterion_proxy = "price, specs, and alternatives"
+        reading.markers.append("value_evaluation")
     elif reading.superlative:
         # A "who is the most X" question is a statement about the world as it is
         # now: the leader can change, so it is a current question by structure.
@@ -302,9 +309,10 @@ def analyze_structure(text: str) -> StructuralReading:
         r"^(?:why|how|when|where|explain|describe|tell\s+me)\b", lowered
     ):
         if re.search(
-            r"\b(?:who|which)\s+(?:was\s+the\s+)?(?:winner|winners|score|result|champion)\b"
-            r"|\bwho\s+won\b"
-            r"|\bwhat\s+happened\s+(?:in|with|to|around)\b",
+            r"\b(?:who|which|what)\s+(?:was\s+the\s+)?(?:winner|winners|score|result|champion|championship)\b"
+            r"|\b(?:who|which)\s+won\b"
+            r"|\b(?:who|which)\s+\w+\s+won\b"
+            r"|\bwhat\s+happened\s+(?:in|with|to|around|during)\b",
             lowered,
         ):
             reading.final_event_result = True

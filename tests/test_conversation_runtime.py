@@ -185,6 +185,71 @@ class ClassificationTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIn(classify_turn(text).kind, RESPONSE_KINDS)
 
+    def test_event_result_questions_delegate_for_current_evidence(self) -> None:
+        equivalent_queries = (
+            "Who won the NBA Finals?",
+            "Who won the Super Bowl?",
+            "Who won Wimbledon this year?",
+            "Who won the 2026 World Cup?",
+            "Which team won the NBA Finals?",
+            "What was the result of the NBA Finals?",
+            "Who took the NBA championship?",
+        )
+        for text in equivalent_queries:
+            with self.subTest(text=text):
+                result = classify_turn(text)
+                self.assertTrue(result.delegate, f"{text!r} must reach the reasoning engine")
+                self.assertEqual(result.kind, "research")
+
+    def test_current_information_questions_delegate(self) -> None:
+        for text in (
+            "What is the latest Python version?",
+            "Who is the current F1 champion?",
+            "What is the current price of Bitcoin?",
+            "What's Bitcoin worth right now?",
+        ):
+            with self.subTest(text=text):
+                result = classify_turn(text)
+                self.assertTrue(result.delegate, f"{text!r} must reach the reasoning engine")
+
+    def test_stable_knowledge_does_not_trigger_research(self) -> None:
+        for text in (
+            "What is recursion?",
+            "Explain TCP.",
+            "How does garbage collection work?",
+            "What is a binary tree?",
+            "Explain the concept of a search algorithm.",
+            "What does current mean in physics?",
+            "Explain how Bitcoin works.",
+        ):
+            with self.subTest(text=text):
+                result = classify_turn(text)
+                self.assertFalse(result.delegate, f"{text!r} must not be routed to research")
+                self.assertEqual(result.kind, "conversation")
+
+    def test_historical_event_preserves_temporal_scope(self) -> None:
+        for text in (
+            "Who won the NBA Finals in 1995?",
+            "Who won the World Cup in 2010?",
+            "What happened during the Apollo 11 mission?",
+        ):
+            with self.subTest(text=text):
+                result = classify_turn(text)
+                self.assertTrue(result.delegate, f"{text!r} must reach the agent for retrieval")
+                self.assertEqual(result.kind, "research")
+
+    def test_explicit_research_requests_delegate(self) -> None:
+        for text in (
+            "Search the web for an explanation of recursion.",
+            "Research the best database for Atlas.",
+            "Google the latest AI news.",
+            "Look up the Python documentation.",
+        ):
+            with self.subTest(text=text):
+                result = classify_turn(text)
+                self.assertTrue(result.delegate, f"{text!r} must reach the reasoning engine")
+                self.assertEqual(result.kind, "research")
+
 
 class RuntimeRoutingTests(unittest.TestCase):
     def setUp(self) -> None:

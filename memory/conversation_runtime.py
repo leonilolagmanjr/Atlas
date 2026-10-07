@@ -42,6 +42,7 @@ from typing import Any, Callable
 
 from memory.memory_manager import MemoryManager
 from memory.models import RESPONSE_KINDS
+from reasoning.semantic_analysis import analyze_structure
 
 logger = logging.getLogger(__name__)
 
@@ -73,12 +74,15 @@ _ACTION_PHRASES: tuple[str, ...] = (
     "to a file", "into a file", "as a file",
 )
 
-#: Verbs that ask for retrieval/research rather than a local answer.
-_RESEARCH_PHRASES: tuple[str, ...] = (
-    "research ", "search the web", "search online", "look it up",
-    "look up the latest", "search the internet", "find the latest",
-    "google ", "browse ", "find out about", "what's the latest",
-    "whats the latest", "what is the latest",
+#: Precise phrases that explicitly request external retrieval/research.
+#: These are anchored multi-word phrases, not bare word fragments, so they do
+#: not fire on phrases like "search algorithm" or "research paper" when the
+#: user is asking for an explanation rather than a lookup.
+_EXPLICIT_RESEARCH_PHRASES: tuple[str, ...] = (
+    "search the web", "search online", "search the internet",
+    "look it up", "look up the", "google it", "browse the web",
+    "find out about", "research the", "what is the latest",
+    "what's the latest", "what are the latest",
 )
 
 #: Reinforcement and simple acknowledgements are conversation, not requests.
@@ -177,6 +181,11 @@ def classify_turn(text: str) -> TurnClassification:
             signals=("small_talk",),
         )
 
+    # Structural semantic analysis - the single source of truth for intent.
+    # This derives freshness, evidence need, and operation from the request's
+    # grammatical shape rather than from individual keyword matches.
+    structure = analyze_structure(text)
+
     # Build-variable so the "open chrmoe" style request (no trailing space) is
     # matched by the same rules as "open chrome".
     padded = f" {lowered} "
@@ -186,19 +195,39 @@ def classify_turn(text: str) -> TurnClassification:
     if action:
         signals.append("action_language")
 
-    research = any(phrase in lowered for phrase in _RESEARCH_PHRASES)
-    if research:
-        signals.append("research_language")
+    # Research need is derived from semantic structure, not keyword lists.
+    needs_research = False
+    if structure.final_event_result:
+        needs_research = True
+        signals.append("final_event_result")
+    if structure.intrinsically_current and structure.question_form:
+        needs_research = True
+        signals.append("intrinsically_current_question")
+    if structure.comparative or structure.superlative:
+        needs_research = True
+        signals.append("comparative_or_superlative")
+    if structure.freshness == "current":
+        needs_research = True
+        signals.append("freshness_current")
 
-    time_sensitive = bool(
-        re.search(
-            r"\b(latest|newest|current|today|this week|this month|right now|up to date|up-to-date|recently)\b",
-            lowered,
-        )
-        or re.search(r"\b20\d{2}\b", lowered)
+    # Explicit retrieval/research phrases: precise, anchored multi-word phrases
+    # only. These do not fire on "search algorithm" or "research paper" because
+    # the user is not asking Atlas to look anything up.
+    explicit_research = any(
+        phrase in lowered for phrase in _EXPLICIT_RESEARCH_PHRASES
     )
-    if time_sensitive:
-        signals.append("time_sensitive")
+    # Explicit search verbs at the start of the request (search X, find X, etc.)
+    explicit_search_verb = bool(
+        re.match(r"^(?:search|look\s+up|google|browse|find|research)\s+", lowered)
+    )
+    if explicit_research or explicit_search_verb:
+        needs_research = True
+        signals.append("explicit_research_request")
+
+    # A year mention usually signals a request for historical/current retrieval.
+    if re.search(r"\b20\d{2}\b", lowered):
+        needs_research = True
+        signals.append("year_mention")
 
     context_dependent = _is_context_dependent(lowered)
     if context_dependent:
@@ -218,7 +247,7 @@ def classify_turn(text: str) -> TurnClassification:
     if action:
         # Mutation or application control: always the agent's job.
         return TurnClassification(
-            kind="hybrid" if (research or time_sensitive) else "computer",
+            kind="hybrid" if needs_research else "computer",
             delegate=True,
             reason="the request asks Atlas to act on the computer; only the existing permission-gated execution path may do that",
             signals=tuple(signals),
@@ -226,7 +255,7 @@ def classify_turn(text: str) -> TurnClassification:
             anaphoric=context_dependent and len(tokens) <= 5,
         )
 
-    if research or time_sensitive:
+    if needs_research:
         # Research is delegated to the *existing* reasoning engine (which owns
         # source selection, retrieval, evidence and citations) rather than being
         # answered from model memory. Answering a research request locally would

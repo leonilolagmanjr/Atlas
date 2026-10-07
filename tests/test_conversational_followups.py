@@ -201,11 +201,15 @@ class ContextualFollowUpTests(unittest.TestCase):
     def test_implicit_context_without_an_explicit_reference(self) -> None:
         chat = self.sandbox.conversation()
         chat.send("Research the current state of nuclear fusion.")
-        chat.send("What are the biggest obstacles?")
+        result = chat.send("What are the biggest obstacles?")
 
-        prompt = chat.last_model_prompt
-        self.assertIn("nuclear fusion", prompt)
-        self.assertIn("biggest obstacles", prompt)
+        # "biggest" makes this a superlative/comparative question, so it correctly
+        # delegates to the reasoning engine rather than being answered from model
+        # memory. Context must still be preserved across the delegation boundary.
+        self.assertTrue(chat.brain.calls, "a superlative question must reach the agent for evidence")
+        context = chat.last_brain_call["context"] if chat.last_brain_call else ""
+        self.assertIn("nuclear fusion", context)
+        self.assertIn("biggest obstacles", context)
 
     def test_selection_over_multiple_previous_results_is_grounded(self) -> None:
         chat = self.sandbox.conversation()
