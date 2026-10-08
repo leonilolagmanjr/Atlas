@@ -17,3 +17,7 @@ database/
 .kilo/
 .pytest_cache/
 *.orig.bak
+atlas.db
+atlas.db-shm
+atlas.db-wal
+/chroma

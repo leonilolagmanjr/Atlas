@@ -638,18 +638,31 @@ class ReasoningEngine:
                 gained += evidence.add_file_output("filesystem.read", read)
         return gained
 
-    def _iterative_web_retrieval(self, question: str, task: Task, evidence: EvidenceManager, signals: RoutingSignals) -> int:
-        """Perform iterative web retrieval with query rewriting based on evidence evaluation."""
-        if task.evidence_state is None:
+    def _iterative_web_retrieval(self, question: str, task: Task, evidence: EvidenceManager,
+                                 signals: RoutingSignals, evidence_state: EvidenceState | None = None) -> int:
+        """Perform iterative web retrieval with query rewriting based on evidence evaluation.
+
+        ``evidence_state`` is the accumulated, task-scoped evidence produced by
+        the interpreter (``task.evidence_state``). Callers pass it explicitly so
+        the iterative attempt accounting and source classification operate on the
+        same state object that downstream synthesis reads. When it is omitted the
+        state is taken from (or initialized on) the task, so the trailing
+        parameter is additive and no caller loses behavior.
+        """
+        if evidence_state is None:
+            evidence_state = task.evidence_state
+        if evidence_state is None:
             # Initialize evidence state if not present
-            task.evidence_state = EvidenceState(
+            evidence_state = EvidenceState(
                 target=task.entities.get("topic", question),
                 goal="find_information",
                 required_content_type=task.entities.get("content_type", "generic"),
                 must_be_artifact=self._determine_must_be_artifact(task),
             )
-        
-        evidence_state = task.evidence_state
+        # Keep the task and the retrieval state pointing at the same object: the
+        # answer generator and the evidence gate both read ``task.evidence_state``.
+        task.evidence_state = evidence_state
+
         max_attempts = evidence_state.max_retrieval_attempts
         gained_total = 0
                 #: Bounded query-normalization recovery. When the first query returns
@@ -875,7 +888,7 @@ class ReasoningEngine:
             
             # Task-aware validation
             validation = validate_content(
-                retrieval_task=RetrievalTask(
+                RetrievalTask(
                     goal=evidence_state.goal,
                     target=evidence_state.target,
                     content_type=evidence_state.required_content_type,

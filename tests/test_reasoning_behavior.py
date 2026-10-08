@@ -9,19 +9,21 @@ what is honestly reported -- not prompt wording.
 from __future__ import annotations
 
 import sys
+import time
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from computer.runtime import register_read_only_tools  # noqa: E402
 from config import COMPUTER_ROOT  # noqa: E402
-from models_task import Task  # noqa: E402
+from models_task import EvidenceState, Task, TaskAction  # noqa: E402
 from reasoning.answer_generator import AnswerGenerator  # noqa: E402
 from reasoning.evidence_manager import EvidenceManager  # noqa: E402
 from reasoning.query_router import QueryRouter  # noqa: E402
 from reasoning.reasoning_engine import ReasoningEngine  # noqa: E402
-from reasoning.reasoning_models import ResponseMode, SourceType  # noqa: E402
+from reasoning.reasoning_models import ReasoningTrace, ResponseMode, SourceType  # noqa: E402
 from reasoning.self_introspection import SelfIntrospection  # noqa: E402
 from tools.base import ToolResult  # noqa: E402
 from tools.capabilities import CapabilityRegistry  # noqa: E402
@@ -55,6 +57,48 @@ def web_search_output(_name, _parameters):
             ],
         },
     )
+
+
+def web_search_no_results(_name, _parameters):
+    """A successful search that returns zero results (no page fetching)."""
+
+    return ToolResult(success=True, status="completed", output={"provider": "test", "results": []})
+
+
+def _page_fetch_runner():
+    """A tool runner whose web.search returns one result and web.fetch a page.
+
+    Exercises the full per-page evidence path in
+    ``_perform_web_search_and_fetch`` (source classification, relevance scoring
+    and ``validate_content``) that ``_gather`` reaches for ``web.research``.
+    """
+
+    class PageFetchRunner:
+        def __init__(self):
+            self.calls: list[tuple[str, dict]] = []
+
+        def __call__(self, name, parameters):
+            self.calls.append((name, dict(parameters)))
+            if name == "web.search":
+                return ToolResult(success=True, status="completed", output={
+                    "provider": "test",
+                    "results": [{
+                        "title": "Python Release 3.13.0",
+                        "url": "https://www.python.org/downloads/",
+                        "snippet": "Python 3.13.0 is the newest major release of Python.",
+                    }],
+                })
+            if name == "web.fetch":
+                url = str(parameters.get("url", ""))
+                return ToolResult(success=True, status="completed", output={
+                    "url": url,
+                    "title": "Python Release 3.13.0",
+                    "text": ("Python 3.13.0 is the newest major release of Python. "
+                             "It improves performance and error messages. ") * 6,
+                })
+            return ToolResult.failure(f"no fake output for {name}", recoverable=True)
+
+    return PageFetchRunner()
 
 
 def fs_list_output(_name, _parameters):
@@ -500,6 +544,121 @@ class ReasoningBoundaryTests(unittest.TestCase):
         question = "What is the latest Python release?"
         engine.handle_request(question=question, task=task_for(question))
         self.assertTrue(all(name in {"web.search", "web.fetch"} for name, _ in runner.calls))
+
+
+class IterativeWebRetrievalContractTests(unittest.TestCase):
+    """Regression guard for the ``_gather`` -> ``_iterative_web_retrieval`` call.
+
+    ``_gather`` forwards the task's ``evidence_state`` so the iterative retriever
+    and downstream synthesis share one accumulated-evidence object. The retriever
+    signature must therefore accept that argument; it previously did not, so any
+    ``web.research`` request whose evidence state had already been built by the
+    interpreter raised ``TypeError: _iterative_web_retrieval() takes 5 positional
+    arguments but 6 were given`` before a single page was fetched.
+    """
+
+    def setUp(self):
+        self.runner = _empty_web_runner()
+        self.engine = build_engine(FakeAsk(), self.runner, make_retrieve())
+
+    @contextmanager
+    def _active_run(self):
+        """Bind a live reasoning run so ``_execute`` may call tools."""
+        from reasoning.reasoning_engine import _Run, _run
+
+        run = _Run(time.monotonic() + 30, lambda: False, ReasoningTrace(), 50)
+        token = _run.set(run)
+        try:
+            yield run
+        finally:
+            _run.reset(token)
+
+    def test_gather_forwards_evidence_state_without_a_typeerror(self):
+        task = task_for("search the web for the latest Python release and summarize it")
+        task.actions = [TaskAction(action_id="research", capability="web.research",
+                                   parameters={"query": "latest Python release"})]
+        state = EvidenceState(target="python", goal="find_information")
+        task.evidence_state = state
+
+        with self._active_run():
+            # Exactly the call _gather makes when the planned action needs iteration.
+            # Before the fix this raised TypeError: _iterative_web_retrieval()
+            # takes 5 positional arguments but 6 were given.
+            gained = self.engine._gather(
+                SourceType.WEB,
+                question=task.original_prompt,
+                task=task,
+                history="",
+                evidence=EvidenceManager(),
+                signals=QueryRouter().route(task.original_prompt, task=task, history=""),
+                evidence_state=task.evidence_state,
+            )
+
+            # The iterative retriever must have been the branch that ran, on the
+            # shared evidence object, and the planned query must be the first one
+            # searched (later attempts are reformulations of it).
+            searched = [params.get("query") for name, params in self.runner.calls
+                        if name == "web.search"]
+
+        self.assertIs(task.evidence_state, state)
+        self.assertGreaterEqual(gained, 0)
+        self.assertEqual(searched[0], "latest Python release")
+        self.assertGreaterEqual(len(searched), 1)
+
+    def test_iterative_web_retrieval_accepts_the_evidence_state_argument(self):
+        task = task_for("search the web for the latest Python release and summarize it")
+        state = EvidenceState(target="python", goal="find_information")
+
+        with self._active_run():
+            # Direct positional call with the trailing argument: the state must be
+            # adopted so the retriever and the task never diverge.
+            self.engine._iterative_web_retrieval(
+                task.original_prompt, task, EvidenceManager(),
+                QueryRouter().route(task.original_prompt, task=task, history=""), state,
+            )
+
+        self.assertIs(task.evidence_state, state)
+
+    def test_omitting_evidence_state_still_uses_the_task_state(self):
+        task = task_for("search the web for the latest Python release and summarize it")
+        state = EvidenceState(target="python", goal="find_information")
+        task.evidence_state = state
+
+        with self._active_run():
+            self.engine._iterative_web_retrieval(
+                task.original_prompt, task, EvidenceManager(),
+                QueryRouter().route(task.original_prompt, task=task, history=""),
+            )
+
+        self.assertIs(task.evidence_state, state)
+
+    def test_iterative_retrieval_classifies_fetched_pages_into_evidence(self):
+        """The per-page path must run to completion, not fail silently.
+
+        ``_perform_web_search_and_fetch`` validates each fetched page with
+        ``validate_content``; the call previously used a non-existent
+        ``retrieval_task=`` keyword, which raised TypeError and was swallowed by
+        ``_gather``'s broad except as "Reasoning source web failed". Driving a
+        real search + fetch must now produce a classified evidence source.
+        """
+        runner = _page_fetch_runner()
+        engine = build_engine(FakeAsk(), runner, make_retrieve())
+        task = task_for("search the web for the latest Python release and summarize it")
+        state = EvidenceState(target="python", goal="find_information")
+        task.evidence_state = state
+        evidence = EvidenceManager()
+
+        with self._active_run():
+            gained = engine._iterative_web_retrieval(
+                task.original_prompt, task, evidence,
+                QueryRouter().route(task.original_prompt, task=task, history=""), state,
+            )
+
+        # A page was read and classified; the failure mode yielded gained == 0
+        # with no sources and an unlogged exception note.
+        self.assertGreaterEqual(gained, 1)
+        self.assertTrue(state.sources)
+        self.assertTrue(any("web.fetch" == name for name, _ in runner.calls))
 
 
 class TemporalFreshnessTests(unittest.TestCase):
