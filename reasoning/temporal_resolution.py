@@ -135,6 +135,56 @@ _EXPR_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: Open-ended temporal *scopes*: phrases that change how far back evidence must
+#: reach rather than naming a point in time ("two in a row", "of all time"). A
+#: scope is resolved by the same authority that resolves "yesterday", so there is
+#: one temporal decision rather than a second freshness rule elsewhere.
+_TEMPORAL_SCOPE_EXPRESSIONS: tuple[tuple[str, str], ...] = (
+    ("in a row", "open_span"),
+    ("consecutive year", "open_span"),
+    ("consecutive years", "open_span"),
+    ("back to back", "open_span"),
+    ("back-to-back", "open_span"),
+    ("in history", "all_time"),
+    ("of all time", "all_time"),
+)
+
+_TEMPORAL_SCOPE_RE = re.compile(
+    r"\b(?:" + "|".join(
+        re.escape(expr) for expr, _ in sorted(_TEMPORAL_SCOPE_EXPRESSIONS, key=lambda e: -len(e[0]))
+    ) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def temporal_relation(text: str) -> str:
+    """Return the temporal relation named in ``text``, or "" when none is named.
+
+    This is the *single* authority for "does this request name a temporal
+    relation, and which one". Understanding, routing, and query generation all
+    read it instead of each running their own substring check, so they cannot
+    disagree about whether "latest" appeared in a request.
+    """
+
+    lowered = (text or "").casefold()
+    # An explicit *year* is a temporal relation too: it anchors the request to a
+    # concrete edition of an event ("the 2010 World Cup"), which is a different
+    # information need from "the latest World Cup". Reading it here means the year
+    # is resolved by the one temporal authority rather than pasted in by a caller.
+    if re.search(r"\b(?:19|20)\d{2}\b", lowered):
+        return "explicit_year"
+    scope = _TEMPORAL_SCOPE_RE.search(lowered)
+    if scope:
+        for expr, relation in _TEMPORAL_SCOPE_EXPRESSIONS:
+            if expr.casefold() == scope.group(0).casefold():
+                return relation
+    match = _EXPR_RE.search(lowered)
+    if not match:
+        return ""
+    relation, _state = _LOOKUP.get(match.group(0), ("", "any"))
+    return relation
+
+
 #: Verbs that imply the requester wants a *completed* occurrence.
 _WINNER_VERBS: frozenset[str] = frozenset(
     {"won", "winner", "winning", "victory", "champion", "championship", "score", "result"}
@@ -207,8 +257,36 @@ class TemporalResolver:
                 if re.match(r"^[a-z]+$", subject):
                     return TemporalResolution(confidence=0.0)
 
+        # An open-ended temporal *scope* ("in a row", "of all time") describes how
+        # far back the answer must reach. It is resolved before a point-in-time
+        # expression because it is the more specific constraint on the window.
+        scope = _TEMPORAL_SCOPE_RE.search(lowered)
+        if scope:
+            expression = scope.group(0)
+            for expr, relation in _TEMPORAL_SCOPE_EXPRESSIONS:
+                if expr.casefold() == expression.casefold():
+                    return self._apply_relation(
+                        relation=relation,
+                        expression=expression,
+                        completion_state=completion_hint,
+                        reference_time=self.reference_time,
+                    )
+
         match = _EXPR_RE.search(lowered)
         if not match:
+            # An explicit *year* is the other way a request anchors itself in time
+            # ("the 2010 World Cup"). It is resolved to that year so the query is
+            # qualified by it, rather than being reported as "no temporal relation".
+            year = re.search(r"\b((?:19|20)\d{2})\b", lowered)
+            if year:
+                return TemporalResolution(
+                    expression=year.group(1),
+                    relation="explicit_year",
+                    reference_time=self.reference_time,
+                    resolved_period=year.group(1),
+                    completion_state="completed",
+                    confidence=0.95,
+                )
             return TemporalResolution(confidence=0.0)
 
         expression = match.group(0)
@@ -482,6 +560,33 @@ class TemporalResolver:
                 resolved_start=start,
                 resolved_end=today,
                 completion_state=completion_state,
+                confidence=0.7,
+            )
+        if relation == "open_span":
+            # "two in a row", "three consecutive years": the window is the most
+            # recent run of the event, which is anchored at *now* and extends back
+            # only as far as the run does. The resolver cannot know the run length,
+            # so it reports an open span ending today and the retrieval layer treats
+            # it as a sequence to verify rather than a single period.
+            return TemporalResolution(
+                expression=expression,
+                relation="open_span",
+                reference_time=reference_time,
+                resolved_period=f"most recent consecutive run ending {today.isoformat()}",
+                resolved_start=None,
+                resolved_end=today,
+                completion_state="completed",
+                confidence=0.6,
+            )
+        if relation == "all_time":
+            return TemporalResolution(
+                expression=expression,
+                relation="all_time",
+                reference_time=reference_time,
+                resolved_period="the full history of the event",
+                resolved_start=None,
+                resolved_end=today,
+                completion_state="completed",
                 confidence=0.7,
             )
         if relation == "recent":

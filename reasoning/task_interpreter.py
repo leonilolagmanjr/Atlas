@@ -91,6 +91,27 @@ _CONTENT_TYPE_SYNONYMS = {
     "tale": "story", "narrative": "story", "article": "essay", "tune": "song",
     "lyrics": "song", "memo": "note", "newsletter": "email",
 }
+
+#: Words that betray an instruction sentence mistaken for a search subject. A
+#: supposed target carrying them is the user's whole request, not the thing to look
+#: up, so it must not become a search query.
+_INSTRUCTION_RESIDUE: tuple[str, ...] = (
+    " and ", " then ", " write ", " into ", " to notepad", " put ", " save ",
+    " copy ", " paste ", " type ", " please ", "search the web", "search web",
+)
+
+
+def _looks_like_prompt(value: str, text: str) -> bool:
+    """True when a supposed search target is really the whole instruction sentence."""
+
+    lowered = " " + (value or "").casefold().strip() + " "
+    if not lowered.strip():
+        return True
+    if any(term in lowered for term in _INSTRUCTION_RESIDUE):
+        return True
+    # A target that is most of the prompt *is* the prompt.
+    return len(lowered) >= max(20, int(len(text or "") * 0.7))
+
 #: Document/report nouns a user refers to as one of *their own* files. Combined
 #: with a possessive ("my resume") or a location ("in Downloads") these describe
 #: a local file lookup, not a web search, even when the verb is "find"/"search".
@@ -482,6 +503,20 @@ class SemanticTaskInterpreter:
 
     def _deterministic_task(self, text: str) -> Task:
         entities = self._extract_entities(text)
+        # The semantic research query is composed *before* the actions are built,
+        # because the actions consume it: a web.search that carried the raw
+        # sentence would defeat the composition. This is the single point at which
+        # the query is decided, so the plan and the reasoning engine cannot
+        # disagree about it.
+        topic_reading = self._topic_reading_for(text, entities)
+        # The research query is composed from the *reading* the entity pass made.
+        # The reading is preferred over the topic string because it has already
+        # separated a connector and a head noun from the real subject; the
+        # structural subject extractor is the fallback inside the builder for a bare
+        # "who won X" that names no connector at all.
+        entities["research_query"] = self._semantic_research_query(
+            text, entities, topic_reading
+        )
         actions = self._build_actions(text, entities)
         task_type, goal, execution_required = self._classify(text, entities, actions)
         constraints = self._extract_constraints(text, entities)
@@ -862,6 +897,14 @@ class SemanticTaskInterpreter:
             topic_reading = self._read_topic(text, content_noun=content_type)
             if topic_reading and topic_reading.subject:
                 entities["topic"] = topic_reading.subject
+            else:
+                # The topic extractor did not fire on a "search for X" clause, but
+                # the interpreter can still isolate X. It is recorded so the query
+                # builder composes from the *target* rather than echoing the whole
+                # instruction ("...and write it into Notepad") into the query.
+                target = (self._extract_search_target(text) or "").strip()
+                if target:
+                    entities["search_target"] = target
         # An informational "about X" request ("tell me about Skyrim") names a
         # subject without a search verb; extract it so the reasoning layer can
         # answer about the right thing instead of treating the request as an
@@ -1207,9 +1250,111 @@ class SemanticTaskInterpreter:
         if reading.normalized and reading.normalized.casefold() != reading.subject.casefold():
             entities.setdefault("raw_topic", reading.subject)
             entities["normalized_topic"] = reading.normalized
-        # The query the research layer should receive: the normalized subject.
-        entities["research_query"] = reading.query or reading.subject
+        # The topic reading records the *subject*, not the final query. The
+        # composed research query is set once, by
+        # :meth:`_semantic_research_query`, from this reading plus the request's
+        # relation and resolved period; overwriting it here with the bare subject
+        # would discard the relation and leave the query without the event it asks
+        # about. ``subject_query`` keeps the normalized subject available for a
+        # caller that wants just the subject.
+        entities["subject_query"] = reading.query or reading.subject
         entities["topic_reading"] = reading.to_dict()
+
+    @staticmethod
+    def _topic_reading_for(text: str, entities: dict[str, Any]) -> TopicReading | None:
+        """Reconstruct the topic reading recorded during entity extraction.
+
+        The entity pass already read and stored the topic; this returns it so the
+        query builder can consume the same reading without re-parsing. A missing
+        reading is not an error - the builder falls back to the structural subject.
+        """
+
+        stored = entities.get("topic_reading")
+        if isinstance(stored, dict) and stored:
+            reading = TopicReading.from_dict(stored)
+            if reading.subject:
+                return reading
+        subject = str(entities.get("topic") or "").strip()
+        if subject:
+            return TopicReading(subject=subject, query=subject)
+        # The entity pass may not have recorded a reading at all. The structural
+        # subject extractor is then the subject, which is what keeps an unfamiliar
+        # event name in the query. When even that finds nothing, the reading is
+        # *empty* rather than the raw prompt: a prompt echo instructs a search
+        # engine with the user's sentence, and the builder is the correct place to
+        # decide a fallback (and to refuse when there is nothing to search for).
+        from reasoning.semantic_analysis import extract_subject
+
+        structural = extract_subject(text)
+        if structural:
+            return TopicReading(subject=structural, query=structural)
+        return TopicReading()
+
+    @staticmethod
+    def _semantic_research_query(
+        text: str, entities: dict[str, Any], reading: TopicReading | None
+    ) -> str:
+        """Compose the research query from the request's interpreted meaning.
+
+        The topic reading supplies the *subject*; this method supplies the
+        *relation* (event result, ranking, value) and lets
+        :mod:`reasoning.semantic_query` compose the two into a search query. That
+        composition is what makes "who took the title this year" produce the
+        event and its year rather than the user's sentence, and what makes six
+        paraphrases of one question converge on one query. The subject is never
+        replaced here: it is the input to the builder.
+
+        A request that names a *search target* but no subject ("search the web for
+        the latest Python version and write it into Notepad") is composed from that
+        target, because it is what the user asked Atlas to look up. When nothing
+        at all was resolved the query is left empty rather than echoing the prompt:
+        a prompt echo instructs a search engine with the user's instruction text.
+        """
+
+        from reasoning.semantic_analysis import analyze_structure, extract_subject
+        from reasoning.semantic_query import build_query
+        from reasoning.temporal_resolution import TemporalResolver
+
+        structure = analyze_structure(text)
+        # Preference order for the *subject*: the reading's cleaned subject, then the
+        # interpreter's topic, then the structural subject, then the search target
+        # isolated from a "search for X" clause. ``reading.query`` is deliberately
+        # *not* used as the subject: the topic extractor sets it from the whole
+        # request, so it is a candidate for the final query at most, never for the
+        # subject. Every candidate is checked against the guard below, because a
+        # prompt echo instructs a search engine with the user's instruction text.
+        candidates = [
+            (reading.subject if reading is not None else ""),
+            str(entities.get("topic") or ""),
+            str(entities.get("search_target") or ""),
+            extract_subject(text),
+        ]
+        subject = ""
+        for candidate in candidates:
+            value = str(candidate or "").strip()
+            if value and not _looks_like_prompt(value, text):
+                subject = value
+                break
+        temporal = TemporalResolver().resolve_from_structure(
+            text,
+            final_event_result=structure.event_result or structure.final_event_result,
+            freshness=structure.freshness,
+            superlative=structure.superlative,
+        )
+        result = build_query(
+            question=text,
+            subject=subject,
+            relation=str(entities.get("goal") or ""),
+            event_result=bool(structure.event_result or structure.final_event_result),
+            outcome_noun=structure.event_result_term,
+            temporal_period=temporal.resolved_period,
+            temporal_relation=temporal.relation,
+            comparative=bool(structure.comparative),
+            criterion=str(entities.get("criterion") or "") or structure.criterion_proxy,
+            candidate_set=structure.candidate_set,
+            value_seeking=bool(structure.value_seeking),
+        )
+        return result.query
 
     def _extract_search_target(self, text: str) -> str | None:
         """Extract the search target from a search request.
@@ -2333,9 +2478,10 @@ class SemanticTaskInterpreter:
         )
 
     def _search_query(self, text: str, entities: dict[str, Any]) -> str:
-        # The semantic subject, normalized at interpretation time, is the query.
-        # Using it (rather than the raw request) is what stops instruction words
-        # like "about" from leaking into a tool call.
+        # The semantic query, composed at interpretation time from the request's
+        # meaning (subject + relation + resolved period), is the query. Using it
+        # rather than the raw request is what stops instruction words from leaking
+        # into a tool call and what lets paraphrases converge on one query.
         query = entities.get("research_query") or entities.get("topic")
         if query:
             return query

@@ -31,6 +31,7 @@ capability decision is taken.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Callable
 
 from models_task import Task
@@ -165,26 +166,53 @@ class SemanticUnderstanding:
         reading.candidate_set = structure.candidate_set
 
         # Priority 1: detect current/latest/final-state semantics before routing.
+        # The temporal *relation* is read once, from the same vocabulary the temporal
+        # resolver owns, so "latest" is recognised as a recency relation rather than
+        # by an independent substring check. Reading it here keeps the two layers
+        # from disagreeing about what makes a request "latest".
         lower = (text or "").casefold()
-        reading.latest_request = any(marker in lower for marker in (
-            "latest", "most recent", "newest", "right now", "currently", "at the moment"
-        ))
+        from reasoning.temporal_resolution import temporal_relation
+
+        reading.temporal_relation = temporal_relation(text or "")
+        reading.latest_request = reading.temporal_relation in {
+            "latest", "latest_completed", "newest", "most_recent", "most_recent_completed",
+            "current", "currently", "now", "recently", "recent",
+        }
+        # An explicit year anchors the request to a concrete edition of an event. It
+        # is a *historical* fact rather than a live one, so it is recorded as such:
+        # the answer is still retrieved, but the request is not "the latest".
+        if reading.temporal_relation == "explicit_year":
+            reading.historical_knowledge = True
         reading.most_recent_request = reading.latest_request or "most recent" in lower
-        reading.current_knowledge = (
-            reading.freshness_requirement == FRESHNESS_CURRENT
-            or structure.intrinsically_current
-            or structure.freshness == FRESHNESS_CURRENT
-            or bool(reading.latest_request)
-        )
+        # ``current_knowledge`` is derived *after* the freshness requirement is
+        # decided, because it is a summary of that decision plus the structural
+        # facts. Reading it before freshness would use the field's default and
+        # disagree with the requirement the rest of the pipeline consumes.
         reading.ranking = bool(structure.comparative or structure.superlative)
-        reading.dynamic_quantity = bool(
-            reading.current_knowledge or reading.ranking or any(
-                marker in lower for marker in ("subscribers", "views", "rank", "leader", "winner", "president", "version")
+        reading.event_result = bool(structure.event_result)
+        reading.deictic_time_question = bool(structure.deictic_time_question)
+        reading.unanchored_event_question = bool(structure.unanchored_event_question)
+        reading.indirect_request = bool(structure.indirect_request)
+        reading.explanatory = bool(structure.explanatory)
+        reading.definition = bool(structure.definition)
+        reading.value_seeking = bool(structure.value_seeking)
+        # ``dynamic_quantity`` means "the answer is a *value* that changes and must
+        # be looked up" (a price, a subscriber count, a version). It is deliberately
+        # NOT set for every current-information request: "who won the championship"
+        # changes over time but the answer is an *entity*, not a quantity, and
+        # treating it as one made the query builder append a market marker to an
+        # event question. Currency is read from the value vocabulary, not inferred
+        # from freshness.
+        reading.dynamic_quantity = bool(not reading.event_result and reading.value_seeking)
+        reading.stable_knowledge = (
+            # A definition is established knowledge by construction, whatever noun
+            # it names ("what does \"current\" mean in physics?").
+            reading.definition
+            or (
+                not (reading.current_knowledge or reading.ranking or reading.dynamic_quantity)
+                and reading.operation in {OP_EXPLAIN, OP_IDENTIFY}
             )
         )
-        reading.stable_knowledge = not (
-            reading.current_knowledge or reading.ranking or reading.dynamic_quantity
-        ) and reading.operation in {OP_EXPLAIN, OP_IDENTIFY}
         reading.subjective_criterion = bool(
             structure.criterion_subjective or any(
                 term in (reading.criterion or "").casefold() for term in (
@@ -193,9 +221,11 @@ class SemanticUnderstanding:
             )
         )
         reading.objective_criterion = bool(reading.criterion and not reading.subjective_criterion)
-        reading.final_event_result = bool(
-            "winner" in lower or "won" in lower or "champion" in lower or "final score" in lower
-        ) or reading.operation == OP_RANK
+        # The event-result relation is structural: any surface form of "who won /
+        # took the title / was crowned / ended up winning" marks the request as a
+        # request for a factual outcome, so it is read from the structure rather
+        # than from a second list of verbs here.
+        reading.final_event_result = bool(structure.event_result or structure.final_event_result)
 
         # Contextual grounding: the existing Intent Engine already resolved
         # references against the conversation; reuse its reading rather than
@@ -215,6 +245,15 @@ class SemanticUnderstanding:
 
         # -- freshness & evidence ----------------------------------------------
         reading.freshness_requirement = _freshness_for(task, structure)
+        # Now that freshness is known, summarize it. A *definition* is stable
+        # whatever vocabulary it contains, so it never counts as current knowledge.
+        reading.current_knowledge = (
+            reading.freshness_requirement == FRESHNESS_CURRENT
+            or structure.intrinsically_current
+            or structure.event_result
+            or structure.deictic_time_question
+            or bool(reading.latest_request)
+        ) and not reading.definition
         reading.evidence_requirement, evidence_notes = _evidence_for(reading, structure, task)
 
         # -- ambiguity ----------------------------------------------------------
@@ -326,15 +365,64 @@ def _subject_of(task: Task | None, text: str) -> str:
     """
 
     structural = extract_subject(text)
+    # A *second-person* subject ("you", "your capabilities") is not an external
+    # entity: a question about Atlas's own abilities must stay a self-query, not be
+    # read as a lookup about "you". The self-query judgement belongs to
+    # SelfIntrospection; the semantic layer simply must not manufacture an external
+    # subject out of a pronoun that refers to Atlas.
+    if structural and _is_self_referential(structural):
+        return ""
     if structural:
         return structural
     if task is not None:
         entities = task.entities or {}
         for key in ("topic", "research_query", "normalized_topic", "raw_topic"):
             value = str(entities.get(key) or "").strip()
-            if value and not _looks_like_instruction(value):
+            # A temporal word names *when*, never *what*, so an interpreter that
+            # recorded "last night" as the topic must not have it accepted as the
+            # subject of a lookup. The resolved period is what qualifies a query.
+            if value and not _looks_like_instruction(value) and not _is_temporal_only(value) \
+                    and not _is_self_referential(value):
                 return value
     return ""
+
+
+#: Second-person and Atlas-self words. A subject made of these is self-reference,
+#: not an external entity to look up.
+_SELF_REFERENCE_WORDS: frozenset[str] = frozenset(
+    {
+        "you", "your", "yours", "yourself", "u", "atlas", "atlas's",
+        "your capabilities", "your tools", "your features",
+    }
+)
+
+
+def _is_self_referential(value: str) -> bool:
+    """True when a subject refers to Atlas itself rather than to the world."""
+
+    lowered = value.casefold().strip(" ?.,'")
+    if lowered in _SELF_REFERENCE_WORDS:
+        return True
+    words = set(re.findall(r"[a-z']+", lowered))
+    # "your capabilities" / "your tools": a possessive second-person determiner with
+    # no external entity beside it names Atlas's own capabilities.
+    if words & {"your", "yours", "yourself"} and not (words - {"your", "yours", "yourself", "the", "and", "of", "a", "an"}):
+        return True
+    return False
+
+
+def _is_temporal_only(value: str) -> bool:
+    """True when a \"subject\" is really just a time window ("last night")."""
+
+    from reasoning.semantic_analysis import _DEICTIC_TIME_NOUNS
+
+    lowered = value.casefold().strip(" ?.,")
+    if not lowered:
+        return False
+    return any(
+        lowered == term or lowered.startswith(term + " ") or lowered.endswith(" " + term)
+        for term in _DEICTIC_TIME_NOUNS
+    )
 
 
 #: Frame words that betray an instruction sentence mistakenly stored as a topic.
@@ -439,18 +527,24 @@ def _goal_text(reading: SemanticRequest, structure: StructuralReading) -> str:
 def _freshness_for(task: Task | None, structure: StructuralReading) -> str:
     """Return current | stable | any from structure and the interpreter's flags."""
 
+    # A *definition* is stable knowledge by construction, whatever noun it names.
+    # It is checked first so a temporal word inside the question ("what does
+    # \"current\" mean") cannot make it a current-information request.
+    if structure.definition:
+        return FRESHNESS_STABLE
     if structure.freshness == FRESHNESS_STABLE:
         return FRESHNESS_STABLE
     if (
         structure.freshness == FRESHNESS_CURRENT
         or structure.intrinsically_current
         or structure.superlative
+        # A request for the factual outcome of an event ("who won X", "who took
+        # the title", "what happened last night") depends on what actually
+        # happened, which is a current fact about the world.
+        or structure.event_result
+        or structure.final_event_result
+        or structure.deictic_time_question
     ):
-        return FRESHNESS_CURRENT
-    # A question that asks for the factual outcome of a completed event
-    # ("who won X?", "what was the score?") depends on what actually happened,
-    # which is a current fact about the world.
-    if structure.final_event_result:
         return FRESHNESS_CURRENT
     if task is not None and getattr(task, "current_information_required", False):
         return FRESHNESS_CURRENT
@@ -475,6 +569,14 @@ def _evidence_for(
 
     notes: list[str] = []
 
+    # 0. A *definition* is stable knowledge by construction ("what does \"current\"
+    #    mean in physics?", "define release date"). It is checked first so the
+    #    temporal vocabulary in the question cannot be read as a current-information
+    #    requirement - the classic metalinguistic false positive.
+    if reading.definition:
+        notes.append("the request asks for the meaning of a term; stable knowledge")
+        return EVIDENCE_UNNECESSARY, notes
+
     # Priority 1: a ranking/comparison or current/latest fact is not answerable
     # from model memory alone; the evidence gate must block it.
     if reading.comparative or reading.ranking:
@@ -494,6 +596,15 @@ def _evidence_for(
         notes.append("the answer depends on current information")
         return EVIDENCE_REQUIRED, notes
 
+    # 2b. An indirect request ("Can you check what Bitcoin is at?", "Find out which
+    #     phone is newest") hands Atlas a question to answer, so it needs the same
+    #     evidence treatment as the direct form: it asks Atlas to *find something
+    #     out*, which is external evidence, and answering it from model memory
+    #     would be answering a question the user asked Atlas to look up.
+    if reading.indirect_request and reading.subject:
+        notes.append("the user asked Atlas to find this out; external evidence applies")
+        return EVIDENCE_PREFERRED, notes
+
     # 3. A local-machine request is answered from observation, never the web.
     if reading.local:
         notes.append("the request is about this machine; answered from observation")
@@ -503,6 +614,14 @@ def _evidence_for(
     if reading.operation in {OP_TRANSFORM, OP_CREATE} and not _needs_new_facts(task):
         notes.append("the request reshapes content Atlas already has")
         return EVIDENCE_UNNECESSARY, notes
+
+    # 4b. A current-events question with no retrievable subject ("What happened?",
+    #     "Did they win?"). There is no entity to look up, so the only honest
+    #     answer is that the subject must be established first; answering from
+    #     model memory would be inventing a report.
+    if reading.unanchored_event_question:
+        notes.append("a current-events question with no subject; nothing can be retrieved yet")
+        return EVIDENCE_REQUIRED, notes
 
     # 5. An action request is about doing, not about knowing.
     if reading.operation == OP_ACT:
@@ -517,7 +636,15 @@ def _evidence_for(
     # 7. An information request about a real external entity. The answer *may*
     #    depend on current/public information, so evidence materially improves
     #    reliability even though it is not strictly required.
-    if reading.subject and reading.operation in {OP_EXPLAIN, OP_IDENTIFY, OP_RETRIEVE}:
+    #
+    #    An *explanatory* question is excluded: "Why did the 2024 Lakers win?" asks
+    #    Atlas to reason about a subject it already knows, not to find information
+    #    about an entity, so it is answerable from knowledge.
+    if (
+        reading.subject
+        and reading.operation in {OP_EXPLAIN, OP_IDENTIFY, OP_RETRIEVE}
+        and not reading.explanatory
+    ):
         notes.append("external entity; public information may improve reliability")
         return EVIDENCE_PREFERRED, notes
 
@@ -555,6 +682,12 @@ def _ambiguity_for(
 
     unresolved = list(getattr(task, "ambiguities", []) or []) if task else []
     if any("unresolved reference" in item for item in unresolved):
+        return AMBIGUITY_HIGH
+    # An unanchored current-events question ("What happened?", "Did they win?") is
+    # not ambiguous in *meaning* - it is under-specified in *subject*. The honest
+    # move is to ask which event/team, so it is surfaced the same way as an
+    # unresolved reference rather than being answered from model memory.
+    if reading.unanchored_event_question and not reading.subject:
         return AMBIGUITY_HIGH
     if structure.criterion_subjective and not structure.criterion_proxy:
         return AMBIGUITY_MEDIUM

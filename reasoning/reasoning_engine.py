@@ -499,21 +499,6 @@ class ReasoningEngine:
             return f"{period} {core}"
         return core
 
-        # 5. Calendar relations: the relation itself is the useful search term.
-        if relation in {"today", "yesterday", "this_week", "this_month", "this_year",
-                        "last_week", "last_month", "last_year", "last_night", "tonight",
-                        "now", "as_of", "so_far"}:
-            return relation.replace("_", " ")
-
-        # 6. Superlative / current relations: keep the natural query.
-        if relation in {"latest", "newest", "current", "currently", "most_recent"} and not relation.endswith("_completed"):
-            return core
-
-        # 7. Generic fallback: prepend period if it adds information.
-        if period and period not in core and not re.search(r"\b20\d{2}\b", core):
-            return f"{period} {core}"
-        return core
-
     def _gather_web(self, question: str, evidence: EvidenceManager, *, task: Task | None = None, evidence_state: EvidenceState | None = None) -> int:
         # Honour the interpreter's planned web.search parameters (site, cleaned
         # query, sort) when present: they carry more information than the raw

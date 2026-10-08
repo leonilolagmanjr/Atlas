@@ -286,6 +286,40 @@ class TopicReading:
             "resolution": self.resolution.to_dict() if self.resolution is not None else {},
         }
 
+    @classmethod
+    def from_dict(cls, data: Any) -> "TopicReading":
+        """Rebuild a reading from its serialized form.
+
+        Used when a later stage needs the reading the entity pass already made,
+        so the query builder consumes one reading instead of re-parsing the text.
+        Unknown keys are ignored and wrong types fall back to the defaults, so a
+        malformed record yields an empty reading rather than an exception.
+        """
+
+        if not isinstance(data, dict):
+            return cls()
+
+        def text(key: str) -> str:
+            value = data.get(key)
+            return str(value).strip() if isinstance(value, (str, int, float)) else ""
+
+        return cls(
+            raw_topic=text("raw_topic"),
+            connector=text("connector"),
+            stripped_head=text("stripped_head"),
+            content_noun=text("content_noun"),
+            subject=text("subject"),
+            normalized=text("normalized"),
+            query=text("query"),
+            qualifiers=[
+                str(item) for item in (data.get("qualifiers") or []) if str(item).strip()
+            ] if isinstance(data.get("qualifiers"), (list, tuple)) else [],
+            had_connector=bool(data.get("had_connector")),
+            notes=[
+                str(item) for item in (data.get("notes") or []) if str(item).strip()
+            ] if isinstance(data.get("notes"), (list, tuple)) else [],
+        )
+
 
 def normalize_query(
     query: str,

@@ -197,18 +197,24 @@ def classify_turn(text: str) -> TurnClassification:
 
     # Research need is derived from semantic structure, not keyword lists.
     needs_research = False
-    if structure.final_event_result:
+    if structure.final_event_result or structure.event_result:
         needs_research = True
-        signals.append("final_event_result")
-    if structure.intrinsically_current and structure.question_form:
+        signals.append("event_result")
+    if structure.intrinsically_current:
         needs_research = True
-        signals.append("intrinsically_current_question")
+        signals.append("intrinsically_current")
     if structure.comparative or structure.superlative:
         needs_research = True
         signals.append("comparative_or_superlative")
     if structure.freshness == "current":
         needs_research = True
         signals.append("freshness_current")
+    if structure.indirect_request:
+        # An indirect information request ("Can you check what Bitcoin is at?")
+        # hands Atlas a question to answer, so it needs retrieval just like the
+        # direct form of the same question.
+        needs_research = True
+        signals.append("indirect_information_request")
 
     # Explicit retrieval/research phrases: precise, anchored multi-word phrases
     # only. These do not fire on "search algorithm" or "research paper" because
@@ -224,8 +230,19 @@ def classify_turn(text: str) -> TurnClassification:
         needs_research = True
         signals.append("explicit_research_request")
 
-    # A year mention usually signals a request for historical/current retrieval.
-    if re.search(r"\b20\d{2}\b", lowered):
+    # A year *as the object of a question about an event* signals a request for a
+    # historical/current result ("Who won in 2010?"). Three conditions are required:
+    # the request must be a question, it must ask for a *result or fact* rather than
+    # a reason or method ("Why did the 2024 Lakers win?" asks for an explanation,
+    # which is not a retrieval of the result), and it must not already be handled as
+    # a stable/conceptual request.
+    explanatory = re.match(r"^\s*(?:why|how)\b", lowered) is not None
+    if (
+        structure.question_form
+        and not explanatory
+        and structure.freshness != "stable"
+        and re.search(r"\b(?:19|20)\d{2}\b", lowered)
+    ):
         needs_research = True
         signals.append("year_mention")
 

@@ -155,6 +155,34 @@ class SemanticRequest:
     subjective_criterion: bool = False
     objective_criterion: bool = False
     final_event_result: bool = False
+    #: True when the request asks for the factual outcome of an event in any
+    #: surface form ("won", "took the title", "was crowned", "ended up winning").
+    event_result: bool = False
+    #: True when the request names a *time window* instead of an event ("What
+    #: happened last night?"). The window is the subject of the lookup.
+    deictic_time_question: bool = False
+    #: True when the request asks for an event outcome but names no event or
+    #: subject ("What happened?", "Did they win?"), so nothing can be retrieved
+    #: until the subject is established.
+    unanchored_event_question: bool = False
+    #: True when the request is an indirect information request ("Can you check
+    #: what Bitcoin is at?"). It asks Atlas to find something out, so it needs the
+    #: same evidence treatment as the direct form of the same question.
+    indirect_request: bool = False
+    #: True when the request asks Atlas to *explain* something ("why did X win",
+    #: "how does Y work") rather than to tell the user *about* an entity. A preferred
+    #: evidence reading must not turn an explanation into a web lookup.
+    explanatory: bool = False
+    #: True when the request asks for the meaning of a word or term. A definition
+    #: is stable knowledge, so temporal vocabulary in it is the subject, not a
+    #: freshness requirement.
+    definition: bool = False
+    #: True when the answer is the current *value* of something (a price, a count, a
+    #: version). Distinct from an event outcome: the information need is a quantity.
+    value_seeking: bool = False
+    #: The temporal relation the request names ("latest", "last_night", "yesterday"),
+    #: or "" when none is named. Resolved by the temporal authority, not re-derived.
+    temporal_relation: str = ""
 
     # -- derived helpers -------------------------------------------------------
 
@@ -210,6 +238,14 @@ class SemanticRequest:
             "subjective_criterion": self.subjective_criterion,
             "objective_criterion": self.objective_criterion,
             "final_event_result": self.final_event_result,
+            "event_result": self.event_result,
+            "deictic_time_question": self.deictic_time_question,
+            "unanchored_event_question": self.unanchored_event_question,
+            "indirect_request": self.indirect_request,
+            "explanatory": self.explanatory,
+            "definition": self.definition,
+            "value_seeking": self.value_seeking,
+            "temporal_relation": self.temporal_relation,
         }
 
     @classmethod
@@ -302,6 +338,14 @@ class SemanticRequest:
             subjective_criterion=flag("subjective_criterion"),
             objective_criterion=flag("objective_criterion"),
             final_event_result=flag("final_event_result"),
+            event_result=flag("event_result"),
+            deictic_time_question=flag("deictic_time_question"),
+            unanchored_event_question=flag("unanchored_event_question"),
+            indirect_request=flag("indirect_request"),
+            explanatory=flag("explanatory"),
+            definition=flag("definition"),
+            value_seeking=flag("value_seeking"),
+            temporal_relation=text("temporal_relation"),
         )
 
 

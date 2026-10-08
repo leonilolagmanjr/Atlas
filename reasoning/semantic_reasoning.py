@@ -148,7 +148,23 @@ class SemanticReasoning:
         reading = self._understanding.understand(
             text, task=task, history=history, prior_task=prior_task
         )
-        evidence = self._evidence.decide(reading, question=text)
+        # The temporal authority resolves the request's time window once. The
+        # evidence policy composes the retrieval query from it as meaning
+        # (subject + relation + period), so query generation and freshness read the
+        # same resolution instead of each re-deriving time from the sentence.
+        temporal_period = ""
+        try:
+            from reasoning.temporal_resolution import TemporalResolver
+
+            temporal_period = TemporalResolver().resolve_from_structure(
+                text,
+                final_event_result=reading.final_event_result,
+                freshness=reading.freshness_requirement,
+                superlative=reading.comparative,
+            ).resolved_period
+        except Exception:  # noqa: BLE001 - resolution is best-effort, never fatal
+            logger.exception("Temporal resolution failed during semantic reasoning")
+        evidence = self._evidence.decide(reading, question=text, temporal_period=temporal_period)
         capabilities = self._capabilities.plan(reading, evidence, task=task)
 
         # Reconcile: the evidence decision is authoritative, so the reading and

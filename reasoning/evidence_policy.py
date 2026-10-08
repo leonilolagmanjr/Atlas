@@ -180,8 +180,20 @@ class EvidencePolicy:
 
     # -- evidence requirement ---------------------------------------------------
 
-    def decide(self, reading: SemanticRequest, *, question: str = "") -> EvidenceDecision:
-        """Return the evidence decision for a semantic reading."""
+    def decide(
+        self,
+        reading: SemanticRequest,
+        *,
+        question: str = "",
+        temporal_period: str = "",
+    ) -> EvidenceDecision:
+        """Return the evidence decision for a semantic reading.
+
+        ``temporal_period`` is the resolved time window the request refers to
+        ("2026", "last night") supplied by the temporal authority, so the
+        retrieval query is composed from meaning (subject + relation + period)
+        rather than from the raw sentence.
+        """
 
         decision = EvidenceDecision(
             requirement=reading.evidence_requirement,
@@ -202,13 +214,23 @@ class EvidencePolicy:
                 temporal_scope="realtime" if reading.current_knowledge else ("historical" if reading.historical_knowledge else "stable"),
             ),
         )
-        if reading.current_knowledge or reading.latest_request or reading.most_recent_request or reading.ranking or reading.dynamic_quantity:
+        if reading.definition:
+            # A definition is stable knowledge by construction ("what does \"current\"
+            # mean in physics?"). The policy is the second component to read the
+            # reading's evidence requirement, so it must honour this the same way the
+            # semantic layer did: the temporal word in a definition is the subject
+            # being defined, never a live fact, and never a ranking over candidates.
+            decision.requirement = EVIDENCE_UNNECESSARY
+            decision.freshness = FRESHNESS_STABLE
+        elif reading.current_knowledge or reading.latest_request or reading.most_recent_request \
+                or (reading.ranking and not _is_temporal_superlative(reading)) \
+                or reading.dynamic_quantity:
             decision.requirement = EVIDENCE_REQUIRED
             decision.freshness = FRESHNESS_CURRENT
         elif reading.stable_knowledge:
             decision.requirement = EVIDENCE_UNNECESSARY
             decision.freshness = FRESHNESS_STABLE
-        decision.query = _retrieval_query(reading, question=question)
+        decision.query = _retrieval_query(reading, question=question, temporal_period=temporal_period)
 
         # A subjective criterion with no measurable proxy: Atlas must reason about
         # the ambiguity rather than present a generation as an objective answer.
@@ -544,32 +566,74 @@ def _slug(value: str) -> str:
     return slug or "criterion"
 
 
-def _retrieval_query(reading: SemanticRequest, *, question: str) -> str:
-    """Build the query Atlas should retrieve with.
+def _is_temporal_superlative(reading: SemanticRequest) -> bool:
+    """True when a 'ranking' is really a recency request over one thing.
 
-    For a ranking, the query combines the candidate set with the criterion (and
-    the proxy when one exists), because "most famous Minecraft YouTuber" is
-    answered by searching for a ranking, not by searching the raw sentence. For
-    everything else, the subject is the query - never the raw instruction, so
-    instruction language cannot leak into a tool call.
+    "The latest iPhone" and "the newest Pixel" are flagged `ranking` because
+    "latest"/"newest" are superlative morphemes, but they name *one* thing's newest
+    instance rather than a candidate set to rank. Reading them as a ranking made
+    the evidence policy demand extra sources the request never needed, so the
+    distinction is made here from the reading's own temporal relation.
     """
 
-    subject = (reading.subject or "").strip()
-    if reading.comparative:
-        parts: list[str] = []
-        if subject:
-            parts.append(subject)
-        elif reading.candidate_set:
-            parts.append(reading.candidate_set)
-        if reading.criterion_proxy:
-            parts.append(reading.criterion_proxy)
-        elif reading.criterion:
-            parts.append(reading.criterion)
-        if parts:
-            return " ".join(dict.fromkeys(parts)).strip()
-    if subject:
-        return subject
-    return _strip_noise(question)
+    relation = (reading.temporal_relation or "").casefold()
+    for suffix in ("_completed", "_ongoing"):
+        if relation.endswith(suffix):
+            relation = relation[: -len(suffix)]
+            break
+    if relation in {"latest", "newest", "most_recent", "current", "currently", "now", "recently"}:
+        return True
+    return bool(reading.latest_request or reading.most_recent_request) and not reading.candidate_set
+
+
+def _retrieval_query(
+    reading: SemanticRequest,
+    *,
+    question: str,
+    temporal_period: str = "",
+) -> str:
+    """Build the query Atlas should retrieve with, from interpreted meaning.
+
+    This is the single place a research query is constructed. It composes the
+    query from the semantic components the understanding layer resolved (the
+    relation, the subject, the temporal period, the criterion), rather than
+    reshaping the user's raw sentence, so paraphrases of one question converge on
+    one query and an unfamiliar entity needs no new rule. The composition itself
+    lives in :mod:`reasoning.semantic_query`.
+    """
+
+    from reasoning.semantic_query import build_query
+
+    outcome_noun = _outcome_noun(reading)
+    result = build_query(
+        question=question,
+        subject=reading.subject or reading.candidate_set,
+        relation=reading.goal,
+        event_result=bool(reading.event_result or reading.final_event_result),
+        outcome_noun=outcome_noun,
+        temporal_period=temporal_period,
+        comparative=bool(reading.comparative or reading.ranking),
+        criterion=reading.criterion_proxy or reading.criterion,
+        candidate_set=reading.candidate_set,
+        value_seeking=bool(reading.dynamic_quantity and not reading.comparative),
+    )
+    return result.query
+
+
+def _outcome_noun(reading: SemanticRequest) -> str:
+    """Return the outcome noun the request named, if any ("champion", "score")."""
+
+    from reasoning.semantic_analysis import _EVENT_RESULT_NOUNS
+
+    haystack = " ".join(
+        str(part or "") for part in (
+            reading.subject, reading.criterion, reading.goal, reading.requested_output,
+        )
+    ).casefold()
+    for noun in sorted(_EVENT_RESULT_NOUNS, key=len, reverse=True):
+        if re.search(rf"\b{re.escape(noun)}\b", haystack):
+            return noun
+    return ""
 
 
 def _strip_noise(text: str) -> str:

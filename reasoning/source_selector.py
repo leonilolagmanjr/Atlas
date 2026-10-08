@@ -195,12 +195,20 @@ class SourceSelector:
                 ),
                 current_information_required=True,
             )
-        # "preferred" evidence: the web is consulted for a grounded answer, but
-        # the request does NOT mandate live current information. The plan keeps
-        # the model as the fallback so a retrieval failure still produces an honest
-        # answer rather than a fabricated one.
+        # "preferred" evidence means grounded evidence would *improve* reliability,
+        # so it is honoured for a request that asks Atlas about an *external entity*
+        # ("Who is MrBeast?", "Tell me about X"). It is NOT honoured for a request
+        # that asks Atlas to *explain* something it already knows ("Why did the 2024
+        # Lakers win?", "What does recursion mean?"): those are reasoning questions
+        # about a well-known subject, and consulting the web for them would turn an
+        # explanation into a search. The distinction is the information need, which
+        # the semantic reading already resolved (``wants_explanation``), not a
+        # keyword.
+        if signals.wants_explanation and not signals.time_sensitive:
+            return None
         reasons.append(
-            "the request concerns an external entity; grounded evidence is more reliable"
+            "the request concerns an external entity and asks about it; "
+            "grounded evidence is more reliable"
         )
         return self._plan(
             (SourceType.WEB, SourceType.MODEL),

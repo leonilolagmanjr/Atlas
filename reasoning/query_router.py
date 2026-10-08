@@ -186,7 +186,16 @@ class RoutingSignals:
     #: to source selection, so routing follows *meaning* rather than a keyword.
     evidence_requirement: str = "unnecessary"
     #: True when the semantic layer judged the request a ranking/comparison.
+    #: True when a ranking/comparison is required.
     comparative: bool = False
+    #: True when the user asked Atlas to *find something out* - a retrieval verb, a
+    #: "look something up" frame, or a request for current facts.
+    wants_retrieval: bool = False
+    #: True when the request asks Atlas to *explain* something rather than to look it
+    #: up ("Why did X win in 2024?", "How does a search algorithm work?"). An
+    #: explanation concerns a subject Atlas already knows about, so a
+    #: *preferred*-evidence reading must not turn it into a web lookup.
+    wants_explanation: bool = False
     #: The subject the semantic reading resolved, if any. A self-query deferral
     #: only holds when this is empty: a message that merely contains "you" but
     #: names an entity is an external-information request.
@@ -219,6 +228,8 @@ class RoutingSignals:
             "has_actions": self.has_actions,
             "evidence_requirement": self.evidence_requirement,
             "comparative": self.comparative,
+            "wants_retrieval": self.wants_retrieval,
+            "wants_explanation": self.wants_explanation,
             "semantic_subject": self.semantic_subject,
             "contextual": self.contextual,
             "features": list(self.features),
@@ -309,6 +320,33 @@ class QueryRouter:
         semantic_notes = tuple(getattr(task, "interpretation_notes", []) or ())
         reading = getattr(task, "semantic_reading", {}) or {}
         semantic_subject = str(reading.get("subject") or "").strip() if isinstance(reading, dict) else ""
+        # Did the user ask Atlas to *find something out*? This is read from the
+        # request's shape rather than re-derived: an explicit web request, a current
+        # fact, an indirect "check/find out" frame, or an event result. A question
+        # that merely names an entity ("Why did X win in 2024?") is not a retrieval
+        # request, which is what keeps a *preferred*-evidence reading from becoming
+        # a web lookup.
+        wants_retrieval = bool(
+            explicit_web_request
+            or time_sensitive
+            or (isinstance(reading, dict) and reading.get("indirect_request"))
+            or (isinstance(reading, dict) and reading.get("event_result"))
+            or task.current_information_required
+        )
+        if wants_retrieval:
+            features.append("retrieval_intent")
+        # An *explanation* ask ("Why did X win?", "How does Y work?") is answered
+        # from what Atlas knows: the subject is well-known, and the information need
+        # is reasoning, not retrieval. It is read from the semantic reading's
+        # operation, which the understanding layer derived from structure.
+        wants_explanation = bool(
+            isinstance(reading, dict)
+            and reading.get("explanatory")
+            and not reading.get("event_result")
+            and not reading.get("indirect_request")
+        )
+        if wants_explanation:
+            features.append("explanation_intent")
 
         return RoutingSignals(
             text=text,
@@ -327,6 +365,8 @@ class QueryRouter:
             contextual=contextual,
             evidence_requirement=evidence_requirement,
             comparative=comparative,
+            wants_retrieval=wants_retrieval,
+            wants_explanation=wants_explanation,
             semantic_subject=semantic_subject,
             semantic_notes=semantic_notes,
             sources=tuple(task.sources) if task.source == "llm" or task.sources != ["model"] else (),
@@ -339,11 +379,25 @@ class QueryRouter:
 
     @staticmethod
     def _time_sensitive(lowered: str, task: Task, features: list[str]) -> bool:
-        """Return True when the request needs information that changes over time."""
+        """Return True when the request needs information that changes over time.
 
-        value = _matches_terms(lowered, _TIME_SENSITIVE_TERMS) or str(
-            task.entities.get("sort") or ""
-        ) in {"latest", "newest"}
+        The semantic reading is the authority for freshness: it read the request's
+        structure (an event result, an intrinsically current noun, a recency
+        relation) and decided whether the answer is live. The router must not run a
+        second, independent keyword check, because the two can disagree - a
+        *definition* ("what does \"current\" mean in physics?") contains a
+        time-sensitive word but is stable knowledge. The router therefore reads the
+        semantic decision and only falls back to vocabulary when no decision exists
+        (a task IR built by a caller that never ran the semantic layer).
+        """
+
+        reading = getattr(task, "semantic_reading", None) or {}
+        if isinstance(reading, dict) and reading.get("freshness_requirement"):
+            value = reading.get("freshness_requirement") == "current"
+        else:
+            value = _matches_terms(lowered, _TIME_SENSITIVE_TERMS) or str(
+                task.entities.get("sort") or ""
+            ) in {"latest", "newest"}
         if value:
             features.append("time_sensitive")
         return value
