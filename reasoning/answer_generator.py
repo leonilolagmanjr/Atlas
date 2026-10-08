@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from config import PROJECT_ROOT
+from providers.exceptions import ProviderError
 from reasoning.evidence_manager import EvidenceManager
 from reasoning.reasoning_models import (
     ConfidenceLevel,
@@ -74,6 +75,14 @@ def _load_prompt(name: str, fallback: str) -> str:
     except OSError:
         logger.warning("Answer prompt %s unavailable; using built-in fallback", name)
         return fallback
+
+
+def _err_type_name() -> str:
+    """Best-effort name of the exception currently being handled."""
+
+    import sys
+    exc = sys.exc_info()[1]
+    return type(exc).__name__ if exc is not None else "unknown"
 
 
 _FALLBACK_ANSWER_PROMPT = (
@@ -149,6 +158,11 @@ class AnswerGenerator:
             return None
         try:
             return self._ask(system_prompt=system_prompt, user_prompt=user_prompt)
+        except ProviderError:
+            # The provider layer already logged the failure detail. Do not
+            # re-print the same traceback at every abstraction layer.
+            logger.warning("Answer generation: provider unavailable (%s)", _err_type_name())
+            return None
         except Exception:  # noqa: BLE001 - a model failure must never crash a task
             logger.exception("Answer generation failed")
             return None
@@ -190,6 +204,9 @@ class AnswerGenerator:
                         on_token=on_token,
                         should_stop=should_stop,
                     )
+                except ProviderError:
+                    logger.warning("Streaming answer generation: provider unavailable")
+                    return ""
                 except Exception:  # noqa: BLE001 - reported honestly by the caller
                     logger.exception("Streaming answer generation failed")
                     return ""
@@ -199,6 +216,9 @@ class AnswerGenerator:
             return ""
         try:
             text = self._ask(system_prompt=system_prompt, user_prompt=user_prompt)
+        except ProviderError:
+            logger.warning("Answer generation: provider unavailable")
+            return ""
         except Exception:  # noqa: BLE001
             logger.exception("Answer generation failed")
             return ""

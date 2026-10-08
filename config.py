@@ -49,6 +49,13 @@ LEGACY_LESSONS_FILE: Path = LEGACY_MEMORY_FOLDER / "interpretation_lessons.jsonl
 
 # ---- Ollama / LLM ----
 OLLAMA_MODEL: str = "qwen2.5:7b"
+# Timeout policy for local Ollama requests.
+# Read/generation timeout: allows time for model loading + token generation.
+# Connect timeout: fails fast when Ollama is not running.
+OLLAMA_CONNECT_TIMEOUT_SECONDS: float = 10.0
+OLLAMA_READ_TIMEOUT_SECONDS: float = 120.0
+# Per-call timeout (seconds) for local Qwen reasoning stages.
+REASONING_TIMEOUT_SECONDS: float = 60.0
 
 
 # ---- Knowledge / Indexing ----

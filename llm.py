@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
+from providers.exceptions import ProviderError
 from providers.ollama_provider import OllamaProvider
 
 
@@ -20,6 +21,10 @@ def ask(*, system_prompt: str, user_prompt: str) -> str:
     provider = OllamaProvider()
     try:
         return provider.ask(system_prompt=system_prompt, user_prompt=user_prompt)
+    except ProviderError:
+        # The provider layer already logged the failure. Re-raise as a typed
+        # exception so callers can distinguish timeout, connection failure, etc.
+        raise
     except Exception:
         logger.exception("LLM call failed")
         raise
@@ -47,10 +52,12 @@ def stream(
             on_token=on_token,
             should_stop=should_stop,
         )
+    except ProviderError:
+        # The provider layer already logged the failure.
+        raise
     except Exception:
         logger.exception("LLM streaming call failed")
         raise
-
 
 
 class _ModuleStreamer:

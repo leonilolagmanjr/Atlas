@@ -28,6 +28,7 @@ from typing import Callable, Iterable
 
 from config import AUTO_SUMMARIZE_THRESHOLD, CONVERSATION_SUMMARY_MIN_MESSAGES
 from memory.models import MemoryMessage
+from providers.exceptions import ProviderError
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +222,9 @@ class MemorySummarizer:
         )
         try:
             produced = self._ask(system_prompt=_SUMMARY_SYSTEM, user_prompt=prompt)
+        except ProviderError:
+            logger.warning("Conversation summarization failed; using deterministic notes")
+            return deterministic
         except Exception:  # noqa: BLE001 - a model failure must not lose the summary
             logger.exception("Conversation summarization failed; using deterministic notes")
             return deterministic

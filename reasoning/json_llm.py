@@ -12,6 +12,8 @@ import logging
 import re
 from typing import Any
 
+from providers.exceptions import ProviderError, ProviderTimeout
+
 logger = logging.getLogger(__name__)
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
@@ -69,11 +71,23 @@ def safe_reasoning_call(
 
     ``ask`` is injected so this module never imports the concrete provider and
     remains trivially testable with a fake model.
+
+    Provider-layer failures (timeout, connection failure, model error) are
+    logged once at the provider boundary and surfaced here as typed
+    exceptions. A timeout is logged at INFO (it is a recoverable condition
+    that higher layers handle) and all other provider errors at WARNING.
+    The full traceback is not re-printed at this layer.
     """
 
     try:
         raw = ask(system_prompt=system_prompt, user_prompt=user_prompt)
-    except Exception:  # noqa: BLE001 - LLM availability must never crash a task
+    except ProviderTimeout:
+        logger.info("Reasoning LLM call timed out")
+        return None
+    except ProviderError:
+        logger.warning("Reasoning LLM call failed due to provider error")
+        return None
+    except Exception:
         logger.exception("Reasoning LLM call failed")
         return None
 

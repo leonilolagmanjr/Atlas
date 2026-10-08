@@ -42,7 +42,16 @@ from typing import Any, Callable
 
 from memory.memory_manager import MemoryManager
 from memory.models import RESPONSE_KINDS
+from providers.exceptions import ProviderError
 from reasoning.semantic_analysis import analyze_structure
+
+def _provider_err_name() -> str:
+    """Best-effort name of the currently-handled ProviderError subclass."""
+
+    import sys
+    exc = sys.exc_info()[1]
+    return type(exc).__name__ if isinstance(exc, ProviderError) else "unknown"
+
 
 logger = logging.getLogger(__name__)
 
@@ -959,6 +968,17 @@ class ConversationRuntime:
                 on_token=on_token,
                 should_stop=token.is_cancelled,
             )
+        except ProviderError:
+            # The provider layer already logged the failure detail. Do not
+            # re-print the same traceback; fall back to the blocking path.
+            logger.warning("Streaming answer: provider unavailable (%s)", _provider_err_name())
+            return self._blocking_fallback(
+                generator=generator,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                token=token,
+                emit=emit,
+            )
         except Exception:  # noqa: BLE001 - a model failure is reported, not hidden
             logger.exception("Streaming answer failed")
             return self._blocking_fallback(
@@ -1002,6 +1022,9 @@ class ConversationRuntime:
             return ""
         try:
             text = ask(system_prompt=system_prompt, user_prompt=prompt)
+        except ProviderError:
+            logger.warning("Blocking fallback answer failed: provider unavailable")
+            return ""
         except Exception:  # noqa: BLE001
             logger.exception("Blocking fallback answer failed")
             return ""

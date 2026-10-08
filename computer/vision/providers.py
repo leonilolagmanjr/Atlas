@@ -19,6 +19,7 @@ model. There is deliberately no cloud computer-use provider.
 
 from __future__ import annotations
 
+import httpx
 import json
 import logging
 import re
@@ -124,10 +125,19 @@ class OllamaVisionProvider(VisionProvider):
             raise VisionUnavailable("No local vision model is configured")
         import ollama
 
+        from config import OLLAMA_CONNECT_TIMEOUT_SECONDS
+
         prompt = build_vision_prompt(task=task, question=question, context=context)
         effective_timeout = float(timeout if timeout is not None else self._timeout)
+        timeout = httpx.Timeout(
+            timeout=effective_timeout,
+            connect=OLLAMA_CONNECT_TIMEOUT_SECONDS,
+            read=effective_timeout,
+            write=effective_timeout,
+            pool=effective_timeout,
+        )
         try:
-            with ollama.Client(timeout=effective_timeout) as client:
+            with ollama.Client(timeout=timeout) as client:
                 response = client.chat(
                     model=self._model,
                     messages=[
