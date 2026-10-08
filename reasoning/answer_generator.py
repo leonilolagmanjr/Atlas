@@ -238,6 +238,14 @@ class AnswerGenerator:
         prompt = self._evidence_prompt.format(evidence=rendered, question=question)
         if history.strip():
             prompt = f"Conversation so far:\n{history}\n\n{prompt}"
+        # Anchor the answer to the system clock and to the retrieved evidence for
+        # time-sensitive requests. Without this the model's pretrained knowledge
+        # can override fresher retrieved evidence (e.g. asserting an older NBA
+        # Finals winner than the one in the evidence). The frame is taken from the
+        # temporal resolution the engine already produced from the system clock.
+        directive = self._freshness_directive(task)
+        if directive:
+            prompt = f"{prompt}\n\n{directive}"
         for note in notes:
             if note:
                 prompt = f"{prompt}\n\n{note}"
@@ -265,6 +273,42 @@ class AnswerGenerator:
             confidence_level=ConfidenceLevel.HIGH if provenance else ConfidenceLevel.LOW,
             used_model=False,
             citations=citations,
+        )
+
+    def _freshness_directive(self, task: Any) -> str:
+        """Return a current-date + evidence-priority note for time-sensitive answers.
+
+        The engine resolves temporal expressions once against the system clock and
+        stores the result on the task. Reusing it here keeps a single temporal
+        authority: no new clock, no re-resolution. The note exists because a model
+        answering a "latest/current" question will otherwise fall back to its
+        pretrained knowledge and ignore the fresher retrieved evidence.
+        """
+
+        if task is None:
+            return ""
+        resolution = (getattr(task, "context", {}) or {}).get("temporal_resolution") or {}
+        if float(resolution.get("confidence") or 0.0) <= 0.5:
+            return ""
+        relation = str(resolution.get("relation") or "").casefold()
+        # Only "latest / current / most recent" style requests need the model told
+        # to prefer the retrieved evidence over its pretrained memory. A historical
+        # question (an explicit year) is answered from retrieved evidence as usual.
+        if not (relation.startswith("latest") or relation.startswith("most_recent")
+                or relation in {"newest", "current", "currently", "now", "as_of", "so_far"}):
+            return ""
+        reference = str(resolution.get("reference_time") or "").split("T")[0]
+        period = str(resolution.get("resolved_period") or "").strip()
+        if not reference and not period:
+            return ""
+        anchor = f"Today's date is {reference}." if reference else ""
+        window = f" The question refers to {period}." if period else ""
+        return (
+            f"{anchor}{window} This request is time-sensitive: the retrieved "
+            "evidence above reflects the current state and must take priority over "
+            "your pretrained knowledge, which may be out of date. If the evidence "
+            "names a more recent outcome than you recall, state the one in the "
+            "evidence and name its source."
         )
 
     def _synthesized_answer(self, question: str, task: Any, provenance: list, citations: list, history: str = "", notes: Iterable[str] = ()) -> Answer:

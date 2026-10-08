@@ -857,5 +857,99 @@ class TemporalSearchQueryTests(unittest.TestCase):
             self.assertEqual(query, "today")
 
 
+class TemporalEvidencePriorityTests(unittest.TestCase):
+    """Fresh web evidence must override the model's pretrained knowledge.
+
+    Regression for the class of bug where "Who won the latest NBA Finals?"
+    retrieved a current (e.g. 2026) page but the final answer repeated an older
+    season the model remembered. The retrieved evidence was correct all along;
+    the synthesis prompt never told the model that it was current, so pretrained
+    knowledge won. The grounded answer must carry the system-clock date and an
+    explicit instruction to prefer the retrieved evidence.
+    """
+
+    class _CapturingAsk:
+        def __init__(self) -> None:
+            self.user_prompt = ""
+
+        def __call__(self, *, system_prompt: str = "", user_prompt: str = "", **_kw) -> str:
+            self.user_prompt = user_prompt
+            return "The 2026 NBA Finals was won by the Denver Nuggets."
+
+    def _evidence(self) -> EvidenceManager:
+        evidence = EvidenceManager()
+        evidence.add_web_results(
+            {
+                "provider": "test",
+                "results": [
+                    {
+                        "title": "2026 NBA Finals - Wikipedia",
+                        "url": "https://en.wikipedia.org/wiki/2026_NBA_Finals",
+                        "snippet": "The 2026 NBA Finals was won by the Denver Nuggets over the New York Knicks.",
+                    }
+                ],
+            }
+        )
+        return evidence
+
+    def _task_with_resolution(self, question: str, **resolve_kwargs) -> Task:
+        from reasoning.temporal_resolution import TemporalResolver
+
+        task = Task(goal=question, original_prompt=question)
+        resolution = TemporalResolver().resolve_from_structure(question, **resolve_kwargs)
+        task.context["temporal_resolution"] = resolution.to_dict()
+        return task
+
+    def test_latest_question_anchors_answer_to_system_clock_and_evidence(self) -> None:
+        ask = self._CapturingAsk()
+        generator = AnswerGenerator(ask=ask)
+        task = self._task_with_resolution(
+            "Who won the latest NBA Finals?",
+            final_event_result=True,
+            freshness="current",
+            superlative=True,
+        )
+        today = str(task.context["temporal_resolution"]["reference_time"]).split("T")[0]
+
+        generator.grounded(
+            "Who won the latest NBA Finals?",
+            self._evidence(),
+            mode=ResponseMode.WEB_RESEARCH,
+            task=task,
+        )
+
+        self.assertIn(today, ask.user_prompt)
+        self.assertIn("must take priority over your pretrained knowledge", ask.user_prompt)
+        self.assertIn("2026", ask.user_prompt)
+
+    def test_historical_year_question_is_not_treated_as_current(self) -> None:
+        ask = self._CapturingAsk()
+        generator = AnswerGenerator(ask=ask)
+        task = self._task_with_resolution("Who won the 2019 NBA Finals?")
+
+        generator.grounded(
+            "Who won the 2019 NBA Finals?",
+            self._evidence(),
+            mode=ResponseMode.WEB_RESEARCH,
+            task=task,
+        )
+
+        self.assertNotIn("must take priority over your pretrained knowledge", ask.user_prompt)
+
+    def test_stable_question_gets_no_freshness_directive(self) -> None:
+        ask = self._CapturingAsk()
+        generator = AnswerGenerator(ask=ask)
+        task = self._task_with_resolution("What is a variable in Python?")
+
+        generator.grounded(
+            "What is a variable in Python?",
+            self._evidence(),
+            mode=ResponseMode.WEB_RESEARCH,
+            task=task,
+        )
+
+        self.assertNotIn("must take priority over your pretrained knowledge", ask.user_prompt)
+
+
 if __name__ == "__main__":
     unittest.main()
