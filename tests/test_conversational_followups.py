@@ -356,5 +356,92 @@ class ClassificationGeneralityTests(unittest.TestCase):
         self.assertFalse(resolved.contextual)
 
 
+class TemporalCarryForwardRegressionTests(unittest.TestCase):
+    """A follow-up question must inherit the temporal anchor from prior turns.
+
+    Regression: "Who was the Finals MVP?" after "Who won the NBA Finals in 2025?"
+    must carry forward the year 2025 instead of defaulting to the current year.
+    """
+
+    def test_follow_up_inherits_year_from_history_query(self) -> None:
+        from reasoning.semantic_reasoning import SemanticReasoning
+        from models_task import Task
+
+        caps = frozenset({
+            "web.search", "web.fetch", "web.research",
+            "filesystem.list", "filesystem.read", "filesystem.search",
+            "filesystem.search_content", "filesystem.metadata",
+            "system.info", "processes.list",
+            "content.generate", "content.format",
+        })
+
+        class _FakeCaps:
+            def __iter__(self):
+                return iter(sorted(caps))
+            def names(self):
+                return sorted(caps)
+            def exists(self, name):
+                return name in caps
+
+        history = "User: Who won the NBA Finals in 2025?\nAssistant: Searching the web."
+        semantics = SemanticReasoning(ask=None, capabilities=_FakeCaps())
+        task = Task(original_prompt="Who was the Finals MVP?", goal="answer", task_type="informational")
+        decision = semantics.reason("Who was the Finals MVP?", task=task, history=history)
+
+        self.assertEqual("required", decision.reading.evidence_requirement)
+        self.assertEqual("current", decision.reading.freshness_requirement)
+        self.assertIn("2025", decision.evidence.query)
+
+    def test_follow_up_without_history_has_no_explicit_year(self) -> None:
+        from reasoning.semantic_reasoning import SemanticReasoning
+        from models_task import Task
+
+        caps = frozenset({
+            "web.search", "web.fetch", "web.research",
+            "filesystem.read", "content.generate",
+        })
+
+        class _FakeCaps:
+            def __iter__(self):
+                return iter(sorted(caps))
+            def names(self):
+                return sorted(caps)
+            def exists(self, name):
+                return name in caps
+
+        semantics = SemanticReasoning(ask=None, capabilities=_FakeCaps())
+        task = Task(original_prompt="Who was the Finals MVP?", goal="answer", task_type="informational")
+        decision = semantics.reason("Who was the Finals MVP?", task=task)
+
+        # Without history, the query does not carry an explicit year.
+        self.assertNotIn("2025", decision.evidence.query)
+        self.assertNotIn("2024", decision.evidence.query)
+
+    def test_explicit_year_in_follow_up_not_overridden_by_different_history(self) -> None:
+        from reasoning.semantic_reasoning import SemanticReasoning
+        from models_task import Task
+
+        caps = frozenset({
+            "web.search", "web.fetch", "web.research",
+            "filesystem.read", "content.generate",
+        })
+
+        class _FakeCaps:
+            def __iter__(self):
+                return iter(sorted(caps))
+            def names(self):
+                return sorted(caps)
+            def exists(self, name):
+                return name in caps
+
+        history = "User: What happened last night?\nAssistant: Checking."
+        semantics = SemanticReasoning(ask=None, capabilities=_FakeCaps())
+        task = Task(original_prompt="Who won the 2023 championship?", goal="answer", task_type="informational")
+        decision = semantics.reason("Who won the 2023 championship?", task=task, history=history)
+
+        # The explicit year in the current text takes priority over history.
+        self.assertIn("2023", decision.evidence.query)
+
+
 if __name__ == "__main__":
     unittest.main()

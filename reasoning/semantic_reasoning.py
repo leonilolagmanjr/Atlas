@@ -161,6 +161,7 @@ class SemanticReasoning:
                 final_event_result=reading.final_event_result,
                 freshness=reading.freshness_requirement,
                 superlative=reading.comparative,
+                history=history,
             ).resolved_period
         except Exception:  # noqa: BLE001 - resolution is best-effort, never fatal
             logger.exception("Temporal resolution failed during semantic reasoning")

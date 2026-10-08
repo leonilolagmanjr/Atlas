@@ -94,7 +94,7 @@ class SemanticUnderstanding:
 
         structure = analyze_structure(prompt)
         deterministic = self._deterministic(prompt, task=task, structure=structure,
-                                            prior_task=prior_task)
+                                             prior_task=prior_task, history=history)
 
         if self._ask is None or task is None:
             return deterministic
@@ -152,6 +152,7 @@ class SemanticUnderstanding:
         task: Task | None,
         structure: StructuralReading,
         prior_task: Task | None,
+        history: str = "",
     ) -> SemanticRequest:
         reading = SemanticRequest()
         subject = _subject_of(task, text)
@@ -174,6 +175,18 @@ class SemanticUnderstanding:
         from reasoning.temporal_resolution import temporal_relation
 
         reading.temporal_relation = temporal_relation(text or "")
+        # When the current request does not name a temporal relation but the
+        # conversation history does, carry forward the prior temporal context.
+        # This is what lets a follow-up like "Who was the Finals MVP?" after
+        # "Who won the NBA Finals in 2025?" keep the year 2025 instead of
+        # defaulting to the current year. Only a *temporal anchor* (a year or a
+        # recency expression) is inherited; non-temporal history is ignored so
+        # the carry-forward is narrow and predictable.
+        if not reading.temporal_relation and (history or "").strip():
+            prior_relation = temporal_relation(history)
+            if prior_relation:
+                reading.temporal_relation = prior_relation
+                reading.notes.append("temporal relation inherited from conversation context")
         reading.latest_request = reading.temporal_relation in {
             "latest", "latest_completed", "newest", "most_recent", "most_recent_completed",
             "current", "currently", "now", "recently", "recent",

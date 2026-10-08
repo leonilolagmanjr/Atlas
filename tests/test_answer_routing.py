@@ -95,5 +95,57 @@ class WebAnswerRoutingTests(unittest.TestCase):
         self.assertFalse(answer.used_model)
 
 
+class EventOutcomeGroundingTests(unittest.TestCase):
+    """Synthesis must resolve which participant is the event's winner.
+
+    Regression for a "who won <event>?" answer naming the runner-up instead of
+    the winner, even though the retrieved evidence stated the result. The flat
+    evidence (conference rounds, runner-up, final) gave the model no rule for
+    picking the outcome subject, so it could attach "won" to any participant.
+    The evidence-grounded prompt must instruct it to answer with the winner and
+    distinguish the winner from other participants.
+    """
+
+    def _evidence(self) -> EvidenceManager:
+        evidence = EvidenceManager()
+        evidence.add_web_page({
+            "url": "https://example.com/2026_final",
+            "title": "2026 Final - Example",
+            "text": (
+                "The 2026 Final was the championship of the 2026 season. "
+                "In the first semi-final, the Northside Reds beat the Eastport Blues. "
+                "In the second semi-final, the Southbay Kings beat the Westgate Owls. "
+                "The Reds beat the Kings 4-1 to win the 2026 championship. "
+                "The Kings were the runners-up."
+            ),
+        })
+        return evidence
+
+    def test_who_won_prompt_requires_winner_distinction(self) -> None:
+        ask = _RecordingAsk()
+        generator = AnswerGenerator(ask=ask)
+        task = Task(goal="Who won the 2026 Final?", original_prompt="Who won the 2026 Final?")
+
+        generator.grounded(
+            "Who won the 2026 Final?",
+            self._evidence(),
+            mode=ResponseMode.WEB_RESEARCH,
+            task=task,
+        )
+
+        prompt = ask.last_prompt.lower()
+        self.assertIn("winner", prompt)
+        # The rule that prevents naming the runner-up/other participant.
+        self.assertIn("distinguish the winner from other participants", prompt)
+        self.assertIn("runner-up", prompt)
+
+    def test_fallback_prompt_also_carries_the_winner_rule(self) -> None:
+        from reasoning.answer_generator import _FALLBACK_EVIDENCE_PROMPT
+
+        rendered = _FALLBACK_EVIDENCE_PROMPT.format(evidence="E", question="Q").lower()
+        self.assertIn("winner", rendered)
+        self.assertIn("runner-up", rendered)
+
+
 if __name__ == "__main__":
     unittest.main()

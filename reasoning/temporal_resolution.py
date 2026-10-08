@@ -307,6 +307,7 @@ class TemporalResolver:
         final_event_result: bool = False,
         freshness: str = "any",
         superlative: bool = False,
+        history: str = "",
     ) -> TemporalResolution:
         """Resolve using semantic structure hints from the request.
 
@@ -315,8 +316,39 @@ class TemporalResolver:
         ``final_event_result`` request with ``freshness=current`` and a
         superlative temporal expression should resolve to the most recent
         *completed* occurrence.
+
+        ``history`` is the bounded conversation context (prior turns). When the
+        current request names no temporal expression of its own, the resolver
+        looks for a temporal anchor in the history so a follow-up such as "Who
+        was the Finals MVP?" inherits the year from the preceding "Who won the
+        NBA Finals in 2025?" rather than defaulting to the current year.
         """
         base = self.resolve(text)
+        if base.confidence == 0.0 and history:
+            from_history = self.resolve(history)
+            if from_history.confidence > 0.0 and from_history.resolved_period:
+                # Carry forward the temporal anchor from conversation context
+                # only when the current request did not name its own. The
+                # relation and completion_state come from the *current* request's
+                # structure (it may be a different kind of question), but the
+                # resolved period and its window inherit the prior anchor.
+                expression = from_history.expression
+                relation = from_history.relation
+                completion_state = "completed"
+                if final_event_result:
+                    completion_state = "completed"
+                elif freshness == "stable":
+                    completion_state = "any"
+                return TemporalResolution(
+                    expression=expression,
+                    relation=relation,
+                    reference_time=self.reference_time,
+                    resolved_period=from_history.resolved_period,
+                    resolved_start=from_history.resolved_start,
+                    resolved_end=from_history.resolved_end,
+                    completion_state=completion_state,
+                    confidence=0.85,
+                )
         if base.confidence == 0.0:
             return base
 
@@ -364,6 +396,18 @@ class TemporalResolver:
             if relation.endswith(suffix):
                 base_relation = relation[: -len(suffix)] if suffix else relation
                 break
+
+        if base_relation == "explicit_year":
+            return TemporalResolution(
+                expression=expression,
+                relation="explicit_year",
+                reference_time=reference_time,
+                resolved_period=expression,
+                resolved_start=None,
+                resolved_end=None,
+                completion_state=completion_state,
+                confidence=0.95,
+            )
 
         local_now = reference_time.astimezone()
         today = local_now.date()

@@ -12,6 +12,7 @@ import sys
 import time
 import unittest
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -949,6 +950,77 @@ class TemporalEvidencePriorityTests(unittest.TestCase):
         )
 
         self.assertNotIn("must take priority over your pretrained knowledge", ask.user_prompt)
+
+
+class TemporalFutureLabelRegressionTests(unittest.TestCase):
+    """A completed event must not be framed as future data.
+
+    Regression for "Who won the NBA Finals?" answering with a caveat that the
+    retrieved 2026 result is "future event data" even though the current system
+    date is October 2026. The plain question names no temporal relation, so the
+    synthesis prompt carried no current-date anchor and the model applied its own
+    (pre-2026) sense of "now". The fix anchors current-event answers to the
+    existing system clock and states that a year at/before the current year is
+    not in the future.
+    """
+
+    FIXED_NOW = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
+    NOT_FUTURE_PHRASE = "do not describe it as a future event"
+
+    def _task(self, question: str, *, current: bool, reading: dict) -> Task:
+        from reasoning.temporal_resolution import TemporalResolver
+
+        task = Task(goal=question, original_prompt=question)
+        resolution = TemporalResolver(reference_time=self.FIXED_NOW).resolve_from_structure(
+            question,
+            final_event_result=bool(reading.get("final_event_result")),
+            freshness=reading.get("freshness", "any"),
+            superlative=False,
+        )
+        task.context["temporal_resolution"] = resolution.to_dict()
+        task.current_information_required = current
+        task.semantic_reading = dict(reading)
+        return task
+
+    def _directive(self, question: str, *, current: bool, reading: dict) -> str:
+        return AnswerGenerator(ask=FakeAsk())._freshness_directive(
+            self._task(question, current=current, reading=reading)
+        )
+
+    def test_completed_current_year_event_is_not_labeled_future(self) -> None:
+        directive = self._directive(
+            "Who won the NBA Finals?",
+            current=True,
+            reading={"final_event_result": True, "freshness": "current"},
+        )
+        self.assertIn("2026-10-09", directive)
+        self.assertIn(self.NOT_FUTURE_PHRASE, directive)
+
+    def test_future_event_is_not_told_it_already_occurred(self) -> None:
+        # A request explicitly anchored to a future year is answered as before:
+        # no current-date/not-future directive is imposed on it.
+        directive = self._directive(
+            "Who will win the 2027 NBA Finals?",
+            current=False,
+            reading={"freshness": "current"},
+        )
+        self.assertNotIn(self.NOT_FUTURE_PHRASE, directive)
+
+    def test_historical_event_behavior_unchanged(self) -> None:
+        directive = self._directive(
+            "Who won the 2019 NBA Finals?",
+            current=False,
+            reading={"final_event_result": True, "freshness": "historical"},
+        )
+        self.assertEqual(directive, "")
+
+    def test_stable_question_has_no_directive(self) -> None:
+        directive = self._directive(
+            "What is a variable in Python?",
+            current=False,
+            reading={},
+        )
+        self.assertEqual(directive, "")
 
 
 if __name__ == "__main__":
