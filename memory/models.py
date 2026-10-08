@@ -16,6 +16,20 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def system_now() -> datetime:
+    """Return the current local datetime with timezone information.
+
+    This is the authoritative system clock for Atlas.  It prefers the host's
+    local timezone so relative temporal expressions (``today``, ``last night``)
+    resolve correctly for the user's locale.  Fallback is UTC.
+    """
+    utc = utcnow()
+    try:
+        return utc.astimezone()
+    except Exception:
+        return utc.replace(tzinfo=timezone.utc)
+
+
 #: Execution states a persisted assistant turn can carry. These are the
 #: *actual* recorded states, not display conveniences: a cancelled turn stays
 #: ``cancelled`` even after a restart.

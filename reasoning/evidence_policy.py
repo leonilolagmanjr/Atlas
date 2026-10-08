@@ -28,6 +28,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from reasoning.reasoning_models import SourceType
 from reasoning.semantic_request import (
     AMBIGUITY_HIGH,
     EVIDENCE_PREFERRED,
@@ -257,12 +258,26 @@ class EvidencePolicy:
 
         assessment = EvidenceAssessment(status=SUFFICIENT, reasons=[])
         if reading.comparative or reading.ranking:
-            if evidence_count < MIN_SOURCES_FOR_RANKING:
+            # A temporal superlative ("most recent", "latest", "current") names an
+            # objective point in time or the latest completed occurrence; it is
+            # not a value judgment, so one authoritative source is enough.  A
+            # genuinely comparative request ("best", "most famous") needs multiple
+            # candidates to compare.
+            criterion = str(reading.criterion or "")
+            is_temporal_superlative = (
+                reading.comparative
+                and not _is_subjective(criterion)
+                and not reading.subjective_criterion
+            )
+            threshold = MIN_SOURCES_FOR_CURRENT if is_temporal_superlative else MIN_SOURCES_FOR_RANKING
+            if evidence_count < threshold:
+                kind = "intermediate_state" if reading.final_event_result and not is_temporal_superlative else "stale"
                 return EvidenceAssessment(
                     status=INSUFFICIENT,
-                    kind="intermediate_state" if reading.final_event_result else "wrong_granularity",
-                    retry="re-query_with_completed_result_or_ranked_source",
-                    reasons=["ranking requires a completed result or a ranked candidate set"],
+                    kind=kind,
+                    retry="re-query_with_completed_result_or_ranked_source" if not is_temporal_superlative else "query_for_latest_available_final_state",
+                    reasons=["ranking requires a completed result or a ranked candidate set"] if not is_temporal_superlative
+                    else ["latest/most-recent queries need fresh evidence"],
                 )
             if evidence_conflicting:
                 return EvidenceAssessment(
@@ -289,6 +304,20 @@ class EvidencePolicy:
                     retry="query_with_freshness_qualifier",
                     reasons=["current fact requires fresh evidence"],
                 )
+            # Current-information requests must be grounded in retrieved web
+            # evidence, not in local knowledge that may be stale.  A retrieved
+            # local-knowledge hit is not a substitute for fresh web evidence.
+            has_web = any(
+                hasattr(item, "source_type") and item.source_type is SourceType.WEB
+                for item in (evidence_items or [])
+            )
+            if not has_web:
+                return EvidenceAssessment(
+                    status=INSUFFICIENT,
+                    kind="stale",
+                    retry="query_with_freshness_qualifier",
+                    reasons=["current fact requires fresh web evidence; only local knowledge was available"],
+                )
             return assessment
 
         if reading.latest_request or reading.most_recent_request:
@@ -298,6 +327,17 @@ class EvidencePolicy:
                     kind="stale",
                     retry="query_for_latest_available_final_state",
                     reasons=["latest/most-recent queries need fresh evidence"],
+                )
+            has_web = any(
+                hasattr(item, "source_type") and item.source_type is SourceType.WEB
+                for item in (evidence_items or [])
+            )
+            if not has_web:
+                return EvidenceAssessment(
+                    status=INSUFFICIENT,
+                    kind="stale",
+                    retry="query_for_latest_available_final_state",
+                    reasons=["latest/most-recent queries need fresh web evidence; only local knowledge was available"],
                 )
             return assessment
 
@@ -375,7 +415,18 @@ class EvidencePolicy:
             )
 
         if decision.needs_comparison:
-            if evidence_count >= MIN_SOURCES_FOR_RANKING:
+            # A temporal superlative ("most recent", "latest") names an objective
+            # point in time or the latest completed occurrence; it is not a value
+            # judgment, so one authoritative source is enough.  A genuinely
+            # comparative request ("best", "most famous") needs multiple candidates.
+            criterion = str(decision.criterion or "")
+            is_temporal_superlative = (
+                decision.needs_comparison
+                and not _is_subjective(criterion)
+                and not decision.subjective_without_proxy
+            )
+            threshold = MIN_SOURCES_FOR_CURRENT if is_temporal_superlative else MIN_SOURCES_FOR_RANKING
+            if evidence_count >= threshold:
                 return Answerability(
                     status=SUFFICIENT,
                     action=STATUS_ACTIONS[SUFFICIENT],

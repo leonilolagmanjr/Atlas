@@ -207,6 +207,7 @@ class ClassificationTests(unittest.TestCase):
             "Who is the current F1 champion?",
             "What is the current price of Bitcoin?",
             "What's Bitcoin worth right now?",
+            "What is Bitcoin trading at?",
         ):
             with self.subTest(text=text):
                 result = classify_turn(text)

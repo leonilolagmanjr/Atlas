@@ -629,5 +629,74 @@ class TemporalFreshnessTests(unittest.TestCase):
         self.assertIn("subjective", answer.text.lower())
 
 
+class TemporalSearchQueryTests(unittest.TestCase):
+    """Temporal resolution must produce a better web search query."""
+
+    def setUp(self) -> None:
+        self.runner = _empty_web_runner()
+        self.engine = build_engine(FakeAsk(), self.runner)
+
+    def _task_with_context(self, question: str, temporal_dict: dict) -> Task:
+        task = Task(goal=question, original_prompt=question)
+        task.context["temporal_resolution"] = temporal_dict
+        return task
+
+    def test_most_recent_event_generates_year_qualified_query(self) -> None:
+        task = self._task_with_context(
+            "Who won the most recent NBA Finals?",
+            {
+                "relation": "most_recent_completed",
+                "resolved_period": "2026",
+                "completion_state": "completed",
+                "confidence": 0.9,
+            },
+        )
+        answer = self.engine.handle_request(question=task.goal, task=task)
+        self.assertIsNotNone(answer)
+        web_calls = [(name, params) for name, params in self.runner.calls if name == "web.search"]
+        self.assertTrue(web_calls, "a web search should have been attempted")
+        query = web_calls[0][1].get("query", "")
+        self.assertIn("2026", query)
+        self.assertIn("nba finals", query)
+        self.assertIn("winner", query)
+
+    def test_latest_version_keeps_natural_query(self) -> None:
+        task = self._task_with_context(
+            "What is the latest iPhone?",
+            {
+                "relation": "latest",
+                "resolved_period": "2026",
+                "completion_state": "any",
+                "confidence": 0.8,
+            },
+        )
+        answer = self.engine.handle_request(question=task.goal, task=task)
+        self.assertIsNotNone(answer)
+        web_calls = [(name, params) for name, params in self.runner.calls if name == "web.search"]
+        if web_calls:
+            query = web_calls[0][1].get("query", "")
+            self.assertIn("iphone", query)
+            self.assertIn("latest", query)
+
+    def test_today_generates_calendar_query(self) -> None:
+        task = self._task_with_context(
+            "What happened today?",
+            {
+                "relation": "today",
+                "resolved_period": "2026-10-08",
+                "resolved_start": "2026-10-08",
+                "resolved_end": "2026-10-08",
+                "completion_state": "completed",
+                "confidence": 1.0,
+            },
+        )
+        answer = self.engine.handle_request(question=task.goal, task=task)
+        self.assertIsNotNone(answer)
+        web_calls = [(name, params) for name, params in self.runner.calls if name == "web.search"]
+        if web_calls:
+            query = web_calls[0][1].get("query", "")
+            self.assertEqual(query, "today")
+
+
 if __name__ == "__main__":
     unittest.main()

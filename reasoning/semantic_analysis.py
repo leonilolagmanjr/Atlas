@@ -267,6 +267,10 @@ def analyze_structure(text: str) -> StructuralReading:
         reading.criterion = "value"
         reading.criterion_proxy = "price, specs, and alternatives"
         reading.markers.append("value_evaluation")
+    elif re.search(r"\b(?:trading\s+at|traded\s+at|current\s+(?:price|value|rate|cost|worth|level))\b", lowered):
+        reading.intrinsically_current = True
+        reading.freshness = "current"
+        reading.markers.append("market_value_question")
     elif re.search(r"\bworth\b", lowered) and not re.search(r"\bfor\s+what\s+it'?s\s+worth\b", lowered):
         reading.intrinsically_current = True
         reading.freshness = "current"

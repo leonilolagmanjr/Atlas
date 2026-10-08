@@ -25,6 +25,7 @@ from reasoning.reasoning_models import (
 )
 from reasoning.self_introspection import SelfIntrospection
 from reasoning.source_selector import SourceSelector
+from reasoning.temporal_resolution import TemporalResolver, TemporalResolution
 from reasoning.topic_extraction import normalize_query
 from web_task import reformulate_query, validate_content, detect_source_type, RetrievalTask
 #: Read-only research capabilities the reasoning engine performs itself while
@@ -149,6 +150,21 @@ class ReasoningEngine:
             )
         # Store on task for answer generator
         task.evidence_state = evidence_state
+        
+        # Resolve temporal expressions once, before source gathering.  The
+        # resolution is cheap, deterministic, and authoritative (system clock).
+        # Downstream sources (web search, evidence evaluation) read it from the
+        # task context so they all share the same temporal frame.
+        resolver = TemporalResolver()
+        temporal_resolution = resolver.resolve_from_structure(
+            question,
+            final_event_result=bool(getattr(task, "semantic_reading", {}).get("final_event_result")),
+            freshness=getattr(task, "semantic_reading", {}).get("freshness", "any"),
+            superlative=bool(getattr(task, "comparative", False)),
+        )
+        task.context["temporal_resolution"] = temporal_resolution.to_dict()
+        run.trace.record(ReasoningStage.UNDERSTANDING, "temporal resolution",
+                         temporal=temporal_resolution.to_dict())
         
         signals = self._router.route(question, task=task, prior_task=prior_task,
                                      history=history, self_introspection=self._introspection)
@@ -395,6 +411,109 @@ class ReasoningEngine:
             logger.exception("Reasoning source %s failed", source.value)
         return 0
 
+    def _temporal_search_query(self, question: str, temporal_dict: dict[str, Any]) -> str:
+        """Reformulate a search query using the resolved temporal context.
+
+        The goal is to turn a natural-language question into a search-optimized
+        query that includes the resolved time period.  For example:
+
+            "Who won the most recent NBA Finals?"
+            -> "2026 NBA Finals winner"
+        """
+        relation = str(temporal_dict.get("relation") or "").casefold()
+        period = str(temporal_dict.get("resolved_period") or "").strip()
+        completion = str(temporal_dict.get("completion_state") or "").casefold()
+        expression = str(temporal_dict.get("expression") or "").strip()
+
+        lowered = question.casefold().strip(" ?.")
+
+        # 1. Strip leading question words and auxiliaries.
+        core = re.sub(
+            r"^(?:who|what|which|where|when|why|how|is|are|was|were|do|does|did|can|could|would|should)\s+(?:is\s+|are\s+|was\s+|were\s+|did\s+|do\s+|does\s+)?",
+            "",
+            lowered,
+        ).strip()
+
+        if not core:
+            return question
+
+        # 2. Calendar relations: the relation itself is the useful search term.
+        if relation in {"today", "yesterday", "this_week", "this_month", "this_year",
+                        "last_week", "last_month", "last_year", "last_night", "tonight",
+                        "now", "as_of", "so_far"}:
+            return relation.replace("_", " ")
+
+        # 3. Remove the resolved temporal expression only for completed events,
+        #    where the resolved period will replace it.  For superlatives like
+        #    "latest iPhone", keep the expression because it is the query.
+        if relation.endswith("_completed") or completion == "completed":
+            if expression:
+                expr_pat = re.escape(expression.casefold())
+                core = re.sub(
+                    r"\b(?:the\s+)?(?:" + expr_pat + r")(?:\s+(?:of|for|in|at|by|to)\s+\w+(?:\s+\w+){0,3})?\b",
+                    "",
+                    core,
+                    flags=re.IGNORECASE,
+                ).strip()
+
+        # 4. Clean articles, possessives, and whitespace.
+        core = re.sub(r"\s+", " ", core).strip()
+        core = re.sub(r"\b(?:the|a|an)\s+", "", core, flags=re.IGNORECASE).strip()
+        core = re.sub(r"'s\s+", " ", core, flags=re.IGNORECASE).strip()
+        core = core.strip(" ?.")
+
+        # 5. Event-result: reformulate as "[event] winner".
+        if re.search(r"\b(?:won|win|winner|victory|championship|champion)\b", core, re.IGNORECASE):
+            if re.search(r"\b(?:won|win)\b", core, re.IGNORECASE):
+                # "won nba finals" -> "nba finals winner"
+                event = re.sub(
+                    r"^\b(?:won|win)\b\s*",
+                    "",
+                    core,
+                    flags=re.IGNORECASE,
+                ).strip()
+            else:
+                # "nba finals winner" -> "nba finals"
+                event = re.sub(
+                    r"\b(?:winner|victory|championship|champion)\b.*",
+                    "",
+                    core,
+                    flags=re.IGNORECASE,
+                ).strip()
+            event = re.sub(r"\b(?:the|a|an)\s+", "", event, flags=re.IGNORECASE).strip()
+            event = re.sub(r"\s+", " ", event).strip()
+            if event:
+                core = f"{event} winner"
+            else:
+                core = re.sub(r"\b(?:won|win)\b", "winner", core, flags=re.IGNORECASE)
+            if period and period not in core and not re.search(r"\b20\d{2}\b", core):
+                return f"{period} {core}"
+            return core
+
+        # 6. Superlative / current relations: keep the natural query.
+        if relation in {"latest", "newest", "current", "currently", "most_recent"}:
+            return core
+
+        # 7. Generic fallback: prepend period if it adds information.
+        if period and period not in core and not re.search(r"\b20\d{2}\b", core):
+            return f"{period} {core}"
+        return core
+
+        # 5. Calendar relations: the relation itself is the useful search term.
+        if relation in {"today", "yesterday", "this_week", "this_month", "this_year",
+                        "last_week", "last_month", "last_year", "last_night", "tonight",
+                        "now", "as_of", "so_far"}:
+            return relation.replace("_", " ")
+
+        # 6. Superlative / current relations: keep the natural query.
+        if relation in {"latest", "newest", "current", "currently", "most_recent"} and not relation.endswith("_completed"):
+            return core
+
+        # 7. Generic fallback: prepend period if it adds information.
+        if period and period not in core and not re.search(r"\b20\d{2}\b", core):
+            return f"{period} {core}"
+        return core
+
     def _gather_web(self, question: str, evidence: EvidenceManager, *, task: Task | None = None, evidence_state: EvidenceState | None = None) -> int:
         # Honour the interpreter's planned web.search parameters (site, cleaned
         # query, sort) when present: they carry more information than the raw
@@ -407,6 +526,27 @@ class ReasoningEngine:
                     parameters.setdefault("query", question)
                     parameters.setdefault("max_results", self._web_max_results)
                     break
+        
+        # If the task carries a temporal resolution, use it to formulate a
+        # temporally-aware search query.  "Who won the most recent NBA Finals?"
+        # becomes "2026 NBA Finals winner" - a much better search query.
+        if task is not None and parameters.get("query") == question:
+            temporal_dict = getattr(task, "context", {}).get("temporal_resolution", {}) or {}
+            if temporal_dict.get("confidence", 0.0) > 0.5:
+                # Prefer the interpreter's cleaned query when available; fall back
+                # to normalizing the raw question so connector words do not leak
+                # into the tool call.
+                cleaned = (
+                    getattr(task, "research_query", "") or
+                    getattr(task, "normalized_topic", "") or
+                    question
+                )
+                temporaled_query = self._temporal_search_query(cleaned, temporal_dict)
+                if temporaled_query and temporaled_query != cleaned:
+                    parameters = dict(parameters)
+                    parameters["query"] = temporaled_query
+                    if task is not None:
+                        task.context.setdefault("temporal_resolution", {})["search_query"] = temporaled_query
         search = self._execute("web.search", parameters)
         if search is None:
             return 0
