@@ -667,27 +667,25 @@ Most runtime settings are Python constants in `config.py`; there is no backend `
 | `EXECUTION_MODE` | `confirm` | `safe`, `confirm`, or `autonomous` permission policy |
 | `COMPUTER_ROOT` | Repository root | Allowed filesystem root |
 | `KNOWLEDGE_FOLDER` / `KNOWLEDGE_GLOB` | `knowledge/` / `*.pdf` | Startup knowledge inputs |
-| `DATABASE_FOLDER` / `COLLECTION_NAME` | `database/` / `atlas_knowledge` | Chroma persistence and collection |
-| `INDEX_STATE_FILE` / `TASK_STORE_FILE` | `database/index_state.json` / `database/tasks.json` | Index hashes and API task snapshots |
+| `CHROMA_FOLDER` / `COLLECTION_NAME` | `chroma/` / `atlas_knowledge` | Chroma persistence directory and collection |
 | `EMBEDDING_MODEL_NAME` | `all-MiniLM-L6-v2` | Sentence-transformers embedding model |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `500` / `100` | Character-based knowledge chunking |
 | `TOP_K` / `MIN_SIMILARITY` | `5` / `0.75` | Retrieval ranking/acceptance inputs |
-| `MEMORY_FOLDER` / `MAX_RETAINED_MESSAGES` | `memory/` / `10` | Session storage and prompt history window |
+| `MAX_RETAINED_MESSAGES` | `10` | Prompt history window (recent turns kept verbatim in context) |
 | `CONTEXT_MAX_RECENT_TURNS` / `CONTEXT_MAX_OLDER_TURNS` | `12` / `6` | Recent turns kept verbatim and relevant older turns recalled into one context |
 | `CONTEXT_MAX_CHARS` / `CONTEXT_RELEVANCE_FLOOR` | `12000` / `0.35` | Total context character budget and the minimum relevance for a recalled older turn |
 | `CONTEXT_LEXICAL_FALLBACK` | `True` | Allow deterministic lexical recall when embeddings are unavailable |
 | `CONVERSATION_INDEX_ENABLED` / `CONVERSATION_COLLECTION_NAME` | `True` / `atlas_conversation` | Semantic conversation search and its separate Chroma collection (never mixed with knowledge) |
 | `CONVERSATION_SUMMARY_MIN_MESSAGES` | `12` | Messages after which a real conversation summary is produced |
-| `ENABLE_USER_MEMORY` / `USER_MEMORY_FILE` | `True` / `database/user_memory.jsonl` | Long-term user memory and its durable store |
+| `ENABLE_USER_MEMORY` | `True` | Master switch for long-term user memory |
 | `USER_MEMORY_COLLECTION_NAME` / `USER_MEMORY_RETRIEVAL_LIMIT` | `atlas_user_memory` / `4` | Separate embedding collection and bounded retrieval into one context |
 | `USER_MEMORY_MAX_RECORDS` | `2000` | Retained user-memory cap |
 | `ENABLE_CONVERSATION_STREAMING` | `True` | Allow Server-Sent Event streaming of real execution events |
 | `MAX_SESSIONS` / `AUTO_SAVE` | `50` / `True` | Session-count warning threshold (creation still proceeds) and autosave |
 | `AUTO_SUMMARIZE_THRESHOLD` | `80` | Refresh cadence for an existing conversation summary (the first summary is produced at `CONVERSATION_SUMMARY_MIN_MESSAGES`) |
-| `LOG_LEVEL` / `LOG_TO_FILE` / `LOG_FILE` | `INFO` / `False` / `database/atlas.log` | Logging |
+| `LOG_LEVEL` / `LOG_TO_FILE` / `LOG_FILE` | `INFO` / `False` / `logs/atlas.log` | Logging |
 | `LOG_RETRIEVAL` / `DEBUG_PIPELINE` | `True` / `False` | Retrieval diagnostics and structured pipeline tracing |
 | `ENABLE_EXPERIENCE_MEMORY` | `True` | Master switch for the feedback/experience loop; when false no experience is recorded or retrieved |
-| `EXPERIENCE_STORE_FILE` / `FEEDBACK_STORE_FILE` | `database/experiences.jsonl` / `database/feedback.jsonl` | Durable experience records and feedback answers |
 | `EXPERIENCE_COLLECTION_NAME` | `atlas_experience` | Separate Chroma collection for experience embeddings (never mixed with knowledge) |
 | `EXPERIENCE_RETRIEVAL_LIMIT` / `EXPERIENCE_MIN_RELEVANCE` | `4` / `0.35` | Bounded retrieval count and relevance floor for planning context |
 | `EXPERIENCE_ANALYSIS_THRESHOLD` / `EXPERIENCE_MAX_RECORDS` | `8` / `5000` | Evaluations required before periodic analysis; retained record cap |
