@@ -794,6 +794,59 @@ Manual smoke checks should separately confirm local Ollama availability, one gen
 
 `scripts/smoke_conversation.py` drives a **live** conversation through the real app with the real Brain, the real tool registry, and the real local model: a question, a context-dependent follow-up, a real read-only task, a request the root check refuses, long-term memory, conversation search, streaming, cancellation, and a restart that must find the conversation, transcript, and memory intact. It redirects the conversation store to a temporary folder, so a smoke run never touches the real conversations and never mutates anything on the machine. `scripts/smoke_reasoning.py` is the offline reasoning smoke test.
 
+### Behavioral evaluation (`evaluation/`)
+
+The unit-style suite above covers *components* (a tool's parameter validation, an interpreter's field mapping). It does not cover *behavioral contracts* — "the user says X, and Atlas actually selects tool Y". The evaluation package fills that gap. It is **a pytest module, not a second test framework**: each case is one parametrized pytest test, so pytest's own reporting and exit code are the source of truth.
+
+Run the simulated (offline, deterministic) cases:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+.\.venv\Scripts\python.exe -m pytest evaluation/test_evaluation.py -v
+```
+
+Also run the live cases (real local model, network, Windows application control):
+
+```powershell
+$env:ATLAS_EVAL_LIVE='1'
+.\.venv\Scripts\python.exe -m pytest evaluation/test_evaluation.py -v
+```
+
+The same runner is usable without pytest, and always writes the JSON report:
+
+```powershell
+.\.venv\Scripts\python.exe -m evaluation            # simulated only
+.\.venv\Scripts\python.exe -m evaluation --live     # simulated + live
+```
+
+Outputs: one console line per case (`PASS`/`FAIL`/`BLOCKED` plus a reason, grouped by category) and a machine-readable JSON report at `evaluation_reports/evaluation.json` (override with `ATLAS_EVAL_REPORT`), consumable by CI. A `FAIL` carries a single attribution — `atlas_behavior`, `harness_error`, or `external_dependency` (or `unknown`, with the raw data preserved). A `BLOCKED` case is reported as a pytest skip and is **excluded** from the pass/fail statistics; it is not a failure.
+
+**How a case is decided.** Each case is served through the real Conversation Runtime (the single execution path — it is never bypassed), and its outcome is read from the runtime's *event stream* (`tool_started` / `tool_completed` / `assistant_started` / ...), never from the wording of the final answer. Expectations are structured, decidable assertions, not free text.
+
+**How to add a case.** Add an `EvalCase` to the relevant tuple in `evaluation/cases.py`. A minimal example:
+
+```python
+EvalCase(
+    id="routing.example_question_stays_local",
+    category=CATEGORY_ROUTING,
+    description="A stable conceptual question must not trigger retrieval.",
+    user_message="What is a linked list?",
+    expected_behavior=Expectation(
+        forbidden_tools=("web.search", "web.fetch", "web.research"),
+        expect_direct_answer=True,
+    ),
+)
+```
+
+The fields are: `id` (unique), `category` (one of `routing` / `continuity` / `clarification` / `evidence` / `honesty`), `description`, `user_message`, optional `conversation_setup` (preceding turns for continuity), `expected_behavior` (`Expectation`), `verification_method`, `requires` (dependency names: `local_model` / `web` / `windows` / `vision_ocr` / `vision_vlm`), `skip_if_missing` (default `True` — a required missing dependency makes the case `BLOCKED`; set `False` when the missing dependency *is* the test target and the honest-degradation behavior should be evaluated), `live` (run only under `ATLAS_EVAL_LIVE=1`), and `tool_overrides` (simulated-only tool faking, e.g. forcing a tool to fail). `Expectation` supports `required_tools`, `required_tools_any_of` (one of each group), `forbidden_tools`, `tool_sequence`, `expected_kind` (the *classification* decision), `expect_clarification`, `expect_citations`, `expect_failure_report`, `expect_delegation`, `expect_direct_answer`, `max_turns`, and `forbid_repeat_of`.
+
+**Simulated versus live.** A *simulated* case runs offline with a deterministic model boundary, deterministic tool outputs and LLM interpretation disabled, so it is reproducible in CI and tests Atlas's **deterministic routing layer**. A *live* case uses the real local model and real tools. The two are counted separately in the report (`counts_by_mode`) and are never mixed. Simulated results do **not** establish live model quality; live results depend on the local model, network and Windows being available.
+
+The evaluation system adds no new documentation file and is not run by `unittest discover` (it is a pytest module under `evaluation/`, kept out of `tests/` so the existing suite's `unittest` discovery is unchanged).
+
+**Currently known BLOCKED cases.** In the simulated run on this machine no case is blocked (`web`, `windows` and `local_model` are available). A case blocks only when a dependency it requires is unavailable: the four cases requiring `local_model` (declared `live`) block when the configured Ollama model is not pulled, and the Windows cases block on a non-Windows host. `vision_ocr` is currently unavailable on this host (no `pytesseract` and no `tesseract` on `PATH`), so the vision-degradation layer is reported as `degraded` in the run's dependency snapshot even though no catalog case is blocked by it.
+
+
 ## Limitations and security
 
 - **Not a sandbox:** Python/tool processes run with the user's OS privileges. Root checks, permission policy, and PowerShell validation reduce exposure but do not provide OS isolation. See [SECURITY.md](SECURITY.md).
