@@ -69,6 +69,19 @@ _MUTATING_PREFIXES: tuple[str, ...] = (
 )
 
 
+#: Read-only local capabilities. A request the interpreter has already resolved to
+#: one of these is answered from the machine, never from the public web: a folder
+#: listing, a file read, or a machine observation cannot be satisfied by a search
+#: engine, so the semantic layer must not "upgrade" it into a retrieval step.
+_LOCAL_READ_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        "filesystem.list", "filesystem.read", "filesystem.search",
+        "filesystem.search_content", "filesystem.metadata",
+        "system.info", "processes.list", "computer.observe",
+        "computer.vision_observe", "computer.find", "computer.windows",
+    }
+)
+
 @dataclass
 class CapabilityRequirement:
     """One capability Atlas judged useful, with why and with what arguments."""
@@ -210,6 +223,29 @@ class CapabilityPlanner:
                 )
             return requirements
 
+        # A local request: observe or read from this machine, never search the web.
+        #
+        # This branch must come BEFORE the current-information branch below. A
+        # request about the local machine ("my files", "my screen", a named local
+        # folder) or one the interpreter already resolved to a local capability
+        # (filesystem.list, system.info, computer.observe, ...) can never be
+        # satisfied by a public web search. Earlier this branch came second, so a
+        # local listing that the semantic layer happened to score as "needing
+        # evidence" was force-upgraded into a web.search - the same request then
+        # ran a public search and returned "no relevant information found".
+        if self._is_local(reading, task):
+            capability = self._local_capability(reading, task)
+            if capability:
+                requirements.append(
+                    CapabilityRequirement(
+                        capability=capability,
+                        need="local_observation",
+                        parameters=_parameters_for(capability, reading, decision),
+                        reason="the request concerns this machine, not the public web",
+                    )
+                )
+            return requirements
+
         # A current-information question: retrieve before answering.
         if reading.freshness_requirement == FRESHNESS_CURRENT or decision.requirement == EVIDENCE_REQUIRED:
             capability = self._best_available(_WEB_SEARCH_CANDIDATES)
@@ -220,19 +256,6 @@ class CapabilityPlanner:
                         need="current_information",
                         parameters=_parameters_for(capability, reading, decision),
                         reason="the answer may depend on current/public information",
-                    )
-                )
-            return requirements
-
-        # A local-machine request: observe, never search the web.
-        if reading.local:
-            if self._available("system.info"):
-                requirements.append(
-                    CapabilityRequirement(
-                        capability="system.info",
-                        need="local_observation",
-                        parameters={},
-                        reason="the request is about this machine",
                     )
                 )
             return requirements
@@ -282,6 +305,86 @@ class CapabilityPlanner:
         return requirements
 
     # -- helpers ----------------------------------------------------------------
+
+    def _is_local(self, reading: SemanticRequest, task: Task | None) -> bool:
+        """True when this request is answered from the machine, not the web.
+
+        Two independent signals, either sufficient:
+
+        * the reading marked the request *local* ("my files", "my screen", a
+          named local folder); or
+        * the interpreter already resolved the request to a local read-only
+          capability and did **not** also plan an external retrieval, so the
+          request is served locally by construction.
+
+        A genuine hybrid (the interpreter planned a web capability as well) is
+        deliberately NOT local: the external facts are still required and must
+        not be suppressed.
+        """
+
+        if reading.local:
+            return True
+        if task is None:
+            return False
+        planned = {action.capability for action in task.actions}
+        if not planned:
+            return False
+        # A planned web/research capability means external facts are genuinely
+        # needed (a hybrid); keep the current-information behaviour for it.
+        if planned & (set(_WEB_SEARCH_CANDIDATES) | set(_RESEARCH_CANDIDATES)):
+            return False
+        # A planned content-generation-only request is generative, not local
+        # observation; leave it to the OP_CREATE branch.
+        if planned <= {"content.generate"}:
+            return False
+        # A purely local operation (list/read/observe) is answered here. Only a
+        # *non-mutating* local plan qualifies, so a local write still keeps its
+        # normal (permission-gated) path and is not silently declared local.
+        return bool(planned & _LOCAL_READ_CAPABILITIES)
+
+    def _local_capability(self, reading: SemanticRequest, task: Task | None) -> str | None:
+        """Pick the local capability that answers a local request.
+
+        Ordered by specificity, and always validated against the live registry:
+
+        1. a capability the interpreter already planned (it knows what the
+           request actually asked for: a folder listing, a file read);
+        2. screen/window observation, when the request is *about the screen*;
+        3. ``system.info`` as the general "this machine" answer.
+
+        Returns ``None`` when no local capability is available, so the caller
+        records nothing rather than inventing a capability Atlas does not have.
+        """
+
+        if task is not None:
+            planned = [
+                action.capability
+                for action in task.actions
+                if action.capability in _LOCAL_READ_CAPABILITIES
+            ]
+            for capability in planned:
+                if self._available(capability):
+                    return capability
+        if reading.local and self._reading_is_visual(reading) and not (task and task.actions):
+            for capability in (
+                "computer.vision_observe", "computer.observe", "computer.find",
+            ):
+                if self._available(capability):
+                    return capability
+        for capability in ("system.info", "computer.observe"):
+            if self._available(capability):
+                return capability
+        return None
+
+    @staticmethod
+    def _reading_is_visual(reading: SemanticRequest) -> bool:
+        """True when a local request is about seeing the screen, not the machine."""
+
+        subject = str(getattr(reading, "subject", "") or "").casefold()
+        return any(
+            marker in subject
+            for marker in ("screen", "window", "monitor", "display", "desktop", "browser")
+        )
 
     def _best_available(self, candidates: tuple[str, ...]) -> str | None:
         for name in candidates:

@@ -71,6 +71,17 @@ _TRANSFORM_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"\brewrite\s+(?:it|that|this|them)\b", "rewrite"),
 )
 
+#: Verbs that *produce* content within the same request. When one of these
+#: appears before a destination phrase ("search the web for X and put it in
+#: Notepad"), the pronoun refers to that clause's own result, not to an earlier
+#: turn's output, so the message is self-contained and must not be treated as a
+#: back-reference.
+_PRODUCING_VERBS_RE = re.compile(
+    r"\b(?:search|research|look\s+up|google|browse|find|fetch|read|get|grab|generate|"
+    r"write|create|draft|summari[sz]e|translate|calculate|compute|make)\b",
+    re.IGNORECASE,
+)
+
 #: Destination phrases whose object is a reference ("put that in Notepad").
 _PUT_REFERENCE_RE = re.compile(
     r"\b(?:put|place|write|paste|type|save|store|copy|add|insert|dump)\s+"
@@ -380,7 +391,15 @@ class ReferenceResolver:
                 break
 
         # 4. Destination-only reference ("put that in Notepad", "save it").
-        if _PUT_REFERENCE_RE.search(text):
+        #
+        # Only a *destination-only* request is a back-reference. When the same
+        # message also carries its own producing clause ("search the web for the
+        # Bee Movie script and put it in Notepad"), the pronoun refers to that
+        # clause's result, so the message is self-contained: treating it as a
+        # reference to a previous turn made a first-turn request look ambiguous
+        # and blocked it with "I couldn't determine what the previous output
+        # refers to".
+        if _PUT_REFERENCE_RE.search(text) and not _is_self_contained(lowered):
             resolved.has_reference = True
             resolved.inherit = True
             resolved.target = resolved.target or "previous_output"
@@ -415,7 +434,15 @@ class ReferenceResolver:
             resolved.notes.append(f"ordinal reference #{ordinal}")
 
         # 8. A bare anaphoric pronoun with no other structural signal.
-        if not resolved.has_reference and _has_bare_reference(lowered):
+        #    A self-contained request ("search X and put it in Notepad") is not a
+        #    back-reference: the pronoun's referent is the clause in the same
+        #    message, so the request must not be treated as referring to a prior
+        #    turn's output.
+        if (
+            not resolved.has_reference
+            and not _is_self_contained(lowered)
+            and _has_bare_reference(lowered)
+        ):
             resolved.has_reference = True
             resolved.inherit = True
             resolved.target = "previous_output"
@@ -539,6 +566,24 @@ class ReferenceResolver:
 
 def _matches_any(text: str, phrases: tuple[str, ...]) -> bool:
     return any(phrase in text for phrase in phrases)
+
+
+def _is_self_contained(lowered: str) -> bool:
+    """True when a request carries its own content-producing clause.
+
+    A destination phrase ("put it in X") is only a *back-reference* when the
+    request does not itself produce the content. "Search the web for the script
+    and put it in Notepad" produces the script in the same sentence, so "it"
+    refers to that clause, not to a previous turn. The producing verb must appear
+    before the destination phrase to count ("put that in Notepad, then search" is
+    still a back-reference to earlier output followed by a new search).
+    """
+
+    put = _PUT_REFERENCE_RE.search(lowered)
+    if put is None:
+        return False
+    prefix = lowered[: put.start()]
+    return bool(_PRODUCING_VERBS_RE.search(prefix))
 
 
 def _has_bare_reference(lowered: str) -> bool:

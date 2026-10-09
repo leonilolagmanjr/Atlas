@@ -240,7 +240,41 @@ class IntentEngine:
             task.confidence = round(min(task.confidence, reading.confidence), 4)
         else:
             task.confidence = round(max(task.confidence, reading.confidence), 4)
+        # A genuine ambiguity the engine could not settle from context must be
+        # *asked about*, not executed. Detection alone is not enough: lowering
+        # confidence let the request fall through to the reasoning engine, which
+        # performed an ungrounded search ("Find that file." searched the web for
+        # the literal words instead of asking which file). Two gates keep this
+        # narrow and correct:
+        #
+        # * only an ambiguity the interpreter built no concrete plan for (a
+        #   resolved capability set means the reading was settled after all); and
+        # * only an ambiguity that *blocks* execution. A "conversation" reference
+        #   is not blocking - the conversation source is itself the resolution,
+        #   and the pipeline already answers such a message from context ("What
+        #   do you know about X?" must not become a clarification question).
+        blocking = self._blocking_ambiguities(reading.ambiguities)
+        if blocking and not task.actions and not task.needs_clarification:
+            task.needs_clarification = True
+            if not task.clarification_question:
+                task.clarification_question = self._clarification_for(blocking, task)
         return task
+
+    @staticmethod
+    def _blocking_ambiguities(ambiguities: list[str]) -> list[str]:
+        """Ambiguities that must be asked about rather than executed around.
+
+        A reference to something *the user did not supply and Atlas cannot
+        recover* blocks the request: which file, which previous result, which of
+        several items. A conversational reference does not: the conversation
+        itself is the resolution, so the request proceeds grounded in context.
+        """
+
+        return [
+            item
+            for item in ambiguities
+            if "unresolved reference: conversation" not in item
+        ]
 
     @staticmethod
     def _sync_routing_fields(task: Task) -> None:
@@ -872,6 +906,34 @@ class IntentEngine:
         if task.entities.get("application") or task.entities.get("filename"):
             base = max(base, 0.8)
         return max(0.0, min(1.0, base))
+
+    def _clarification_for(self, ambiguities: list[str], task: Task) -> str:
+        """Return a user-facing question for an ambiguity the engine could not settle.
+
+        One question per ambiguity *kind*, so the user is asked what is actually
+        missing rather than a generic "please clarify". The wording names the
+        missing information (which file, which target) instead of guessing it.
+        """
+
+        joined = " ".join(ambiguities)
+        if "unresolved reference" in joined:
+            return (
+                "I can do that, but I couldn't tell what you're referring to. "
+                "Which file or item do you mean?"
+            )
+        if "destination unspecified" in joined:
+            return (
+                "I found the previous output but couldn't tell where to put it. "
+                "Which application or file should I use?"
+            )
+        if "search target unspecified" in joined:
+            topic = str(
+                task.entities.get("topic") or task.entities.get("query") or ""
+            ).strip()
+            if topic:
+                return f"What specifically should I search for about {topic!r}?"
+            return "What specifically should I search for, and where can I find it?"
+        return "Could you clarify what you'd like Atlas to do?"
 
     def _ambiguities(
         self,

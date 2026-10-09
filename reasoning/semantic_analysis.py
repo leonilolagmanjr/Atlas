@@ -345,10 +345,16 @@ _NP_BOUNDARY_RE = re.compile(
 )
 
 #: Markers that make a request about the local machine rather than the world.
+#: The screen/window vocabulary belongs here for the same reason the disk/CPU/ram
+#: vocabulary does: "what is on my screen" is a question about *this machine* and
+#: can never be answered by a public web search, so it must select the local
+#: observation capability instead of a retrieval source.
 _LOCAL_MARKERS: tuple[str, ...] = (
     "my computer", "my pc", "my machine", "my laptop", "my system",
     "this computer", "this pc", "this machine", "my disk", "my cpu", "my ram",
     "my files", "my documents", "my downloads", "my folder", "my desktop",
+    "my screen", "the screen", "this screen", "on screen", "on my screen",
+    "my monitor", "my window", "my windows", "open windows", "my browser",
 )
 
 #: Sizing/appearance words that describe the *requested output*, not the subject.
